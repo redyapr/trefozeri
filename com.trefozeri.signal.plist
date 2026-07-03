@@ -18,21 +18,11 @@
         <string>--telegram</string>
     </array>
 
-    <!-- fire every 5 min, 1 min after the candle closes (HH:01/06/.../56) -->
+    <!-- fire every minute (entry_tf is now M1) — an empty dict = wildcard on every field,
+         so this matches every minute of every hour of every day. -->
     <key>StartCalendarInterval</key>
     <array>
-        <dict><key>Minute</key><integer>1</integer></dict>
-        <dict><key>Minute</key><integer>6</integer></dict>
-        <dict><key>Minute</key><integer>11</integer></dict>
-        <dict><key>Minute</key><integer>16</integer></dict>
-        <dict><key>Minute</key><integer>21</integer></dict>
-        <dict><key>Minute</key><integer>26</integer></dict>
-        <dict><key>Minute</key><integer>31</integer></dict>
-        <dict><key>Minute</key><integer>36</integer></dict>
-        <dict><key>Minute</key><integer>41</integer></dict>
-        <dict><key>Minute</key><integer>46</integer></dict>
-        <dict><key>Minute</key><integer>51</integer></dict>
-        <dict><key>Minute</key><integer>56</integer></dict>
+        <dict/>
     </array>
 
     <key>RunAtLoad</key>

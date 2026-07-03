@@ -13,6 +13,8 @@ __pycache__/
 run.log
 run.err.log
 signal.json
+position_state.json
+position_state.json.tmp
 backtest_trades.csv
 backtest_summary.json
 sweep_summary.json

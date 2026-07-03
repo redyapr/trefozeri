@@ -137,7 +137,7 @@ Honest scope & caveats:
 ---
 
 ## Run it automatically (macOS, launchd)
-The included `com.trefozeri.signal.plist` LaunchAgent runs the engine **live every 5 minutes** (at HH:01/06/…/56, just after each M5 candle closes) and survives reboot/login. With the confidence gate + `--telegram`, you are only pinged on strong signals.
+The included `com.trefozeri.signal.plist` LaunchAgent runs the engine **live every minute** (matching `entry_tf` = M1) and survives reboot/login. With the confidence gate + `--telegram`, you are only pinged on strong signals. Note: this calls TwelveData ~1440x/day instead of ~288x/day — check your plan's rate/credit limit before relying on it.
 
 ```bash
 cp com.trefozeri.signal.plist ~/Library/LaunchAgents/
@@ -197,7 +197,7 @@ Paired with the launchd agent (which refreshes `signal.json` every 5 min) the pa
 ---
 
 ## Configuration
-Everything lives in `CONFIG` (top of `trefozeri.py`): timeframe (entry & HTF), ATR period/multiplier, per-component weights, signal thresholds, news-filter window, AI narration language, etc.
+Everything lives in `CONFIG` (top of `trefozeri.py`): timeframes (`entry_tf` + the `mtf_tfs`/`mtf_weights` stack), ATR period/multiplier, per-component weights, signal thresholds, news-filter window, AI narration language, etc.
 
 Default weights: Dark Point 0.30 · Homma 0.25 · COT 0.25 · MDP-proxy 0.20.
 Default AI narration language: `en` (set `ai_language` to `id` for Indonesian).
@@ -206,10 +206,12 @@ Entry-zone knobs: `zone_pullback_atr` (max pullback depth from market, in ATR; d
 
 Alerts: the Analysis runs and Telegram is sent **only when the signal is BUY/SELL and confidence > `alert_min_confidence`** (default 60).
 
+Position-state dedup: a BUY/SELL only re-alerts (Telegram/MT5/webhook) once the current setup resolves — SL hit, TP1 hit, the trend flips, or `max_hold_minutes` elapses (disabled by default). While unresolved, `signal.json` still updates every run (with a `position_state` block) but no new alert/EA trigger fires. State lives in `position_state_file` (default `position_state.json`, gitignored).
+
 ---
 
 ## Technical notes
-- **Multi-timeframe**: Dark Point is computed on the HTF (bias, default H1) + the entry TF (timing, default M5), then combined.
+- **Multi-timeframe**: Dark Point is computed on 5 timeframes — H1, M30, M15, M5, M1 — resampled from a single M1 fetch (`resample_htf`), then combined with H1-dominant weights (`mtf_weights`: H1 0.35 · M30 0.25 · M15 0.20 · M5 0.12 · M1 0.08). H1 drives the overall bias; M1 sharpens the entry price and also anchors ATR/SL/TP/entry-zone (the execution timeframe, `entry_tf`). Homma's candlestick patterns now read M1 directly too — `homma_lookback` (5→25) and `trend_ema` (50→250) were scaled 5x so the real-time window they cover (~25 min pattern lookback, ~4.2h trend context) stays equivalent to the old M5 setup. Single-candle noise is still higher on M1 than M5, so Homma's confidence is worth watching in live use.
 - **Orchestration**: Runs on-demand. For automatic scheduling, wrap it with `cron`/Task Scheduler or add `APScheduler` inside the application.
 - **Backtest**: see `backtest.py` (bar-by-bar, no look-ahead, R-based metrics).
 

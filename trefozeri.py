@@ -76,9 +76,20 @@ MIN_CONFIDENCE = 50.0
 
 CONFIG = {
     "symbol": "XAU/USD",          # active instrument (auto-set at runtime, see below)
-    "entry_tf": "5min",           # entry/timing timeframe
-    "htf": "1h",                  # bias timeframe (higher timeframe)
-    "bars": 1200,                 # candles pulled on entry_tf (enough history for the HTF bias)
+    "entry_tf": "1min",           # execution timeframe: price/ATR/SL/TP/entry-zone all anchored here
+    "htf": "1h",                  # kept for backtest.py's single-HTF simulation (not used by run())
+    "bars": 5000,                 # candles pulled on entry_tf (M1) -> ~83h, enough H1 history for ATR/trend
+
+    # Dark Point multi-timeframe stack: H1 (bias) down to M1 (execution timing), largest -> smallest.
+    # All are resampled from the single M1 fetch above (resample_htf), except "1min" itself.
+    "mtf_tfs": ["1h", "30min", "15min", "5min", "1min"],
+    "mtf_weights": {              # must sum to ~1.0; H1-dominant so bias follows the big trend,
+        "1h": 0.35,                #   M1 only sharpens *when/where* to enter (zone/SL/TP use M1 directly)
+        "30min": 0.25,
+        "15min": 0.20,
+        "5min": 0.12,
+        "1min": 0.08,
+    },
 
     # Instrument auto-switch: gold on weekdays, crypto on the weekend
     # (the gold/forex market is closed on weekends; crypto trades 24/7).
@@ -104,9 +115,11 @@ CONFIG = {
     "tp2_atr": 3.0,               # TP2 = entry +/- 3.0 * ATR
     "tp3_atr": 4.5,               # TP3 = entry +/- 4.5 * ATR (final target)
 
-    # Homma (candlestick)
-    "homma_lookback": 5,          # how many recent candles to scan for patterns
-    "trend_ema": 50,              # EMA for trend context (significance of reversal patterns)
+    # Homma (candlestick) — now reads M1 candles directly (see run()). Both knobs below are
+    # scaled 5x vs. the old M5 defaults (5 -> 25, 50 -> 250) to keep the same *real time* window
+    # (~25 min pattern lookback, ~4.2h trend context) despite the 5x finer bar size.
+    "homma_lookback": 25,         # how many recent candles to scan for patterns
+    "trend_ema": 250,             # EMA for trend context (significance of reversal patterns)
     "doji_body_ratio": 0.1,       # body <= 10% of range -> doji
     "long_shadow_ratio": 2.0,     # shadow >= 2x body -> long shadow
 
@@ -143,6 +156,13 @@ CONFIG = {
 
     # Alerts: only run the Analysis and send Telegram above this confidence
     "alert_min_confidence": MIN_CONFIDENCE,  # percent (strictly greater-than); edit MIN_CONFIDENCE above
+
+    # Position-state dedup: while a BUY/SELL is still "live" (no SL/TP1 hit, no flip), later
+    # runs update signal.json but skip Telegram/MT5/webhook — avoids re-alerting/re-triggering
+    # the EA every minute on the same unresolved setup.
+    "position_state_file": "position_state.json",
+    "max_hold_minutes": None,     # optional safety valve: force-expire a held position after
+                                   # this many minutes even if SL/TP1 never trades. None = disabled.
 
     # Analysis
     "ai_provider": os.getenv("AI_PROVIDER", "none"),  # "claude" | "gemini" | "none"
@@ -186,6 +206,8 @@ class Signal:
     rr: Optional[dict] = None              # blended reward:risk {"tp1", "tp2"} measured from zone mid
     invalidation: Optional[float] = None   # cancel the pending zone if this level trades first (= SL)
     valid_bars: int = 0                    # bars the pullback limit order stays valid
+    bar_high: Optional[float] = None       # last entry_tf candle's high (SL/TP1 breach check across runs)
+    bar_low: Optional[float] = None        # last entry_tf candle's low
 
 
 # ============================================================================
@@ -898,35 +920,120 @@ def run(mode: str, cfg: dict) -> Signal:
         crowd = float(master.uniform(20.0, 80.0))              # random retail sentiment
         news = "clear (demo)"
 
-    # --- 2. Multi-timeframe: HTF bias + entry-TF timing ---
-    htf_df = resample_htf(price_df, cfg["htf"])
-    dp_htf = dark_point_signal(htf_df, cfg)          # HTF directional bias
-    dp_entry = dark_point_signal(price_df, cfg)      # timing + SL/TP
+    # --- 2. Multi-timeframe Dark Point: H1 > M30 > M15 > M5 > M1, H1-dominant weighting ---
+    # price_df is fetched at cfg["entry_tf"] (M1); every other TF is resampled up from it.
+    mtf_tfs = cfg["mtf_tfs"]
+    mtf_w = cfg["mtf_weights"]
+    tf_dfs = {tf: (price_df if tf == cfg["entry_tf"] else resample_htf(price_df, tf))
+              for tf in mtf_tfs}
+    dp_by_tf = {tf: dark_point_signal(tf_dfs[tf], cfg) for tf in mtf_tfs}
+    dp_entry = dp_by_tf[cfg["entry_tf"]]              # M1 -> also drives price/ATR/SL/TP/zone below
 
-    # Final Dark Point component = HTF bias + timing combined (HTF acts as a filter)
+    wsum_mtf = sum(mtf_w[tf] for tf in mtf_tfs) or 1.0
     dp_combined = ComponentResult(
         name="dark_point",
-        score=float(np.clip(0.6 * dp_entry.score + 0.4 * dp_htf.score, -1, 1)),
-        quality=(dp_entry.quality + dp_htf.quality) / 2,
+        score=float(np.clip(sum(dp_by_tf[tf].score * mtf_w[tf] for tf in mtf_tfs) / wsum_mtf, -1, 1)),
+        quality=sum(dp_by_tf[tf].quality * mtf_w[tf] for tf in mtf_tfs) / wsum_mtf,
         direction=dp_entry.direction,
-        detail={"entry_tf": dp_entry.detail, "htf": dp_htf.detail},
+        detail={tf: dp_by_tf[tf].detail for tf in mtf_tfs},
     )
 
+    # Homma candlestick patterns now read M1 directly (price_df). homma_lookback/trend_ema
+    # were scaled 5x in CONFIG so the *real-time* window stays equivalent to the old M5 setup —
+    # single-candle noise is still higher on M1 than M5, so watch homma's confidence in practice.
     homma = homma_signal(price_df, cfg)
     cot = cot_signal(cot_df, cfg)
     mdp = mdp_proxy_signal(crowd, cfg)
 
-    price = float(price_df["close"].iloc[-1])
-    atr_val = float(atr(price_df, cfg["atr_period"]).iloc[-1])
+    price = float(price_df["close"].iloc[-1])                       # M1 close = actual entry price
+    atr_val = float(atr(price_df, cfg["atr_period"]).iloc[-1])      # M1 ATR = tighter, more precise SL/TP
     session = trading_session(dt.datetime.now(dt.timezone.utc))
 
     sig = combine([dp_combined, homma, cot, mdp], price, atr_val,
                   dp_entry, session, news, cfg)
+    # last M1 candle's high/low -> lets main() detect an SL/TP1 breach across separate runs
+    sig.bar_high = float(price_df["high"].iloc[-1])
+    sig.bar_low = float(price_df["low"].iloc[-1])
 
     # --- 3. Optional Analysis (only high-confidence, actionable signals) ---
     if sig.direction != "NEUTRAL" and sig.confidence > cfg.get("alert_min_confidence", MIN_CONFIDENCE):
         sig.rationale = ai_explain(sig, cfg)
     return sig
+
+
+# ============================================================================
+# POSITION STATE  — avoid re-alerting while still inside an unresolved setup
+# ============================================================================
+# Each `main()` run is a fresh process with no memory of the last one, so the
+# active setup is persisted to disk. A new BUY/SELL is only re-alerted
+# (Telegram/MT5/webhook) once the current one resolves: SL hit, TP1 hit, the
+# trend flips direction, or (if configured) max_hold_minutes elapses.
+
+def load_position_state(path: str) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {"active": False}
+
+
+def save_position_state(path: str, state: dict) -> None:
+    """Atomic write (temp + replace) so a concurrent read never sees a half-written file."""
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def _sl_hit(direction: str, sl: float, bar_high: float, bar_low: float) -> bool:
+    return bar_low <= sl if direction == "BUY" else bar_high >= sl
+
+
+def _tp1_hit(direction: str, tp1: float, bar_high: float, bar_low: float) -> bool:
+    return bar_high >= tp1 if direction == "BUY" else bar_low <= tp1
+
+
+def resolve_position_state(sig: Signal, cfg: dict, state: dict) -> tuple[dict, bool, str]:
+    """Decide whether `sig` should trigger a fresh alert, given the persisted state.
+
+    Returns (new_state, should_alert, reason). `reason` is informational only
+    (printed to the console / written into signal.json's "position_state" block).
+    """
+    now = dt.datetime.now(dt.timezone.utc)
+    just_closed = None
+
+    if state.get("active"):
+        direction, sl, tp1 = state.get("direction"), state.get("sl"), state.get("tp1")
+
+        if (sig.bar_high is not None and sl is not None
+                and _sl_hit(direction, sl, sig.bar_high, sig.bar_low)):
+            just_closed = "sl_hit"
+        elif (sig.bar_high is not None and tp1 is not None
+                and _tp1_hit(direction, tp1, sig.bar_high, sig.bar_low)):
+            just_closed = "tp1_hit"
+        elif cfg.get("max_hold_minutes") and (
+                now - dt.datetime.fromisoformat(state["opened_at"])
+        ).total_seconds() / 60.0 >= cfg["max_hold_minutes"]:
+            just_closed = "expired"
+        elif sig.direction in ("BUY", "SELL") and sig.direction != direction:
+            just_closed = "flipped"
+
+        if just_closed is None:
+            return state, False, "position_active"   # still riding the same setup -> suppress
+        state = {"active": False, "closed_reason": just_closed,
+                 "closed_at": now.isoformat(timespec="seconds")}
+
+    # No active position (or one was just closed above) -> evaluate sig fresh.
+    if sig.direction in ("BUY", "SELL") and sig.confidence > cfg.get("alert_min_confidence", MIN_CONFIDENCE):
+        new_state = {
+            "active": True, "direction": sig.direction,
+            "entry_zone": sig.entry_zone, "sl": sig.sl,
+            "tp1": sig.tp1, "tp2": sig.tp2, "tp3": sig.tp3,
+            "opened_at": now.isoformat(timespec="seconds"),
+        }
+        return new_state, True, (f"{just_closed}_then_new" if just_closed else "new_position")
+
+    return state, False, (just_closed or "neutral")
 
 
 def main():
@@ -957,26 +1064,46 @@ def main():
     report = format_report(sig)
     print(report)
 
+    # --- Position-state dedup: skip re-alerting while still inside an unresolved setup ---
+    state_path = CONFIG.get("position_state_file", "position_state.json")
+    pos_state = load_position_state(state_path)
+    pos_state, should_alert, pos_reason = resolve_position_state(sig, CONFIG, pos_state)
+    save_position_state(state_path, pos_state)
+    if pos_reason == "position_active":
+        print(f"[position] still holding {pos_state.get('direction')} opened "
+              f"{pos_state.get('opened_at')} — not re-alerting.")
+    elif pos_reason not in ("neutral", "new_position"):
+        print(f"[position] previous setup closed ({pos_reason}).")
+
+    sig_dict = asdict(sig)
+    sig_dict["position_state"] = {"active": pos_state.get("active", False), "reason": pos_reason}
     with open(args.json, "w", encoding="utf-8") as f:
-        json.dump(asdict(sig), f, ensure_ascii=False, indent=2)
+        json.dump(sig_dict, f, ensure_ascii=False, indent=2)
     print(f"\n[saved] {args.json}")
 
     tg_msg_id = None
     if args.telegram:
         thr = CONFIG.get("alert_min_confidence", MIN_CONFIDENCE)
-        if sig.direction != "NEUTRAL" and sig.confidence > thr:
+        if should_alert:
             tg_msg_id = send_telegram(report)
+        elif pos_reason == "position_active":
+            print("[telegram] skipped — position already active, not re-alerting.")
         else:
             print(f"[telegram] skipped — needs a BUY/SELL with confidence > {thr}% "
                   f"(got {sig.direction} {sig.confidence}%).")
 
     # --- MT5 bridge: write a file (for the EA) and/or POST a webhook ---
+    # Only on a genuinely NEW decision (should_alert): the file's `id` (timestamp) makes the
+    # EA act on it, so re-sending it every run would re-trigger the EA on the same setup.
     mt5_file = args.mt5_file or os.getenv("MT5_SIGNAL_FILE")
     webhook = args.webhook or os.getenv("WEBHOOK_URL")
     if mt5_file or webhook:
-        import mt5_bridge
-        mt5_bridge.emit(asdict(sig), CONFIG.get("mt5_symbol", sig.symbol),
-                        file_path=mt5_file, webhook_url=webhook, tg_msg_id=tg_msg_id)
+        if should_alert:
+            import mt5_bridge
+            mt5_bridge.emit(sig_dict, CONFIG.get("mt5_symbol", sig.symbol),
+                            file_path=mt5_file, webhook_url=webhook, tg_msg_id=tg_msg_id)
+        else:
+            print(f"[mt5] skipped — {pos_reason} (no new decision to send).")
 
 
 if __name__ == "__main__":
