@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.trefozeri.signal</string>
+
+    <!-- cd into the project so python-dotenv finds .env -->
+    <key>WorkingDirectory</key>
+    <string>/Users/redyapr/Documents/projects/trefozeri/AI</string>
+
+    <!-- run the venv's python on the engine, live + Telegram alert -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/redyapr/Documents/projects/trefozeri/AI/venv/bin/python</string>
+        <string>/Users/redyapr/Documents/projects/trefozeri/AI/trefozeri.py</string>
+        <string>--live</string>
+        <string>--telegram</string>
+    </array>
+
+    <!-- fire every 5 min, 1 min after the candle closes (HH:01/06/.../56) -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Minute</key><integer>1</integer></dict>
+        <dict><key>Minute</key><integer>6</integer></dict>
+        <dict><key>Minute</key><integer>11</integer></dict>
+        <dict><key>Minute</key><integer>16</integer></dict>
+        <dict><key>Minute</key><integer>21</integer></dict>
+        <dict><key>Minute</key><integer>26</integer></dict>
+        <dict><key>Minute</key><integer>31</integer></dict>
+        <dict><key>Minute</key><integer>36</integer></dict>
+        <dict><key>Minute</key><integer>41</integer></dict>
+        <dict><key>Minute</key><integer>46</integer></dict>
+        <dict><key>Minute</key><integer>51</integer></dict>
+        <dict><key>Minute</key><integer>56</integer></dict>
+    </array>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/redyapr/Documents/projects/trefozeri/AI/run.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/redyapr/Documents/projects/trefozeri/AI/run.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

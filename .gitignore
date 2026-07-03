@@ -1,0 +1,20 @@
+# secrets — never commit
+.env
+
+# python
+venv/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# generated outputs & logs
+run.log
+run.err.log
+signal.json
+backtest_trades.csv
+backtest_summary.json
+sweep_summary.json
+walkforward_summary.json
+annual.txt
