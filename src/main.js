@@ -1,19 +1,13 @@
 import './style.css'
 import { TIMEFRAMES, SYMBOLS, fetchAllTimeframes } from './lib/twelveData.js'
 import { detectZones, buildSignals, annotateConfluence } from './lib/srDetector.js'
-import { loadJournal, updateJournal, computeJournalStats } from './lib/journal.js'
 import { notificationPermission, requestNotificationPermission, checkEntryAlerts } from './lib/notifications.js'
 import { fetchNewsCalendar, findUpcomingHighImpact } from './lib/newsCalendar.js'
 import { saveLastKnown, loadLastKnown } from './lib/offlineCache.js'
 
 const NEWS_HORIZON_HOURS = 12
-const VIEWS = [
-  { key: 'dashboard', label: 'Signals' },
-  { key: 'journal', label: 'Journal' },
-]
 
 const symbolTabsEl = document.getElementById('symbol-tabs')
-const viewTabsEl = document.getElementById('view-tabs')
 const tabsEl = document.getElementById('tabs')
 const newsBannerEl = document.getElementById('news-banner')
 const contentEl = document.getElementById('content')
@@ -23,7 +17,6 @@ const refreshBtn = document.getElementById('refresh-btn')
 const notifyBtn = document.getElementById('notify-btn')
 
 let activeSymbol = SYMBOLS[0]
-let activeView = VIEWS[0].key
 let activeTab = TIMEFRAMES[2].key // M30 default: reasonable middle ground
 let zonesByTimeframe = {}
 let currentPrice = null
@@ -44,28 +37,13 @@ function renderSymbolTabs() {
       priceEl.textContent = '—'
       renderSymbolTabs()
       hydrateFromCache(activeSymbol)
-      renderActiveView()
+      renderDashboard()
       // Force past the in-flight guard: any still-running fetch for the symbol we
       // just left will see `activeSymbol !== symbol` and discard itself harmlessly.
       refreshing = false
       refreshData()
     })
     symbolTabsEl.appendChild(btn)
-  }
-}
-
-function renderViewTabs() {
-  viewTabsEl.innerHTML = ''
-  for (const view of VIEWS) {
-    const btn = document.createElement('button')
-    btn.className = 'view-tab-btn' + (view.key === activeView ? ' active' : '')
-    btn.textContent = view.label
-    btn.addEventListener('click', () => {
-      activeView = view.key
-      renderViewTabs()
-      renderActiveView()
-    })
-    viewTabsEl.appendChild(btn)
   }
 }
 
@@ -91,17 +69,9 @@ function hydrateFromCache(symbol) {
   lastUpdateEl.textContent = `Showing cached data from ${new Date(cached.savedAt).toLocaleString('en-US')}`
 }
 
-function renderActiveView() {
-  const isDashboard = activeView === 'dashboard'
-  tabsEl.hidden = !isDashboard
-
-  if (isDashboard) {
-    renderNewsBanner()
-    renderContent()
-  } else {
-    newsBannerEl.hidden = true
-    renderJournalView()
-  }
+function renderDashboard() {
+  renderNewsBanner()
+  renderContent()
 }
 
 function renderTabs() {
@@ -241,102 +211,6 @@ function renderContent() {
   contentEl.appendChild(zonesGrid)
 }
 
-function renderEquitySparkline(equityCurve) {
-  if (equityCurve.length < 2) return ''
-
-  const width = 100
-  const height = 28
-  const min = Math.min(0, ...equityCurve)
-  const max = Math.max(0, ...equityCurve)
-  const range = max - min || 1
-  const toY = (v) => (height - ((v - min) / range) * height).toFixed(1)
-
-  const points = equityCurve
-    .map((v, i) => `${((i / (equityCurve.length - 1)) * width).toFixed(1)},${toY(v)}`)
-    .join(' ')
-  const last = equityCurve[equityCurve.length - 1]
-
-  return `
-    <svg class="equity-sparkline" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
-      <line x1="0" y1="${toY(0)}" x2="${width}" y2="${toY(0)}" />
-      <polyline points="${points}" fill="none" stroke="${last >= 0 ? '#7fa787' : '#b1665c'}" stroke-width="2" />
-    </svg>
-  `
-}
-
-function renderJournalStats(stats) {
-  const wrap = document.createElement('div')
-  wrap.className = 'journal-summary'
-
-  const tiles = document.createElement('div')
-  tiles.className = 'journal-tiles'
-  tiles.innerHTML = `
-    <div class="journal-tile">
-      <span class="journal-tile-label">Win rate</span>
-      <span class="journal-tile-value">${Math.round(stats.winRate * 100)}%</span>
-      <span class="journal-tile-sub">${stats.wins}W / ${stats.losses}L</span>
-    </div>
-    <div class="journal-tile">
-      <span class="journal-tile-label">Expectancy</span>
-      <span class="journal-tile-value ${stats.expectancy >= 0 ? 'positive' : 'negative'}">${stats.expectancy >= 0 ? '+' : ''}${stats.expectancy.toFixed(2)}R</span>
-      <span class="journal-tile-sub">per trade</span>
-    </div>
-    <div class="journal-tile">
-      <span class="journal-tile-label">Avg win</span>
-      <span class="journal-tile-value positive">+${stats.avgWinR.toFixed(2)}R</span>
-    </div>
-    <div class="journal-tile">
-      <span class="journal-tile-label">Avg loss</span>
-      <span class="journal-tile-value negative">${stats.avgLossR.toFixed(2)}R</span>
-    </div>
-    <div class="journal-tile">
-      <span class="journal-tile-label">Open</span>
-      <span class="journal-tile-value">${stats.openCount}</span>
-    </div>
-  `
-  wrap.appendChild(tiles)
-
-  if (stats.equityCurve.length >= 2) {
-    const curve = document.createElement('div')
-    curve.className = 'journal-equity'
-    curve.innerHTML = `<span class="journal-tile-label">Equity curve (R)</span>${renderEquitySparkline(stats.equityCurve)}`
-    wrap.appendChild(curve)
-  }
-
-  return wrap
-}
-
-function renderJournalView() {
-  const journal = [...loadJournal()].reverse()
-
-  if (!journal.length) {
-    contentEl.innerHTML = '<p class="empty-state">No signals logged yet — they\'re recorded automatically as they appear.</p>'
-    return
-  }
-
-  const stats = computeJournalStats(journal)
-
-  contentEl.innerHTML = ''
-  contentEl.appendChild(renderJournalStats(stats))
-
-  const list = document.createElement('div')
-  list.className = 'journal-list'
-  for (const entry of journal) {
-    const row = document.createElement('div')
-    row.className = `journal-row ${entry.outcome}`
-    row.innerHTML = `
-      <span class="journal-symbol">${entry.symbol ?? 'XAUUSD'}</span>
-      <span class="journal-tf">${entry.timeframe}</span>
-      <span class="journal-dir ${entry.direction}">${entry.direction === 'buy' ? 'BUY' : 'SELL'} ${entry.orderType}</span>
-      <span class="journal-prices">${formatPrice(entry.entry)} · SL ${formatPrice(entry.sl)} · TP ${formatPrice(entry.tp[0])}</span>
-      <span class="journal-outcome ${entry.outcome}">${entry.outcome}</span>
-      <span class="journal-time">${new Date(entry.loggedAt).toLocaleString('en-US')}</span>
-    `
-    list.appendChild(row)
-  }
-  contentEl.appendChild(list)
-}
-
 function renderSignalCard(signal) {
   const card = document.createElement('div')
   card.className = `signal-card ${signal.direction}`
@@ -422,7 +296,6 @@ async function refreshData() {
     for (const result of Object.values(zonesByTimeframe)) {
       result.signals = buildSignals(result.zones, result.series)
     }
-    updateJournal(symbol.key, zonesByTimeframe)
     checkEntryAlerts(symbol, zonesByTimeframe, currentPrice)
     saveLastKnown(symbol.key, zonesByTimeframe, currentPrice)
 
@@ -432,7 +305,7 @@ async function refreshData() {
   } finally {
     refreshing = false
     refreshBtn.classList.remove('spinning')
-    renderActiveView()
+    renderDashboard()
   }
 }
 
@@ -448,10 +321,9 @@ notifyBtn.addEventListener('click', async () => {
 })
 
 renderSymbolTabs()
-renderViewTabs()
 renderTabs()
 updateNotifyButtonState()
 hydrateFromCache(activeSymbol)
-renderActiveView()
+renderDashboard()
 refreshData()
 refreshNewsCalendar()
