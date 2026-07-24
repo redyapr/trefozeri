@@ -21,6 +21,7 @@ const uiState = loadUiState()
 let activeSymbol = SYMBOLS.find((s) => s.key === uiState.symbolKey) ?? SYMBOLS[0]
 let activeTab = TIMEFRAMES.find((tf) => tf.key === uiState.tab)?.key ?? TIMEFRAMES[2].key // M30 default: reasonable middle ground
 let zonesByTimeframe = {}
+let lastFetchedAt = {}
 let currentPrice = null
 let refreshing = false
 let newsEvents = []
@@ -47,6 +48,7 @@ function renderSymbolTabs() {
       activeSymbol = symbol
       saveUiState({ symbolKey: activeSymbol.key })
       zonesByTimeframe = {}
+      lastFetchedAt = {}
       currentPrice = null
       priceEl.textContent = '—'
       renderSymbolTabs()
@@ -67,6 +69,10 @@ function hydrateFromCache(symbol) {
 
   zonesByTimeframe = cached.zonesByTimeframe
   currentPrice = cached.currentPrice
+  // We only store one save time for the whole snapshot, not per timeframe, but that's
+  // a fine approximation — it stops the refresh that follows hydration from immediately
+  // re-fetching everything the cache just gave us for free.
+  lastFetchedAt = Object.fromEntries(Object.keys(cached.zonesByTimeframe).map((key) => [key, cached.savedAt]))
   if (currentPrice != null) priceEl.textContent = formatPrice(currentPrice)
   lastUpdateEl.textContent = `Showing cached data from ${new Date(cached.savedAt).toLocaleString('en-US')}`
 }
@@ -293,6 +299,21 @@ function renderSignalCard(signal) {
 async function refreshData() {
   if (refreshing) return
 
+  const now = Date.now()
+  // Skip timeframes that were fetched too recently to plausibly have new data yet —
+  // this is what keeps a burst of manual refreshes from re-requesting all 6
+  // timeframes every time and blowing through the API's per-minute rate limit.
+  const dueTimeframes = TIMEFRAMES.filter(
+    (tf) => !lastFetchedAt[tf.key] || now - lastFetchedAt[tf.key] >= tf.minRefetchMs
+  )
+  if (!dueTimeframes.length) {
+    // Nothing could plausibly have changed yet — skip the network round-trip, but
+    // still acknowledge the click so the button doesn't look unresponsive.
+    refreshBtn.classList.add('spinning')
+    setTimeout(() => refreshBtn.classList.remove('spinning'), 400)
+    return
+  }
+
   refreshing = true
   refreshBtn.classList.add('spinning')
   contentEl.querySelectorAll('.zone-card, .signal-card').forEach((c) => (c.style.opacity = '0.6'))
@@ -300,19 +321,21 @@ async function refreshData() {
   const symbol = activeSymbol
 
   try {
-    const raw = await fetchAllTimeframes(symbol.apiSymbol)
+    const raw = await fetchAllTimeframes(symbol.apiSymbol, dueTimeframes)
     // The user switched symbols while this fetch was in flight — these results
     // belong to the symbol we've since navigated away from, so drop them rather
     // than mixing them into the new symbol's (freshly reset) state.
     if (activeSymbol !== symbol) return
 
     let anySuccess = false
-    for (const tf of TIMEFRAMES) {
+    for (const tf of dueTimeframes) {
       const series = raw[tf.key]
       // Rate-limited or transient fetch failure: keep whatever data is already
-      // on screen for this timeframe instead of clearing it out.
+      // on screen for this timeframe instead of clearing it out, and leave it
+      // due for next time rather than marking it as freshly fetched.
       if (series?.error) continue
       anySuccess = true
+      lastFetchedAt[tf.key] = now
       const last = series[series.length - 1]
       if (tf.key === 'M5') {
         currentPrice = last.close
@@ -322,9 +345,9 @@ async function refreshData() {
       zonesByTimeframe[tf.key] = { zones, series }
     }
 
-    // Every timeframe failed (offline, or the whole API is down) — nothing actually
-    // changed, so leave whatever "Last updated" / "Showing cached data" message was
-    // already on screen rather than claiming a freshness that didn't happen.
+    // Every due timeframe failed (offline, or the whole API is down) — nothing
+    // actually changed, so leave whatever "Last updated" / "Showing cached data"
+    // message was already on screen rather than claiming a freshness that didn't happen.
     if (!anySuccess) return
 
     // Confluence needs every timeframe's zones at once, so it only runs once all of
