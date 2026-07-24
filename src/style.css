@@ -1,17 +1,18 @@
 :root {
-  --bg: #0a0906;
-  --panel: #14120c;
-  --border: rgba(212, 175, 55, 0.2);
-  --border-soft: rgba(212, 175, 55, 0.1);
-  --text: #f1e9d8;
-  --text-dim: #948a76;
-  --support: #7fa787;
-  --resistance: #b1665c;
-  --gold: #cda43e;
-  --gold-bright: #f0d27a;
+  --bg: #f5f7fa;
+  --panel: #ffffff;
+  --border: #dbe2eb;
+  --border-soft: #e9edf2;
+  --text: #16233a;
+  --text-dim: #70808f;
+  --support: #279058;
+  --resistance: #c0392b;
+  --navy: #1b3a6b;
+  --navy-bright: #274d8a;
+  --shadow: 0 1px 2px rgba(16, 35, 63, 0.04), 0 4px 14px rgba(16, 35, 63, 0.06);
 
-  --serif: 'Cormorant Garamond', 'Iowan Old Style', 'Georgia', serif;
-  --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-display: 'Poppins', 'Segoe UI', sans-serif;
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
 * {
@@ -27,9 +28,9 @@
 
 body {
   margin: 0;
-  font-family: var(--sans);
+  font-family: var(--font-body);
   background:
-    radial-gradient(ellipse 900px 460px at 50% -8%, rgba(205, 164, 62, 0.12), transparent 65%),
+    radial-gradient(ellipse 900px 420px at 50% -10%, rgba(27, 58, 107, 0.06), transparent 65%),
     var(--bg);
   color: var(--text);
 }
@@ -42,7 +43,7 @@ body {
 
 .topbar {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
@@ -51,27 +52,40 @@ body {
   margin-bottom: 6px;
 }
 
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.brand-logo {
+  height: 52px;
+  width: auto;
+  display: block;
+}
+
+.brand-text {
+  display: flex;
+  flex-direction: column;
+}
+
 .brand-eyebrow {
   display: block;
   font-size: 0.66rem;
-  letter-spacing: 0.32em;
+  letter-spacing: 0.24em;
   text-transform: uppercase;
-  color: var(--gold);
-  margin-bottom: 6px;
+  color: var(--support);
+  font-weight: 600;
+  margin-bottom: 4px;
 }
 
 .brand-title {
-  font-family: var(--serif);
-  font-weight: 500;
-  font-size: 2rem;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.5rem;
   letter-spacing: 0.01em;
   margin: 0;
-  color: var(--text);
-}
-
-.brand-title .amp {
-  color: var(--gold);
-  font-style: italic;
+  color: var(--navy);
 }
 
 .topbar-actions {
@@ -88,41 +102,39 @@ body {
 
 .price-label {
   font-size: 0.62rem;
-  letter-spacing: 0.28em;
+  letter-spacing: 0.24em;
   text-transform: uppercase;
   color: var(--text-dim);
   margin-bottom: 2px;
 }
 
 .price-display {
-  font-family: var(--serif);
-  font-size: 1.7rem;
+  font-family: var(--font-display);
+  font-size: 1.6rem;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  background: linear-gradient(135deg, var(--gold-bright), var(--gold));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--navy);
 }
 
 .icon-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: none;
+  background: var(--panel);
   border: 1px solid var(--border);
-  color: var(--gold);
+  color: var(--navy);
   border-radius: 50%;
   width: 36px;
   height: 36px;
   padding: 0;
   cursor: pointer;
+  box-shadow: var(--shadow);
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 
 .icon-btn:hover {
-  border-color: var(--gold);
-  background: rgba(205, 164, 62, 0.08);
+  border-color: var(--navy);
+  background: rgba(27, 58, 107, 0.06);
 }
 
 .icon-btn:active {
@@ -130,9 +142,9 @@ body {
 }
 
 .icon-btn.active {
-  border-color: var(--gold);
-  background: rgba(205, 164, 62, 0.14);
-  color: var(--gold-bright);
+  border-color: var(--support);
+  background: rgba(39, 144, 88, 0.1);
+  color: var(--support);
 }
 
 .icon-btn:disabled {
@@ -175,16 +187,16 @@ body {
   background: none;
   color: var(--text-dim);
   cursor: pointer;
-  font-family: var(--sans);
+  font-family: var(--font-body);
   font-size: 0.76rem;
-  letter-spacing: 0.14em;
+  font-weight: 600;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
 .tab-btn.active {
-  color: var(--gold-bright);
-  border-bottom-color: var(--gold);
-  font-weight: 600;
+  color: var(--navy);
+  border-bottom-color: var(--navy);
 }
 
 .symbol-tabs {
@@ -196,19 +208,20 @@ body {
 .symbol-tab-btn {
   padding: 7px 18px;
   border: 1px solid var(--border);
-  border-radius: 3px;
-  background: none;
+  border-radius: 6px;
+  background: var(--panel);
   color: var(--text-dim);
   cursor: pointer;
-  font-family: var(--serif);
-  font-size: 0.9rem;
-  font-style: italic;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.82rem;
+  box-shadow: var(--shadow);
 }
 
 .symbol-tab-btn.active {
-  color: var(--gold-bright);
-  border-color: var(--gold);
-  background: linear-gradient(180deg, rgba(205, 164, 62, 0.1), transparent);
+  color: var(--navy);
+  border-color: var(--navy);
+  background: rgba(27, 58, 107, 0.06);
 }
 
 .view-tabs {
@@ -221,19 +234,20 @@ body {
   padding: 6px 16px;
   border: 1px solid var(--border);
   border-radius: 20px;
-  background: none;
+  background: var(--panel);
   color: var(--text-dim);
   cursor: pointer;
-  font-family: var(--sans);
+  font-family: var(--font-body);
+  font-weight: 600;
   font-size: 0.7rem;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 .view-tab-btn.active {
-  color: var(--gold-bright);
-  border-color: var(--gold);
-  background: rgba(205, 164, 62, 0.08);
+  color: #fff;
+  border-color: var(--navy);
+  background: var(--navy);
 }
 
 .journal-summary {
@@ -256,23 +270,26 @@ body {
   flex-direction: column;
   gap: 3px;
   padding: 10px 16px;
-  border: 1px solid var(--border-soft);
-  border-radius: 3px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
   min-width: 100px;
 }
 
 .journal-tile-label {
   font-size: 0.62rem;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--text-dim);
 }
 
 .journal-tile-value {
-  font-family: var(--serif);
+  font-family: var(--font-display);
   font-size: 1.3rem;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  color: var(--navy);
 }
 
 .journal-tile-value.positive {
@@ -294,8 +311,10 @@ body {
   gap: 4px;
   justify-content: center;
   padding: 10px 16px;
-  border: 1px solid var(--border-soft);
-  border-radius: 3px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
   min-width: 140px;
 }
 
@@ -322,15 +341,18 @@ body {
   flex-wrap: wrap;
   gap: 8px 16px;
   padding: 10px 14px;
-  border: 1px solid var(--border-soft);
-  border-radius: 3px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
   font-size: 0.8rem;
 }
 
 .journal-symbol {
   flex: 0 0 auto;
   width: 62px;
-  color: var(--gold);
+  color: var(--navy);
+  font-weight: 600;
   font-size: 0.68rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -361,7 +383,7 @@ body {
 
 .journal-prices {
   flex: 1 1 220px;
-  font-family: var(--serif);
+  font-family: var(--font-display);
   font-variant-numeric: tabular-nums;
 }
 
@@ -369,6 +391,7 @@ body {
   flex: 0 0 auto;
   text-transform: uppercase;
   font-size: 0.66rem;
+  font-weight: 600;
   letter-spacing: 0.06em;
   padding: 2px 8px;
   border-radius: 10px;
@@ -376,7 +399,7 @@ body {
 }
 
 .journal-outcome.open {
-  color: var(--gold);
+  color: var(--navy);
 }
 
 .journal-outcome.win {
@@ -394,23 +417,15 @@ body {
   white-space: nowrap;
 }
 
-.chart-container {
-  height: 320px;
-  margin: 18px 0 4px;
-  border: 1px solid var(--border-soft);
-  border-radius: 3px;
-  overflow: hidden;
-}
-
 .news-banner {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-top: 16px;
   padding: 10px 16px;
-  border: 1px solid rgba(177, 102, 92, 0.4);
-  border-radius: 3px;
-  background: rgba(177, 102, 92, 0.08);
+  border: 1px solid rgba(192, 57, 43, 0.3);
+  border-radius: 6px;
+  background: rgba(192, 57, 43, 0.06);
   color: var(--text);
   font-size: 0.82rem;
 }
@@ -421,7 +436,7 @@ body {
 }
 
 .news-banner strong {
-  color: var(--gold-bright);
+  color: var(--navy);
   font-weight: 600;
 }
 
@@ -438,26 +453,27 @@ body {
   align-items: center;
   gap: 8px;
   font-size: 0.68rem;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-dim);
 }
 
 .position-settings input {
   width: 84px;
-  background: none;
+  background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: 4px;
   padding: 5px 8px;
-  color: var(--gold-bright);
-  font-family: var(--serif);
+  color: var(--navy);
+  font-family: var(--font-display);
+  font-weight: 600;
   font-size: 0.95rem;
   font-variant-numeric: tabular-nums;
 }
 
 .position-settings input:focus {
   outline: none;
-  border-color: var(--gold);
+  border-color: var(--navy);
 }
 
 .content {
@@ -493,10 +509,10 @@ body {
 }
 
 .group-heading {
-  font-family: var(--serif);
-  font-style: italic;
-  font-size: 1rem;
-  letter-spacing: 0.03em;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
   padding: 0 2px 2px;
   margin-top: 4px;
 }
@@ -510,9 +526,8 @@ body {
 }
 
 .empty-state {
-  font-family: var(--serif);
-  font-style: italic;
-  font-size: 1.1rem;
+  font-family: var(--font-display);
+  font-size: 1rem;
   color: var(--text-dim);
   text-align: center;
   padding: 60px 12px;
@@ -520,9 +535,10 @@ body {
 
 .signal-card {
   padding: 18px 20px;
-  border-radius: 3px;
+  border-radius: 8px;
   border: 1px solid var(--border);
-  background: linear-gradient(180deg, rgba(205, 164, 62, 0.05), transparent 60%);
+  background: var(--panel);
+  box-shadow: var(--shadow);
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -534,13 +550,13 @@ body {
   justify-content: space-between;
   padding-bottom: 10px;
   margin-bottom: 8px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-soft);
 }
 
 .signal-direction {
-  font-family: var(--serif);
-  font-style: italic;
-  font-size: 1.2rem;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.05rem;
   letter-spacing: 0.01em;
 }
 
@@ -554,9 +570,10 @@ body {
 
 .signal-zone-strength {
   font-size: 0.62rem;
-  letter-spacing: 0.16em;
+  font-weight: 600;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--gold);
+  color: var(--navy);
 }
 
 .signal-row {
@@ -575,16 +592,17 @@ body {
 
 .signal-label {
   color: var(--text-dim);
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   font-size: 0.66rem;
 }
 
 .signal-value {
-  font-family: var(--serif);
+  font-family: var(--font-display);
   font-size: 1.05rem;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  color: var(--navy);
 }
 
 .signal-row.sl .signal-value {
@@ -592,7 +610,7 @@ body {
 }
 
 .signal-row.size .signal-value {
-  color: var(--gold);
+  color: var(--navy);
 }
 
 .signal-tp {
@@ -601,7 +619,7 @@ body {
   gap: 2px;
   padding-top: 6px;
   margin-top: 4px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--border-soft);
 }
 
 .signal-tp-row {
@@ -609,26 +627,28 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 5px 0;
-  font-family: var(--serif);
-  font-size: 0.95rem;
+  font-family: var(--font-display);
+  font-size: 0.92rem;
   font-variant-numeric: tabular-nums;
 }
 
 .signal-confluence {
   margin-top: 8px;
   padding-top: 8px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--border-soft);
   font-size: 0.68rem;
-  letter-spacing: 0.04em;
+  font-weight: 600;
+  letter-spacing: 0.03em;
   text-transform: uppercase;
-  color: var(--gold);
+  color: var(--support);
 }
 
 .signal-tp-row .rr {
-  font-family: var(--sans);
-  color: var(--gold);
+  font-family: var(--font-body);
+  color: var(--support);
+  font-weight: 600;
   font-size: 0.68rem;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.03em;
 }
 
 .zone-card {
@@ -636,15 +656,16 @@ body {
   align-items: center;
   gap: 14px;
   padding: 14px 18px;
-  border-radius: 3px;
-  border: 1px solid var(--border-soft);
-  background: rgba(241, 233, 216, 0.02);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  box-shadow: var(--shadow);
 }
 
 .zone-type {
-  font-family: var(--serif);
-  font-style: italic;
-  font-size: 0.9rem;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.8rem;
   letter-spacing: 0.01em;
   width: 66px;
   flex: 0 0 auto;
@@ -664,10 +685,11 @@ body {
 }
 
 .zone-price {
-  font-family: var(--serif);
-  font-size: 1.2rem;
+  font-family: var(--font-display);
+  font-size: 1.15rem;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  color: var(--navy);
 }
 
 .zone-meta {
@@ -686,7 +708,8 @@ body {
 
 .strength-badge {
   font-size: 0.66rem;
-  letter-spacing: 0.06em;
+  font-weight: 600;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   padding: 2px 8px;
   border-radius: 10px;
@@ -699,7 +722,7 @@ body {
 }
 
 .strength-badge.medium {
-  color: var(--gold);
+  color: var(--navy);
 }
 
 .strength-badge.weak {
@@ -715,18 +738,22 @@ body {
   text-align: center;
   color: var(--text-dim);
   font-size: 0.68rem;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   margin-top: 20px;
 }
 
 @media (max-width: 480px) {
+  .brand-logo {
+    height: 40px;
+  }
+
   .brand-title {
-    font-size: 1.6rem;
+    font-size: 1.15rem;
   }
 
   .zone-type {
     width: 52px;
-    font-size: 0.8rem;
+    font-size: 0.72rem;
   }
 }

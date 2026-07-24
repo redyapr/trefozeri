@@ -13,11 +13,11 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       manifest: {
-        name: 'Gold & Bitcoin S/R Dashboard',
+        name: 'TREFOZERI S/R Dashboard',
         short_name: 'S/R Dashboard',
         description: 'Multi-timeframe support & resistance signals for XAU/USD and BTC/USD',
-        theme_color: '#0a0906',
-        background_color: '#0a0906',
+        theme_color: '#1b3a6b',
+        background_color: '#ffffff',
         display: 'standalone',
         start_url: '/',
         icons: [

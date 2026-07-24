@@ -4,7 +4,6 @@ import { detectZones, buildSignals, annotateConfluence } from './lib/srDetector.
 import { loadPositionSettings, savePositionSettings, calculatePositionSize } from './lib/positionSize.js'
 import { loadJournal, updateJournal, computeJournalStats } from './lib/journal.js'
 import { notificationPermission, requestNotificationPermission, checkEntryAlerts } from './lib/notifications.js'
-import { createGoldChart } from './lib/chart.js'
 import { fetchNewsCalendar, findUpcomingHighImpact } from './lib/newsCalendar.js'
 import { saveLastKnown, loadLastKnown } from './lib/offlineCache.js'
 
@@ -22,7 +21,6 @@ const viewTabsEl = document.getElementById('view-tabs')
 const tabsEl = document.getElementById('tabs')
 const positionSettingsWrapEl = document.getElementById('position-settings')
 const newsBannerEl = document.getElementById('news-banner')
-const chartContainerEl = document.getElementById('chart-container')
 const contentEl = document.getElementById('content')
 const priceEl = document.getElementById('price-display')
 const lastUpdateEl = document.getElementById('last-update')
@@ -40,7 +38,6 @@ let currentPrice = null
 let refreshing = false
 let newsEvents = []
 let positionSettings = loadPositionSettings(activeSymbol)
-const chart = createGoldChart(chartContainerEl)
 
 function renderSymbolTabs() {
   symbolTabsEl.innerHTML = ''
@@ -54,7 +51,6 @@ function renderSymbolTabs() {
       zonesByTimeframe = {}
       currentPrice = null
       priceEl.textContent = '—'
-      chart.clear()
       positionSettings = loadPositionSettings(activeSymbol)
       brandEyebrowEl.textContent = `${activeSymbol.eyebrow} · ${activeSymbol.label}`
       renderSymbolTabs()
@@ -111,7 +107,6 @@ function renderActiveView() {
   const isDashboard = activeView === 'dashboard'
   tabsEl.hidden = !isDashboard
   positionSettingsWrapEl.hidden = !isDashboard
-  chartContainerEl.hidden = !isDashboard
 
   if (isDashboard) {
     renderNewsBanner()
@@ -241,8 +236,6 @@ function renderContent() {
     contentEl.innerHTML = `<p class="empty-state">Loading ${activeTab} data...</p>`
     return
   }
-
-  chart.update({ series: result.series, zones: result.zones, signals: result.signals ?? [] })
 
   if (!result.zones.length) {
     contentEl.innerHTML = `<p class="empty-state">No significant S/R zones detected yet for ${activeTab}.</p>`
