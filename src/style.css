@@ -18,6 +18,13 @@
   box-sizing: border-box;
 }
 
+/* Author `display` rules (e.g. `.tabs { display: flex }`) otherwise win over the
+   UA stylesheet's `[hidden] { display: none }`, since both are author-origin-adjacent
+   in specificity terms here — this keeps the `hidden` attribute authoritative. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   font-family: var(--sans);
