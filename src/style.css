@@ -15,6 +15,22 @@
   --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
+/* The logo itself isn't re-themed (it's a flat asset drawn for a light backdrop), so
+   it keeps sitting on a fixed white badge — only the surrounding chrome goes dark. */
+:root[data-theme='dark'] {
+  --bg: #0f1729;
+  --panel: #16203a;
+  --border: #2b3856;
+  --border-soft: #1e2942;
+  --text: #e7ecf5;
+  --text-dim: #8b98af;
+  --support: #3fb572;
+  --resistance: #e0574b;
+  --navy: #7196db;
+  --navy-bright: #97b3e8;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 6px 20px rgba(0, 0, 0, 0.3);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -58,8 +74,16 @@ body {
   gap: 14px;
 }
 
+.brand-logo-badge {
+  display: inline-flex;
+  background: #ffffff;
+  border-radius: 10px;
+  padding: 6px;
+  box-shadow: var(--shadow);
+}
+
 .brand-logo {
-  height: 52px;
+  height: 40px;
   width: auto;
   display: block;
 }
@@ -130,12 +154,6 @@ body {
 
 .icon-btn:active {
   transform: scale(0.95);
-}
-
-.icon-btn.active {
-  border-color: var(--support);
-  background: rgba(39, 144, 88, 0.1);
-  color: var(--support);
 }
 
 .icon-btn:disabled {
@@ -313,6 +331,36 @@ body {
   padding-bottom: 10px;
   margin-bottom: 8px;
   border-bottom: 1px solid var(--border-soft);
+}
+
+.signal-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.signal-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.signal-copy-btn:hover {
+  border-color: var(--navy);
+  color: var(--navy);
+}
+
+.signal-copy-btn.copied {
+  border-color: var(--support);
+  color: var(--support);
 }
 
 .signal-direction {
@@ -503,7 +551,7 @@ body {
 
 @media (max-width: 480px) {
   .brand-logo {
-    height: 40px;
+    height: 30px;
   }
 
   .brand-title {

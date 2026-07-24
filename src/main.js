@@ -1,9 +1,9 @@
 import './style.css'
 import { TIMEFRAMES, SYMBOLS, fetchAllTimeframes } from './lib/twelveData.js'
 import { detectZones, buildSignals, annotateConfluence } from './lib/srDetector.js'
-import { notificationPermission, requestNotificationPermission, checkEntryAlerts } from './lib/notifications.js'
 import { fetchNewsCalendar, findUpcomingHighImpact } from './lib/newsCalendar.js'
 import { saveLastKnown, loadLastKnown } from './lib/offlineCache.js'
+import { loadUiState, saveUiState } from './lib/uiState.js'
 
 const NEWS_HORIZON_HOURS = 12
 
@@ -14,14 +14,27 @@ const contentEl = document.getElementById('content')
 const priceEl = document.getElementById('price-display')
 const lastUpdateEl = document.getElementById('last-update')
 const refreshBtn = document.getElementById('refresh-btn')
-const notifyBtn = document.getElementById('notify-btn')
+const themeBtn = document.getElementById('theme-btn')
 
-let activeSymbol = SYMBOLS[0]
-let activeTab = TIMEFRAMES[2].key // M30 default: reasonable middle ground
+const uiState = loadUiState()
+
+let activeSymbol = SYMBOLS.find((s) => s.key === uiState.symbolKey) ?? SYMBOLS[0]
+let activeTab = TIMEFRAMES.find((tf) => tf.key === uiState.tab)?.key ?? TIMEFRAMES[2].key // M30 default: reasonable middle ground
 let zonesByTimeframe = {}
 let currentPrice = null
 let refreshing = false
 let newsEvents = []
+
+const MOON_ICON =
+  '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>'
+const SUN_ICON =
+  '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>'
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme)
+  themeBtn.innerHTML = theme === 'dark' ? SUN_ICON : MOON_ICON
+  themeBtn.title = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'
+}
 
 function renderSymbolTabs() {
   symbolTabsEl.innerHTML = ''
@@ -32,6 +45,7 @@ function renderSymbolTabs() {
     btn.addEventListener('click', () => {
       if (symbol.key === activeSymbol.key) return
       activeSymbol = symbol
+      saveUiState({ symbolKey: activeSymbol.key })
       zonesByTimeframe = {}
       currentPrice = null
       priceEl.textContent = '—'
@@ -45,18 +59,6 @@ function renderSymbolTabs() {
     })
     symbolTabsEl.appendChild(btn)
   }
-}
-
-function updateNotifyButtonState() {
-  const permission = notificationPermission()
-  notifyBtn.classList.toggle('active', permission === 'granted')
-  notifyBtn.disabled = permission === 'unsupported'
-  notifyBtn.title =
-    permission === 'granted'
-      ? 'Price alerts enabled'
-      : permission === 'denied'
-        ? 'Price alerts blocked in browser settings'
-        : 'Enable price alerts'
 }
 
 function hydrateFromCache(symbol) {
@@ -82,6 +84,7 @@ function renderTabs() {
     btn.textContent = tf.label
     btn.addEventListener('click', () => {
       activeTab = tf.key
+      saveUiState({ tab: activeTab })
       renderTabs()
       renderContent()
     })
@@ -211,6 +214,21 @@ function renderContent() {
   contentEl.appendChild(zonesGrid)
 }
 
+const COPY_ICON =
+  '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>'
+const CHECK_ICON =
+  '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>'
+
+function buildSignalText(signal) {
+  const label = `${signal.direction === 'buy' ? 'BUY' : 'SELL'} ${signal.orderType}`
+  return [
+    `${label} — ${activeSymbol.label} ${activeTab}`,
+    `Entry: ${formatPrice(signal.entry)}`,
+    `SL: ${formatPrice(signal.sl)}`,
+    ...signal.tp.map((t, i) => `TP${i + 1}: ${formatPrice(t.price)} (${t.rr.toFixed(1)}R)`),
+  ].join('\n')
+}
+
 function renderSignalCard(signal) {
   const card = document.createElement('div')
   card.className = `signal-card ${signal.direction}`
@@ -237,7 +255,10 @@ function renderSignalCard(signal) {
   card.innerHTML = `
     <div class="signal-header">
       <span class="signal-direction">${label}</span>
-      <span class="signal-zone-strength">${signal.strengthLabel} ${zoneLabel}</span>
+      <div class="signal-header-right">
+        <span class="signal-zone-strength">${signal.strengthLabel} ${zoneLabel}</span>
+        <button type="button" class="signal-copy-btn" title="Copy signal" aria-label="Copy signal">${COPY_ICON}</button>
+      </div>
     </div>
     <div class="signal-row">
       <span class="signal-label">Entry</span>
@@ -250,6 +271,22 @@ function renderSignalCard(signal) {
     <div class="signal-tp">${tpRows}</div>
     ${confluenceRow}
   `
+
+  const copyBtn = card.querySelector('.signal-copy-btn')
+  copyBtn.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(buildSignalText(signal))
+      copyBtn.innerHTML = CHECK_ICON
+      copyBtn.classList.add('copied')
+      setTimeout(() => {
+        copyBtn.innerHTML = COPY_ICON
+        copyBtn.classList.remove('copied')
+      }, 1500)
+    } catch (err) {
+      console.error(err) // clipboard permission denied or unsupported — no destructive fallback needed
+    }
+  })
+
   return card
 }
 
@@ -296,7 +333,6 @@ async function refreshData() {
     for (const result of Object.values(zonesByTimeframe)) {
       result.signals = buildSignals(result.zones, result.series)
     }
-    checkEntryAlerts(symbol, zonesByTimeframe, currentPrice)
     saveLastKnown(symbol.key, zonesByTimeframe, currentPrice)
 
     lastUpdateEl.textContent = `Last updated: ${new Date().toLocaleTimeString('en-US')}`
@@ -315,14 +351,15 @@ refreshBtn.addEventListener('click', () => {
   refreshData()
   refreshNewsCalendar()
 })
-notifyBtn.addEventListener('click', async () => {
-  await requestNotificationPermission()
-  updateNotifyButtonState()
+themeBtn.addEventListener('click', () => {
+  const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'
+  applyTheme(next)
+  saveUiState({ theme: next })
 })
 
 renderSymbolTabs()
 renderTabs()
-updateNotifyButtonState()
+applyTheme(uiState.theme === 'dark' ? 'dark' : 'light')
 hydrateFromCache(activeSymbol)
 renderDashboard()
 refreshData()
