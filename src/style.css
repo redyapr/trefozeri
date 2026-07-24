@@ -69,15 +69,6 @@ body {
   flex-direction: column;
 }
 
-.brand-eyebrow {
-  display: block;
-  font-size: 0.66rem;
-  letter-spacing: 0.24em;
-  text-transform: uppercase;
-  color: var(--support);
-  font-weight: 600;
-  margin-bottom: 4px;
-}
 
 .brand-title {
   font-family: var(--font-display);
@@ -201,27 +192,27 @@ body {
 
 .symbol-tabs {
   display: flex;
-  gap: 10px;
-  padding-top: 20px;
+  gap: 6px;
+  margin-bottom: 6px;
 }
 
 .symbol-tab-btn {
-  padding: 7px 18px;
+  padding: 3px 10px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 20px;
   background: var(--panel);
   color: var(--text-dim);
   cursor: pointer;
-  font-family: var(--font-display);
+  font-family: var(--font-body);
   font-weight: 600;
-  font-size: 0.82rem;
-  box-shadow: var(--shadow);
+  font-size: 0.66rem;
+  letter-spacing: 0.02em;
 }
 
 .symbol-tab-btn.active {
-  color: var(--navy);
-  border-color: var(--navy);
-  background: rgba(27, 58, 107, 0.06);
+  color: #fff;
+  border-color: var(--support);
+  background: var(--support);
 }
 
 .view-tabs {
@@ -440,42 +431,6 @@ body {
   font-weight: 600;
 }
 
-.position-settings {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 18px;
-  padding: 14px 0;
-  border-bottom: 1px solid var(--border-soft);
-}
-
-.position-settings label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.68rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-}
-
-.position-settings input {
-  width: 84px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 5px 8px;
-  color: var(--navy);
-  font-family: var(--font-display);
-  font-weight: 600;
-  font-size: 0.95rem;
-  font-variant-numeric: tabular-nums;
-}
-
-.position-settings input:focus {
-  outline: none;
-  border-color: var(--navy);
-}
-
 .content {
   min-height: 200px;
   padding-top: 18px;
@@ -607,10 +562,6 @@ body {
 
 .signal-row.sl .signal-value {
   color: var(--resistance);
-}
-
-.signal-row.size .signal-value {
-  color: var(--navy);
 }
 
 .signal-tp {

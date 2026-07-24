@@ -1,14 +1,11 @@
 import './style.css'
 import { TIMEFRAMES, SYMBOLS, fetchAllTimeframes } from './lib/twelveData.js'
 import { detectZones, buildSignals, annotateConfluence } from './lib/srDetector.js'
-import { loadPositionSettings, savePositionSettings, calculatePositionSize } from './lib/positionSize.js'
 import { loadJournal, updateJournal, computeJournalStats } from './lib/journal.js'
 import { notificationPermission, requestNotificationPermission, checkEntryAlerts } from './lib/notifications.js'
 import { fetchNewsCalendar, findUpcomingHighImpact } from './lib/newsCalendar.js'
 import { saveLastKnown, loadLastKnown } from './lib/offlineCache.js'
 
-const AUTO_REFRESH_MS = 3 * 60 * 1000
-const NEWS_REFRESH_MS = 30 * 60 * 1000
 const NEWS_HORIZON_HOURS = 12
 const VIEWS = [
   { key: 'dashboard', label: 'Signals' },
@@ -16,19 +13,14 @@ const VIEWS = [
 ]
 
 const symbolTabsEl = document.getElementById('symbol-tabs')
-const brandEyebrowEl = document.getElementById('brand-eyebrow')
 const viewTabsEl = document.getElementById('view-tabs')
 const tabsEl = document.getElementById('tabs')
-const positionSettingsWrapEl = document.getElementById('position-settings')
 const newsBannerEl = document.getElementById('news-banner')
 const contentEl = document.getElementById('content')
 const priceEl = document.getElementById('price-display')
 const lastUpdateEl = document.getElementById('last-update')
 const refreshBtn = document.getElementById('refresh-btn')
 const notifyBtn = document.getElementById('notify-btn')
-const psBalanceEl = document.getElementById('ps-balance')
-const psRiskEl = document.getElementById('ps-risk')
-const psUnitsEl = document.getElementById('ps-units')
 
 let activeSymbol = SYMBOLS[0]
 let activeView = VIEWS[0].key
@@ -37,7 +29,6 @@ let zonesByTimeframe = {}
 let currentPrice = null
 let refreshing = false
 let newsEvents = []
-let positionSettings = loadPositionSettings(activeSymbol)
 
 function renderSymbolTabs() {
   symbolTabsEl.innerHTML = ''
@@ -51,10 +42,7 @@ function renderSymbolTabs() {
       zonesByTimeframe = {}
       currentPrice = null
       priceEl.textContent = '—'
-      positionSettings = loadPositionSettings(activeSymbol)
-      brandEyebrowEl.textContent = `${activeSymbol.eyebrow} · ${activeSymbol.label}`
       renderSymbolTabs()
-      renderPositionSettings()
       hydrateFromCache(activeSymbol)
       renderActiveView()
       // Force past the in-flight guard: any still-running fetch for the symbol we
@@ -106,7 +94,6 @@ function hydrateFromCache(symbol) {
 function renderActiveView() {
   const isDashboard = activeView === 'dashboard'
   tabsEl.hidden = !isDashboard
-  positionSettingsWrapEl.hidden = !isDashboard
 
   if (isDashboard) {
     renderNewsBanner()
@@ -115,27 +102,6 @@ function renderActiveView() {
     newsBannerEl.hidden = true
     renderJournalView()
   }
-}
-
-function renderPositionSettings() {
-  psBalanceEl.value = positionSettings.balance
-  psRiskEl.value = positionSettings.riskPercent
-  psUnitsEl.value = positionSettings.unitsPerLot
-}
-
-// Attached once — reads `positionSettings`/`activeSymbol` fresh each time it fires,
-// so it stays correct across symbol switches without needing to be re-bound.
-function initPositionSettingsListeners() {
-  const onChange = (key, el) => {
-    el.addEventListener('input', () => {
-      positionSettings = { ...positionSettings, [key]: parseFloat(el.value) || 0 }
-      savePositionSettings(activeSymbol, positionSettings)
-      renderContent()
-    })
-  }
-  onChange('balance', psBalanceEl)
-  onChange('riskPercent', psRiskEl)
-  onChange('unitsPerLot', psUnitsEl)
 }
 
 function renderTabs() {
@@ -394,8 +360,6 @@ function renderSignalCard(signal) {
     ? `<div class="signal-confluence">Confluence: also on ${signal.confluence.join(', ')}</div>`
     : ''
 
-  const size = calculatePositionSize(positionSettings, signal.entry, signal.sl)
-
   card.innerHTML = `
     <div class="signal-header">
       <span class="signal-direction">${label}</span>
@@ -408,10 +372,6 @@ function renderSignalCard(signal) {
     <div class="signal-row sl">
       <span class="signal-label">SL</span>
       <span class="signal-value">${formatPrice(signal.sl)}</span>
-    </div>
-    <div class="signal-row size">
-      <span class="signal-label">Size (risking $${formatPrice(size.riskAmount)})</span>
-      <span class="signal-value">${size.lots.toFixed(2)} lots</span>
     </div>
     <div class="signal-tp">${tpRows}</div>
     ${confluenceRow}
@@ -476,22 +436,22 @@ async function refreshData() {
   }
 }
 
-refreshBtn.addEventListener('click', refreshData)
+// Refresh is manual-only — the button is the sole trigger, for both price data and
+// the news calendar, rather than polling on a timer.
+refreshBtn.addEventListener('click', () => {
+  refreshData()
+  refreshNewsCalendar()
+})
 notifyBtn.addEventListener('click', async () => {
   await requestNotificationPermission()
   updateNotifyButtonState()
 })
 
-brandEyebrowEl.textContent = `${activeSymbol.eyebrow} · ${activeSymbol.label}`
 renderSymbolTabs()
 renderViewTabs()
 renderTabs()
-renderPositionSettings()
-initPositionSettingsListeners()
 updateNotifyButtonState()
 hydrateFromCache(activeSymbol)
 renderActiveView()
 refreshData()
 refreshNewsCalendar()
-setInterval(refreshData, AUTO_REFRESH_MS)
-setInterval(refreshNewsCalendar, NEWS_REFRESH_MS)
