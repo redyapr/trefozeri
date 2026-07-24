@@ -122,6 +122,17 @@ body {
   transform: scale(0.95);
 }
 
+.icon-btn.active {
+  border-color: var(--gold);
+  background: rgba(205, 164, 62, 0.14);
+  color: var(--gold-bright);
+}
+
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .icon-btn svg {
   transform-origin: 50% 50%;
 }
@@ -167,6 +178,158 @@ body {
   color: var(--gold-bright);
   border-bottom-color: var(--gold);
   font-weight: 600;
+}
+
+.view-tabs {
+  display: flex;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.view-tab-btn {
+  padding: 6px 16px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: var(--sans);
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.view-tab-btn.active {
+  color: var(--gold-bright);
+  border-color: var(--gold);
+  background: rgba(205, 164, 62, 0.08);
+}
+
+.journal-stats {
+  display: flex;
+  gap: 20px;
+  padding: 4px 2px 18px;
+  font-family: var(--serif);
+  font-size: 1.05rem;
+  color: var(--text);
+}
+
+.journal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.journal-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  font-size: 0.8rem;
+}
+
+.journal-tf {
+  flex: 0 0 auto;
+  width: 36px;
+  color: var(--text-dim);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.journal-dir {
+  flex: 0 0 auto;
+  width: 100px;
+  font-weight: 600;
+}
+
+.journal-dir.buy {
+  color: var(--support);
+}
+
+.journal-dir.sell {
+  color: var(--resistance);
+}
+
+.journal-prices {
+  flex: 1 1 220px;
+  font-family: var(--serif);
+  font-variant-numeric: tabular-nums;
+}
+
+.journal-outcome {
+  flex: 0 0 auto;
+  text-transform: uppercase;
+  font-size: 0.66rem;
+  letter-spacing: 0.06em;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid currentColor;
+}
+
+.journal-outcome.open {
+  color: var(--gold);
+}
+
+.journal-outcome.win {
+  color: var(--support);
+}
+
+.journal-outcome.loss {
+  color: var(--resistance);
+}
+
+.journal-time {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+.chart-container {
+  height: 320px;
+  margin: 18px 0 4px;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.position-settings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.position-settings label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.position-settings input {
+  width: 84px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 5px 8px;
+  color: var(--gold-bright);
+  font-family: var(--serif);
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.position-settings input:focus {
+  outline: none;
+  border-color: var(--gold);
 }
 
 .content {
@@ -300,6 +463,10 @@ body {
   color: var(--resistance);
 }
 
+.signal-row.size .signal-value {
+  color: var(--gold);
+}
+
 .signal-tp {
   display: flex;
   flex-direction: column;
@@ -317,6 +484,16 @@ body {
   font-family: var(--serif);
   font-size: 0.95rem;
   font-variant-numeric: tabular-nums;
+}
+
+.signal-confluence {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--gold);
 }
 
 .signal-tp-row .rr {

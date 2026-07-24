@@ -291,6 +291,25 @@ function buildSignalForZone(zone, zones, atr) {
     tp,
     reliability: zone.reliability,
     strengthLabel: zone.strengthLabel,
+    confluence: zone.confluence ?? [],
+  }
+}
+
+// A zone that also shows up on other timeframes is a much stronger level — traders
+// call this "confluence". Mutates each timeframe's zones in place, tagging every zone
+// with the list of other timeframe keys that have an overlapping same-type zone.
+export function annotateConfluence(zonesByTimeframe) {
+  const entries = Object.entries(zonesByTimeframe).filter(([, result]) => Array.isArray(result?.zones))
+
+  for (const [tfKey, result] of entries) {
+    for (const zone of result.zones) {
+      zone.confluence = entries
+        .filter(([otherTf]) => otherTf !== tfKey)
+        .filter(([, otherResult]) =>
+          otherResult.zones.some((z) => z.type === zone.type && zone.low <= z.high && z.low <= zone.high)
+        )
+        .map(([otherTf]) => otherTf)
+    }
   }
 }
 

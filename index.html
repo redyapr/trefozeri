@@ -24,6 +24,12 @@
             <span class="price-label">Spot</span>
             <span id="price-display" class="price-display">—</span>
           </div>
+          <button id="notify-btn" class="icon-btn" title="Enable price alerts" aria-label="Enable price alerts">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
+              <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+            </svg>
+          </button>
           <button id="refresh-btn" class="icon-btn" title="Refresh" aria-label="Refresh">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 12a9 9 0 1 1-2.65-6.36" />
@@ -33,7 +39,22 @@
         </div>
       </header>
 
+      <nav id="view-tabs" class="view-tabs"></nav>
       <nav id="tabs" class="tabs"></nav>
+
+      <div id="position-settings" class="position-settings">
+        <label>Balance
+          <input id="ps-balance" type="number" min="0" step="100" />
+        </label>
+        <label>Risk %
+          <input id="ps-risk" type="number" min="0" step="0.1" />
+        </label>
+        <label>Units/lot
+          <input id="ps-units" type="number" min="1" step="1" />
+        </label>
+      </div>
+
+      <div id="chart-container" class="chart-container"></div>
 
       <main id="content" class="content">
         <p class="empty-state">Loading dashboard...</p>
