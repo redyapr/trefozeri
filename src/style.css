@@ -1,0 +1,427 @@
+:root {
+  --bg: #0a0906;
+  --panel: #14120c;
+  --border: rgba(212, 175, 55, 0.2);
+  --border-soft: rgba(212, 175, 55, 0.1);
+  --text: #f1e9d8;
+  --text-dim: #948a76;
+  --support: #7fa787;
+  --resistance: #b1665c;
+  --gold: #cda43e;
+  --gold-bright: #f0d27a;
+
+  --serif: 'Cormorant Garamond', 'Iowan Old Style', 'Georgia', serif;
+  --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  background:
+    radial-gradient(ellipse 900px 460px at 50% -8%, rgba(205, 164, 62, 0.12), transparent 65%),
+    var(--bg);
+  color: var(--text);
+}
+
+#app {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 28px 24px 48px;
+}
+
+.topbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 6px;
+}
+
+.brand-eyebrow {
+  display: block;
+  font-size: 0.66rem;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin-bottom: 6px;
+}
+
+.brand-title {
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: 2rem;
+  letter-spacing: 0.01em;
+  margin: 0;
+  color: var(--text);
+}
+
+.brand-title .amp {
+  color: var(--gold);
+  font-style: italic;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.price-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.price-label {
+  font-size: 0.62rem;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 2px;
+}
+
+.price-display {
+  font-family: var(--serif);
+  font-size: 1.7rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  background: linear-gradient(135deg, var(--gold-bright), var(--gold));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--gold);
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.icon-btn:hover {
+  border-color: var(--gold);
+  background: rgba(205, 164, 62, 0.08);
+}
+
+.icon-btn:active {
+  transform: scale(0.95);
+}
+
+.icon-btn svg {
+  transform-origin: 50% 50%;
+}
+
+.icon-btn.spinning svg {
+  animation: spin 0.9s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.tabs {
+  display: flex;
+  gap: 22px;
+  overflow-x: auto;
+  padding: 18px 0 14px;
+  border-bottom: 1px solid var(--border-soft);
+  -webkit-overflow-scrolling: touch;
+}
+
+.tab-btn {
+  flex: 0 0 auto;
+  padding: 4px 2px 10px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: var(--sans);
+  font-size: 0.76rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.tab-btn.active {
+  color: var(--gold-bright);
+  border-bottom-color: var(--gold);
+  font-weight: 600;
+}
+
+.content {
+  min-height: 200px;
+  padding-top: 18px;
+}
+
+.signals-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+.zones-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 32px;
+  align-items: start;
+}
+
+.zone-column {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+@media (max-width: 720px) {
+  .zones-grid {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+}
+
+.group-heading {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 1rem;
+  letter-spacing: 0.03em;
+  padding: 0 2px 2px;
+  margin-top: 4px;
+}
+
+.group-heading.resistance {
+  color: var(--resistance);
+}
+
+.group-heading.support {
+  color: var(--support);
+}
+
+.empty-state {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 1.1rem;
+  color: var(--text-dim);
+  text-align: center;
+  padding: 60px 12px;
+}
+
+.signal-card {
+  padding: 18px 20px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(205, 164, 62, 0.05), transparent 60%);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.signal-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding-bottom: 10px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.signal-direction {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 1.2rem;
+  letter-spacing: 0.01em;
+}
+
+.signal-card.buy .signal-direction {
+  color: var(--support);
+}
+
+.signal-card.sell .signal-direction {
+  color: var(--resistance);
+}
+
+.signal-zone-strength {
+  font-size: 0.62rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+
+.signal-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 0;
+  border-bottom: 1px dotted var(--border-soft);
+  font-size: 0.82rem;
+}
+
+.signal-tp .signal-tp-row:last-child,
+.signal-row:last-of-type {
+  border-bottom: none;
+}
+
+.signal-label {
+  color: var(--text-dim);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 0.66rem;
+}
+
+.signal-value {
+  font-family: var(--serif);
+  font-size: 1.05rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.signal-row.sl .signal-value {
+  color: var(--resistance);
+}
+
+.signal-tp {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 6px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.signal-tp-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 0;
+  font-family: var(--serif);
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.signal-tp-row .rr {
+  font-family: var(--sans);
+  color: var(--gold);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+}
+
+.zone-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  border-radius: 3px;
+  border: 1px solid var(--border-soft);
+  background: rgba(241, 233, 216, 0.02);
+}
+
+.zone-type {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 0.9rem;
+  letter-spacing: 0.01em;
+  width: 66px;
+  flex: 0 0 auto;
+}
+
+.zone-card.support .zone-type {
+  color: var(--support);
+}
+
+.zone-card.resistance .zone-type {
+  color: var(--resistance);
+}
+
+.zone-range {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.zone-price {
+  font-family: var(--serif);
+  font-size: 1.2rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.zone-meta {
+  font-size: 0.74rem;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
+.zone-stats {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+  flex: 0 0 auto;
+}
+
+.strength-badge {
+  font-size: 0.66rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid currentColor;
+  background: none;
+}
+
+.strength-badge.strong {
+  color: var(--support);
+}
+
+.strength-badge.medium {
+  color: var(--gold);
+}
+
+.strength-badge.weak {
+  color: var(--resistance);
+}
+
+.touches {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+}
+
+.last-update {
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-top: 20px;
+}
+
+@media (max-width: 480px) {
+  .brand-title {
+    font-size: 1.6rem;
+  }
+
+  .zone-type {
+    width: 52px;
+    font-size: 0.8rem;
+  }
+}

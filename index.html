@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gold S/R Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Inter:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-eyebrow">Gold · XAU/USD</span>
+          <h1 class="brand-title">Support <span class="amp">&amp;</span> Resistance</h1>
+        </div>
+        <div class="topbar-actions">
+          <div class="price-block">
+            <span class="price-label">Spot</span>
+            <span id="price-display" class="price-display">—</span>
+          </div>
+          <button id="refresh-btn" class="icon-btn" title="Refresh" aria-label="Refresh">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12a9 9 0 1 1-2.65-6.36" />
+              <polyline points="21 3 21 9 15 9" />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <nav id="tabs" class="tabs"></nav>
+
+      <main id="content" class="content">
+        <p class="empty-state">Loading dashboard...</p>
+      </main>
+
+      <p id="last-update" class="last-update"></p>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
