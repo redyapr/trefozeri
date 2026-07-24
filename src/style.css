@@ -549,6 +549,26 @@ body {
   margin-top: 20px;
 }
 
+.app-footer {
+  margin-top: 32px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.app-footer p {
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  line-height: 1.6;
+  text-align: center;
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+.app-footer strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
 @media (max-width: 480px) {
   .brand-logo {
     height: 30px;
