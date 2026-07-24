@@ -6,6 +6,7 @@ import { loadJournal, updateJournal, computeJournalStats } from './lib/journal.j
 import { notificationPermission, requestNotificationPermission, checkEntryAlerts } from './lib/notifications.js'
 import { createGoldChart } from './lib/chart.js'
 import { fetchNewsCalendar, findUpcomingHighImpact } from './lib/newsCalendar.js'
+import { saveLastKnown, loadLastKnown } from './lib/offlineCache.js'
 
 const AUTO_REFRESH_MS = 3 * 60 * 1000
 const NEWS_REFRESH_MS = 30 * 60 * 1000
@@ -58,6 +59,7 @@ function renderSymbolTabs() {
       brandEyebrowEl.textContent = `${activeSymbol.eyebrow} · ${activeSymbol.label}`
       renderSymbolTabs()
       renderPositionSettings()
+      hydrateFromCache(activeSymbol)
       renderActiveView()
       // Force past the in-flight guard: any still-running fetch for the symbol we
       // just left will see `activeSymbol !== symbol` and discard itself harmlessly.
@@ -93,6 +95,16 @@ function updateNotifyButtonState() {
       : permission === 'denied'
         ? 'Price alerts blocked in browser settings'
         : 'Enable price alerts'
+}
+
+function hydrateFromCache(symbol) {
+  const cached = loadLastKnown(symbol.key)
+  if (!cached) return
+
+  zonesByTimeframe = cached.zonesByTimeframe
+  currentPrice = cached.currentPrice
+  if (currentPrice != null) priceEl.textContent = formatPrice(currentPrice)
+  lastUpdateEl.textContent = `Showing cached data from ${new Date(cached.savedAt).toLocaleString('en-US')}`
 }
 
 function renderActiveView() {
@@ -430,11 +442,13 @@ async function refreshData() {
     // than mixing them into the new symbol's (freshly reset) state.
     if (activeSymbol !== symbol) return
 
+    let anySuccess = false
     for (const tf of TIMEFRAMES) {
       const series = raw[tf.key]
       // Rate-limited or transient fetch failure: keep whatever data is already
       // on screen for this timeframe instead of clearing it out.
       if (series?.error) continue
+      anySuccess = true
       const last = series[series.length - 1]
       if (tf.key === 'M5') {
         currentPrice = last.close
@@ -444,6 +458,11 @@ async function refreshData() {
       zonesByTimeframe[tf.key] = { zones, series }
     }
 
+    // Every timeframe failed (offline, or the whole API is down) — nothing actually
+    // changed, so leave whatever "Last updated" / "Showing cached data" message was
+    // already on screen rather than claiming a freshness that didn't happen.
+    if (!anySuccess) return
+
     // Confluence needs every timeframe's zones at once, so it only runs once all of
     // them are in — then signals are built per timeframe with confluence attached.
     annotateConfluence(zonesByTimeframe)
@@ -452,6 +471,7 @@ async function refreshData() {
     }
     updateJournal(symbol.key, zonesByTimeframe)
     checkEntryAlerts(symbol, zonesByTimeframe, currentPrice)
+    saveLastKnown(symbol.key, zonesByTimeframe, currentPrice)
 
     lastUpdateEl.textContent = `Last updated: ${new Date().toLocaleTimeString('en-US')}`
   } catch (err) {
@@ -476,6 +496,7 @@ renderTabs()
 renderPositionSettings()
 initPositionSettingsListeners()
 updateNotifyButtonState()
+hydrateFromCache(activeSymbol)
 renderActiveView()
 refreshData()
 refreshNewsCalendar()
