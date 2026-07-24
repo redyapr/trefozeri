@@ -16,7 +16,7 @@
     <div id="app">
       <header class="topbar">
         <div class="brand">
-          <span class="brand-eyebrow">Gold · XAU/USD</span>
+          <span class="brand-eyebrow" id="brand-eyebrow">Gold · XAU/USD</span>
           <h1 class="brand-title">Support <span class="amp">&amp;</span> Resistance</h1>
         </div>
         <div class="topbar-actions">
@@ -39,6 +39,7 @@
         </div>
       </header>
 
+      <nav id="symbol-tabs" class="symbol-tabs"></nav>
       <nav id="view-tabs" class="view-tabs"></nav>
       <nav id="tabs" class="tabs"></nav>
 
@@ -53,6 +54,8 @@
           <input id="ps-units" type="number" min="1" step="1" />
         </label>
       </div>
+
+      <div id="news-banner" class="news-banner" hidden></div>
 
       <div id="chart-container" class="chart-container"></div>
 

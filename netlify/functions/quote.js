@@ -1,12 +1,24 @@
+// Whitelisted so this proxy can't be used as an open relay for arbitrary Twelve
+// Data symbols under our API key.
+const ALLOWED_SYMBOLS = new Set(['XAU/USD', 'BTC/USD'])
+
 // Proxies Twelve Data's time_series endpoint so TWELVE_DATA_API_KEY only ever lives
 // server-side (Netlify environment variable) — the browser bundle never sees it.
 export default async (req) => {
   const url = new URL(req.url)
   const interval = url.searchParams.get('interval')
   const outputsize = url.searchParams.get('outputsize') || '300'
+  const symbol = url.searchParams.get('symbol') || 'XAU/USD'
 
   if (!interval) {
     return new Response(JSON.stringify({ message: 'Missing interval parameter' }), {
+      status: 400,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+
+  if (!ALLOWED_SYMBOLS.has(symbol)) {
+    return new Response(JSON.stringify({ message: 'Unsupported symbol' }), {
       status: 400,
       headers: { 'content-type': 'application/json' },
     })
@@ -21,7 +33,7 @@ export default async (req) => {
   }
 
   const apiUrl =
-    `https://api.twelvedata.com/time_series?symbol=XAU/USD&order=ASC&timezone=UTC` +
+    `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&order=ASC&timezone=UTC` +
     `&interval=${encodeURIComponent(interval)}&outputsize=${encodeURIComponent(outputsize)}&apikey=${apiKey}`
 
   const res = await fetch(apiUrl)

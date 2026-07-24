@@ -187,6 +187,30 @@ body {
   font-weight: 600;
 }
 
+.symbol-tabs {
+  display: flex;
+  gap: 10px;
+  padding-top: 20px;
+}
+
+.symbol-tab-btn {
+  padding: 7px 18px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: var(--serif);
+  font-size: 0.9rem;
+  font-style: italic;
+}
+
+.symbol-tab-btn.active {
+  color: var(--gold-bright);
+  border-color: var(--gold);
+  background: linear-gradient(180deg, rgba(205, 164, 62, 0.1), transparent);
+}
+
 .view-tabs {
   display: flex;
   gap: 8px;
@@ -212,13 +236,78 @@ body {
   background: rgba(205, 164, 62, 0.08);
 }
 
-.journal-stats {
+.journal-summary {
   display: flex;
-  gap: 20px;
-  padding: 4px 2px 18px;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 16px;
+  padding: 4px 2px 22px;
+}
+
+.journal-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  flex: 1 1 auto;
+}
+
+.journal-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  min-width: 100px;
+}
+
+.journal-tile-label {
+  font-size: 0.62rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.journal-tile-value {
   font-family: var(--serif);
-  font-size: 1.05rem;
-  color: var(--text);
+  font-size: 1.3rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.journal-tile-value.positive {
+  color: var(--support);
+}
+
+.journal-tile-value.negative {
+  color: var(--resistance);
+}
+
+.journal-tile-sub {
+  font-size: 0.68rem;
+  color: var(--text-dim);
+}
+
+.journal-equity {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  justify-content: center;
+  padding: 10px 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  min-width: 140px;
+}
+
+.equity-sparkline {
+  width: 100%;
+  height: 32px;
+}
+
+.equity-sparkline line {
+  stroke: var(--border);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
 }
 
 .journal-list {
@@ -236,6 +325,15 @@ body {
   border: 1px solid var(--border-soft);
   border-radius: 3px;
   font-size: 0.8rem;
+}
+
+.journal-symbol {
+  flex: 0 0 auto;
+  width: 62px;
+  color: var(--gold);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .journal-tf {
@@ -302,6 +400,29 @@ body {
   border: 1px solid var(--border-soft);
   border-radius: 3px;
   overflow: hidden;
+}
+
+.news-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 10px 16px;
+  border: 1px solid rgba(177, 102, 92, 0.4);
+  border-radius: 3px;
+  background: rgba(177, 102, 92, 0.08);
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
+.news-banner-icon {
+  color: var(--resistance);
+  font-size: 0.9rem;
+}
+
+.news-banner strong {
+  color: var(--gold-bright);
+  font-weight: 600;
 }
 
 .position-settings {

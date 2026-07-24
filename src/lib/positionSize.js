@@ -1,18 +1,25 @@
 const STORAGE_KEY = 'gold-sr-position-settings'
 
-const DEFAULTS = { balance: 10000, riskPercent: 1, unitsPerLot: 100 }
-
-export function loadPositionSettings() {
+function loadAll() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    return raw ? { ...DEFAULTS, ...JSON.parse(raw) } : { ...DEFAULTS }
+    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}
   } catch {
-    return { ...DEFAULTS }
+    return {}
   }
 }
 
-export function savePositionSettings(settings) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(settings))
+// Balance/risk carry over sensibly across instruments, but unitsPerLot (contract
+// size) is instrument-specific — 100oz/lot for gold vs. 1 BTC/lot for crypto are
+// wildly different numbers, so settings are namespaced per symbol.
+export function loadPositionSettings(symbol) {
+  const defaults = { balance: 10000, riskPercent: 1, unitsPerLot: symbol.unitsPerLot }
+  return { ...defaults, ...loadAll()[symbol.key] }
+}
+
+export function savePositionSettings(symbol, settings) {
+  const all = loadAll()
+  all[symbol.key] = settings
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(all))
 }
 
 // Gold CFDs quote price in $/oz; a "lot" is a broker-defined number of ounces

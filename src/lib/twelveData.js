@@ -11,6 +11,13 @@ export const TIMEFRAMES = [
   { key: 'D1', interval: '1day', outputsize: 300, label: 'D1' },
 ]
 
+// unitsPerLot is just the position-size calculator's starting point — gold CFDs
+// commonly use 100oz/lot, crypto CFDs commonly use 1 BTC/lot; either is editable.
+export const SYMBOLS = [
+  { key: 'XAUUSD', apiSymbol: 'XAU/USD', label: 'XAU/USD', eyebrow: 'Gold', unitsPerLot: 100 },
+  { key: 'BTCUSD', apiSymbol: 'BTC/USD', label: 'BTC/USD', eyebrow: 'Bitcoin', unitsPerLot: 1 },
+]
+
 // Twelve Data returns naive "YYYY-MM-DD[ HH:mm:ss]" strings with no offset. We request
 // them as UTC explicitly (below) but `new Date(...)` still parses a string with no 'Z'
 // as local time, so we have to mark it as UTC ourselves before parsing — otherwise every
@@ -21,8 +28,8 @@ function parseUtc(datetime) {
   return new Date(iso).getTime()
 }
 
-async function fetchSeries(interval, outputsize) {
-  const url = `${QUOTE_ENDPOINT}?interval=${interval}&outputsize=${outputsize}`
+async function fetchSeries(apiSymbol, interval, outputsize) {
+  const url = `${QUOTE_ENDPOINT}?symbol=${encodeURIComponent(apiSymbol)}&interval=${interval}&outputsize=${outputsize}`
   const res = await fetch(url)
   const json = await res.json()
 
@@ -42,11 +49,11 @@ async function fetchSeries(interval, outputsize) {
   }))
 }
 
-export async function fetchAllTimeframes(onProgress) {
+export async function fetchAllTimeframes(apiSymbol, onProgress) {
   const results = {}
   for (const tf of TIMEFRAMES) {
     try {
-      results[tf.key] = await fetchSeries(tf.interval, tf.outputsize)
+      results[tf.key] = await fetchSeries(apiSymbol, tf.interval, tf.outputsize)
     } catch (err) {
       results[tf.key] = { error: err.message }
     }

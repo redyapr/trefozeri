@@ -42,7 +42,7 @@ function wouldFill(signal, price) {
 // Fires a browser notification the first time price would fill an active signal,
 // then stays quiet on that same signal for RENOTIFY_MS so it doesn't spam every
 // refresh cycle while price lingers past the trigger.
-export function checkEntryAlerts(zonesByTimeframe, currentPrice) {
+export function checkEntryAlerts(symbol, zonesByTimeframe, currentPrice) {
   if (notificationPermission() !== 'granted' || currentPrice == null) return
 
   const notified = loadNotified()
@@ -50,13 +50,13 @@ export function checkEntryAlerts(zonesByTimeframe, currentPrice) {
 
   for (const [tfKey, result] of Object.entries(zonesByTimeframe)) {
     for (const signal of result.signals ?? []) {
-      const key = `${tfKey}:${signal.zoneType}:${signal.direction}:${signal.orderType}:${Math.round(signal.entry)}`
+      const key = `${symbol.key}:${tfKey}:${signal.zoneType}:${signal.direction}:${signal.orderType}:${Math.round(signal.entry)}`
       if (!wouldFill(signal, currentPrice)) continue
       if (notified[key] && now - notified[key] < RENOTIFY_MS) continue
 
       notified[key] = now
       const label = `${signal.direction === 'buy' ? 'BUY' : 'SELL'} ${signal.orderType}`
-      new Notification('Gold S/R alert', {
+      new Notification(`${symbol.label} S/R alert`, {
         body: `${tfKey} ${label} triggered near ${Math.round(signal.entry)}`,
         tag: key,
       })

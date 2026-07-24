@@ -64,5 +64,12 @@ export function createGoldChart(container) {
     chart.timeScale().fitContent()
   }
 
-  return { update }
+  // Used when switching instruments: without this, the chart keeps showing the
+  // previous symbol's candles (e.g. gold) until the new symbol's first fetch lands,
+  // which reads as "wrong data" rather than "still loading".
+  function clear() {
+    update({ series: [], zones: [], signals: [] })
+  }
+
+  return { update, clear }
 }
