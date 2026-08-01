@@ -265,7 +265,7 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: 16px;
-  margin-bottom: 22px;
+  margin-top: 22px;
 }
 
 .zones-grid {

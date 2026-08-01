@@ -189,16 +189,11 @@ function renderContent() {
 
   contentEl.innerHTML = ''
 
-  const signals = result.signals ?? []
-  if (signals.length) {
-    const signalsGrid = document.createElement('div')
-    signalsGrid.className = 'signals-grid'
-    signals.forEach((signal) => signalsGrid.appendChild(renderSignalCard(signal)))
-    contentEl.appendChild(signalsGrid)
-  }
-
-  const resistances = result.zones.filter((z) => z.type === 'resistance')
-  const supports = result.zones.filter((z) => z.type === 'support')
+  // Most-recently-touched first — a level that just got tested is more relevant to
+  // watch right now than one whose only touch was near price but long ago.
+  const byRecency = (a, b) => b.lastTouchTime - a.lastTouchTime
+  const resistances = result.zones.filter((z) => z.type === 'resistance').sort(byRecency)
+  const supports = result.zones.filter((z) => z.type === 'support').sort(byRecency)
 
   const zonesGrid = document.createElement('div')
   zonesGrid.className = 'zones-grid'
@@ -218,6 +213,15 @@ function renderContent() {
     zonesGrid.appendChild(column)
   }
   contentEl.appendChild(zonesGrid)
+
+  // Signals go below the S/R zones they're derived from, not above.
+  const signals = result.signals ?? []
+  if (signals.length) {
+    const signalsGrid = document.createElement('div')
+    signalsGrid.className = 'signals-grid'
+    signals.forEach((signal) => signalsGrid.appendChild(renderSignalCard(signal)))
+    contentEl.appendChild(signalsGrid)
+  }
 }
 
 const COPY_ICON =
