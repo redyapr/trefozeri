@@ -5,3 +5,4 @@ dist
 *.mp4
 .env
 .netlify
+.claude
