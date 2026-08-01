@@ -4,6 +4,7 @@ import { detectZones, buildSignals, annotateConfluence } from './lib/srDetector.
 import { fetchNewsCalendar, findUpcomingHighImpact } from './lib/newsCalendar.js'
 import { saveLastKnown, loadLastKnown } from './lib/offlineCache.js'
 import { loadUiState, saveUiState } from './lib/uiState.js'
+import { renderZoneChart } from './lib/priceChart.js'
 
 const NEWS_HORIZON_HOURS = 12
 
@@ -25,6 +26,16 @@ let lastFetchedAt = {}
 let currentPrice = null
 let refreshing = false
 let newsEvents = []
+let activeChart = null
+
+// Charts don't clean themselves up when their container is dropped from the DOM
+// (contentEl.innerHTML rebuilds it on every render), so the old instance must be
+// torn down explicitly first or its resize observer/canvas leaks.
+function disposeChart() {
+  if (!activeChart) return
+  activeChart.remove()
+  activeChart = null
+}
 
 const MOON_ICON =
   '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>'
@@ -176,6 +187,7 @@ function renderGroupHeading(text, type) {
 
 function renderContent() {
   const result = zonesByTimeframe[activeTab]
+  disposeChart()
 
   if (!result) {
     contentEl.innerHTML = `<p class="empty-state">Loading ${activeTab} data...</p>`
@@ -188,6 +200,13 @@ function renderContent() {
   }
 
   contentEl.innerHTML = ''
+
+  // Chart needs to be attached to the DOM before it's created (lightweight-charts
+  // measures the container for its initial size), so append the empty div first.
+  const chartContainer = document.createElement('div')
+  chartContainer.className = 'zone-chart'
+  contentEl.appendChild(chartContainer)
+  activeChart = renderZoneChart(chartContainer, result.series, result.zones)
 
   // Most-recently-touched first — a level that just got tested is more relevant to
   // watch right now than one whose only touch was near price but long ago.
@@ -382,6 +401,8 @@ themeBtn.addEventListener('click', () => {
   const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'
   applyTheme(next)
   saveUiState({ theme: next })
+  // Chart colors are read from CSS vars at creation time, so it needs a rebuild to pick up the new theme.
+  renderContent()
 })
 
 renderSymbolTabs()

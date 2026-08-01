@@ -261,6 +261,21 @@ body {
   padding-top: 18px;
 }
 
+.zone-chart {
+  width: 100%;
+  height: 360px;
+  margin-bottom: 22px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+@media (max-width: 720px) {
+  .zone-chart {
+    height: 260px;
+  }
+}
+
 .signals-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
