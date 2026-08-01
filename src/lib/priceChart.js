@@ -1,37 +1,108 @@
-import { createChart, CandlestickSeries, LineStyle, ColorType, CrosshairMode } from 'lightweight-charts'
+import { createChart, CandlestickSeries, ColorType, CrosshairMode } from 'lightweight-charts'
 
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
 }
 
-// One price line per zone edge (low/high) rather than a filled rectangle — lightweight-charts
-// has no built-in shaded band, and a custom drawing primitive is overkill for this — the two
-// dashed lines already read clearly as a zone's bounds on the chart.
-function drawZone(series, zone) {
-  const color = zone.type === 'support' ? cssVar('--support') : cssVar('--resistance')
-  const label = zone.type === 'support' ? 'S' : 'R'
+function hexToRgba(hex, alpha) {
+  const clean = hex.replace('#', '')
+  const value = parseInt(clean, 16)
+  const r = (value >> 16) & 255
+  const g = (value >> 8) & 255
+  const b = value & 255
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
 
-  series.createPriceLine({
-    price: zone.high,
-    color,
-    lineWidth: 1,
-    lineStyle: LineStyle.Dashed,
-    axisLabelVisible: true,
-    title: `${label} ${zone.strengthLabel}`,
-  })
-  series.createPriceLine({
-    price: zone.low,
-    color,
-    lineWidth: 1,
-    lineStyle: LineStyle.Dashed,
-    axisLabelVisible: true,
-    title: '',
-  })
+// Draws one S/R zone as a shaded band instead of a line spanning the whole chart —
+// it starts at the candle where the zone actually formed (its earliest contributing
+// swing point) and fills through to the current right edge of the pane, rather than
+// implying the level existed before price ever established it.
+class ZoneRectangle {
+  constructor(zone, colors) {
+    this._zone = zone
+    this._colors = colors
+    this._chart = null
+    this._series = null
+  }
+
+  attached({ chart, series }) {
+    this._chart = chart
+    this._series = series
+  }
+
+  detached() {
+    this._chart = null
+    this._series = null
+  }
+
+  updateAllViews() {}
+
+  paneViews() {
+    return [
+      {
+        renderer: () => ({
+          draw: (target) => {
+            const chart = this._chart
+            const series = this._series
+            if (!chart || !series) return
+
+            const y1 = series.priceToCoordinate(this._zone.high)
+            const y2 = series.priceToCoordinate(this._zone.low)
+            if (y1 == null || y2 == null) return
+
+            const startX = chart.timeScale().timeToCoordinate(Math.floor(this._zone.startTime / 1000))
+            const label = `${this._zone.type === 'support' ? 'S' : 'R'} ${this._zone.strengthLabel}`
+
+            target.useBitmapCoordinateSpace((scope) => {
+              const { context: ctx, horizontalPixelRatio: hRatio, verticalPixelRatio: vRatio, mediaSize } = scope
+              const left = (startX == null ? 0 : Math.max(0, startX)) * hRatio
+              const right = mediaSize.width * hRatio
+              if (right <= left) return
+
+              const top = Math.min(y1, y2) * vRatio
+              const bottom = Math.max(y1, y2) * vRatio
+
+              ctx.fillStyle = this._colors.fill
+              ctx.fillRect(left, top, right - left, bottom - top)
+              ctx.strokeStyle = this._colors.border
+              ctx.lineWidth = Math.max(1, Math.round(hRatio))
+              ctx.strokeRect(left, top, right - left, bottom - top)
+
+              // Label centered inside the zone's own bounds, not on the price axis —
+              // it should read as "part of" the band it describes.
+              const fontSize = Math.round(11 * hRatio)
+              ctx.font = `600 ${fontSize}px Inter, sans-serif`
+              ctx.textAlign = 'center'
+              ctx.textBaseline = 'middle'
+              const textWidth = ctx.measureText(label).width
+              const paddingX = 6 * hRatio
+              const paddingY = 3 * vRatio
+              const boxW = textWidth + paddingX * 2
+              const boxH = fontSize + paddingY * 2
+              if (boxW > right - left) return
+
+              const centerX = (left + right) / 2
+              const centerY = (top + bottom) / 2
+              ctx.fillStyle = this._colors.border
+              ctx.fillRect(centerX - boxW / 2, centerY - boxH / 2, boxW, boxH)
+              ctx.fillStyle = '#ffffff'
+              ctx.fillText(label, centerX, centerY + 1)
+            })
+          },
+        }),
+      },
+    ]
+  }
+}
+
+function zoneColors(zone) {
+  const base = zone.type === 'support' ? cssVar('--support') : cssVar('--resistance')
+  return { fill: hexToRgba(base, 0.18), border: hexToRgba(base, 0.75) }
 }
 
 // Renders one candlestick chart into `container` for a single timeframe, with each S/R
-// zone drawn as a pair of dashed price lines. Returns the chart instance so the caller
-// can `.remove()` it before the next re-render (charts don't clean themselves up when
+// zone drawn as a shaded price band. Returns the chart instance so the caller can
+// `.remove()` it before the next re-render (charts don't clean themselves up when
 // their container is dropped from the DOM).
 export function renderZoneChart(container, candles, zones) {
   const chart = createChart(container, {
@@ -67,7 +138,7 @@ export function renderZoneChart(container, candles, zones) {
     }))
   )
 
-  zones.forEach((zone) => drawZone(series, zone))
+  zones.forEach((zone) => series.attachPrimitive(new ZoneRectangle(zone, zoneColors(zone))))
   chart.timeScale().fitContent()
 
   return chart

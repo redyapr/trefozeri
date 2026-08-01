@@ -166,6 +166,10 @@ export function detectZones(candles, currentPrice, maxZonesPerSide = 3) {
       const prices = cluster.map((s) => s.price)
       const zoneLow = Math.min(...prices) - tolerance / 2
       const zoneHigh = Math.max(...prices) + tolerance / 2
+      // Earliest swing that contributed to this cluster — the moment the level first
+      // established itself as a pivot, as opposed to a candle merely wicking through
+      // the same price range by coincidence before the level existed.
+      const startTime = Math.min(...cluster.map((s) => s.time))
 
       // Price is currently trading inside this range — it can't act as a directional
       // support or resistance level right now, so it isn't a usable zone.
@@ -203,6 +207,7 @@ export function detectZones(candles, currentPrice, maxZonesPerSide = 3) {
         low: zoneLow,
         high: zoneHigh,
         mid: (zoneLow + zoneHigh) / 2,
+        startTime,
         touchCount,
         brokenCount: breakCount,
         reliability: touchCount / (touchCount + breakCount),
