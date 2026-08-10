@@ -2,15 +2,15 @@
 // server-side — the browser never sees it.
 const QUOTE_ENDPOINT = '/api/quote'
 
+// Golden Fairy's logic runs on D1/H4/H1 only (see GoldenFairy.pine) — the lower
+// timeframes were dropped rather than adapted, since sub-hourly noise is exactly what
+// that pivot-based state machine isn't meant to be run on.
+//
 // minRefetchMs caps how often each timeframe is allowed to hit the API again on a
 // manual refresh — roughly proportional to how often its own bars actually change,
 // so clicking refresh repeatedly doesn't burn API calls re-fetching data that can't
-// plausibly have moved yet (this is what was blowing through the per-minute rate
-// limit: 6 timeframes firing in one burst, every single refresh).
+// plausibly have moved yet.
 export const TIMEFRAMES = [
-  { key: 'M5', interval: '5min', outputsize: 300, label: 'M5', minRefetchMs: 2 * 60 * 1000 },
-  { key: 'M15', interval: '15min', outputsize: 300, label: 'M15', minRefetchMs: 5 * 60 * 1000 },
-  { key: 'M30', interval: '30min', outputsize: 300, label: 'M30', minRefetchMs: 10 * 60 * 1000 },
   { key: 'H1', interval: '1h', outputsize: 300, label: 'H1', minRefetchMs: 20 * 60 * 1000 },
   { key: 'H4', interval: '4h', outputsize: 300, label: 'H4', minRefetchMs: 60 * 60 * 1000 },
   { key: 'D1', interval: '1day', outputsize: 300, label: 'D1', minRefetchMs: 4 * 60 * 60 * 1000 },

@@ -1,4 +1,39 @@
-const FRACTAL_WING = 2 // bars on each side to confirm a swing point
+// ============================================================================
+// Golden Fairy port — see GoldenFairy.pine / GoldenFairy.md for the reference
+// TradingView indicator this module ports.
+//
+// Per timeframe, tracks the single most recent, still-valid Support, Resistance,
+// SBR (Support-Broken-Resistance) and RBS (Resistance-Broken-Support) level, using
+// the same pivot + 3-state machine as the original script:
+//   state 0 -> pure Support/Resistance (never broken)
+//   state 1 -> broken once -> flips role (Support -> SBR, Resistance -> RBS)
+//   state 2 -> broken a second time -> invalid; the next older still-valid pivot
+//              takes its place automatically
+// A level from one timeframe that lands within tolerance of the same-category level
+// from another timeframe is flagged a "Golden Zone" (Golden Fairy's cross-timeframe
+// confluence signal).
+// ============================================================================
+
+const PIVOT_LEFT = 5 // bars required on each side of a swing to confirm it —
+const PIVOT_RIGHT = 5 // matches Golden Fairy's default Pivot Left/Right Bars inputs
+
+const MAX_KEEP = 40 // pivots retained per side/timeframe before the oldest is dropped
+
+// Golden Fairy's "Breakout Threshold (pips)" and "Golden Zone Tolerance (pips)" are
+// both a fixed multiple of a user-supplied pip size, hand-tuned per instrument. This
+// dashboard has no per-instrument settings UI, so both are derived from each series'
+// own ATR instead — same role (a volatility-scaled "how far counts as a real break"),
+// just self-calibrating instead of manually configured. One side effect: unlike the
+// Pine original (one fixed absolute threshold shared by D1/H4/H1), the threshold here
+// naturally scales with each timeframe's own volatility.
+const BREAKOUT_ATR_MULT = 0.15
+const GOLDEN_ZONE_ATR_MULT = 0.05
+const GOLDEN_ZONE_RATIO = GOLDEN_ZONE_ATR_MULT / BREAKOUT_ATR_MULT
+
+// Golden Fairy plots a single-price line per level; this dashboard's chart draws
+// zones as shaded bands, so each level gets a sliver of width around its price purely
+// for visibility — it isn't a "zone" in the old touch-clustering sense.
+const ZONE_HALF_WIDTH_RATIO = 0.15
 
 function computeATR(candles, period = 14) {
   const trs = []
@@ -16,231 +51,172 @@ function computeATR(candles, period = 14) {
   return period14.reduce((a, b) => a + b, 0) / (period14.length || 1)
 }
 
-function findSwingPoints(candles) {
-  const swings = []
-  for (let i = FRACTAL_WING; i < candles.length - FRACTAL_WING; i++) {
-    const c = candles[i]
+function bodyHigh(c) {
+  return Math.max(c.open, c.close)
+}
+function bodyLow(c) {
+  return Math.min(c.open, c.close)
+}
+
+// Swing detection on the candle *body*, not the wick — mirrors Golden Fairy's use of
+// ta.pivothigh/ta.pivotlow on max/min(open, close) so one long shadow can't fake a level.
+function findBodyPivots(candles, left, right) {
+  const highs = []
+  const lows = []
+
+  for (let i = left; i < candles.length - right; i++) {
+    const hi = bodyHigh(candles[i])
+    const lo = bodyLow(candles[i])
     let isHigh = true
     let isLow = true
-    for (let w = 1; w <= FRACTAL_WING; w++) {
-      if (candles[i - w].high >= c.high || candles[i + w].high >= c.high) isHigh = false
-      if (candles[i - w].low <= c.low || candles[i + w].low <= c.low) isLow = false
+
+    for (let w = 1; w <= left && (isHigh || isLow); w++) {
+      if (bodyHigh(candles[i - w]) >= hi) isHigh = false
+      if (bodyLow(candles[i - w]) <= lo) isLow = false
     }
-    if (isHigh) swings.push({ index: i, price: c.high, time: c.time, type: 'high' })
-    if (isLow) swings.push({ index: i, price: c.low, time: c.time, type: 'low' })
+    for (let w = 1; w <= right && (isHigh || isLow); w++) {
+      if (bodyHigh(candles[i + w]) >= hi) isHigh = false
+      if (bodyLow(candles[i + w]) <= lo) isLow = false
+    }
+
+    if (isHigh) highs.push({ index: i, time: candles[i].time, price: hi })
+    if (isLow) lows.push({ index: i, time: candles[i].time, price: lo })
   }
-  return swings
+
+  return { highs, lows }
 }
 
-// Merge swing points into zones when they sit within `tolerance` of each other.
-// Capped at maxSpanMultiplier * tolerance total width, otherwise a chain of points each
-// individually close to its neighbor (but far apart end-to-end) would merge into one
-// unbounded "zone" spanning way more price than a real S/R level ever should.
-function clusterSwings(swings, tolerance, maxSpanMultiplier = 2) {
-  const sorted = [...swings].sort((a, b) => a.price - b.price)
-  const clusters = []
-  let current = []
+// Replays Golden Fairy's per-pivot state machine bar-by-bar over the full series —
+// the same simulation `f_pivotSR` runs live, one candle at a time, via request.security.
+function runStateMachine(candles, breakoutThreshold) {
+  const { highs, lows } = findBodyPivots(candles, PIVOT_LEFT, PIVOT_RIGHT)
+  const lowByPivotIndex = new Map(lows.map((p) => [p.index, p]))
+  const highByPivotIndex = new Map(highs.map((p) => [p.index, p]))
 
-  for (const s of sorted) {
-    const withinGap = current.length === 0 || s.price - current[current.length - 1].price <= tolerance
-    const withinSpan = current.length === 0 || s.price - current[0].price <= tolerance * maxSpanMultiplier
-    if (withinGap && withinSpan) {
-      current.push(s)
-    } else {
-      clusters.push(current)
-      current = [s]
-    }
-  }
-  if (current.length) clusters.push(current)
-  return clusters
-}
-
-// Group consecutive candles that poke into the zone into single "events" (so a slow
-// grind through the zone isn't inflated into many touches), keeping the index of the
-// candle right after each event so we can tell whether price bounced back or blew through.
-function findTouchEvents(candles, low, high) {
-  const events = []
-  let eventIndices = []
+  // Newest pivot at the front, mirroring the Pine arrays (array.unshift onto the front).
+  const supports = []
+  const resistances = []
 
   for (let i = 0; i < candles.length; i++) {
-    const c = candles[i]
-    const touches = c.high >= low && c.low <= high
-    if (touches) {
-      eventIndices.push(i)
-    } else if (eventIndices.length) {
-      events.push(eventIndices)
-      eventIndices = []
+    // A pivot centered `PIVOT_RIGHT` bars back only becomes known as of this bar.
+    const confirmedIndex = i - PIVOT_RIGHT
+    const pl = lowByPivotIndex.get(confirmedIndex)
+    if (pl) {
+      supports.unshift({ price: pl.price, state: 0, wasBeyond: false, time: pl.time })
+      if (supports.length > MAX_KEEP) supports.pop()
+    }
+    const ph = highByPivotIndex.get(confirmedIndex)
+    if (ph) {
+      resistances.unshift({ price: ph.price, state: 0, wasBeyond: false, time: ph.time })
+      if (resistances.length > MAX_KEEP) resistances.pop()
+    }
+
+    const close = candles[i].close
+
+    for (const s of supports) {
+      if (s.state === 0) {
+        const beyond = close < s.price - breakoutThreshold
+        if (beyond && !s.wasBeyond) s.state = 1 // support broken -> becomes SBR
+        s.wasBeyond = beyond
+      } else if (s.state === 1) {
+        const beyond = close > s.price + breakoutThreshold
+        if (beyond && !s.wasBeyond) s.state = 2 // SBR broken again -> invalid
+        s.wasBeyond = beyond
+      }
+    }
+
+    for (const r of resistances) {
+      if (r.state === 0) {
+        const beyond = close > r.price + breakoutThreshold
+        if (beyond && !r.wasBeyond) r.state = 1 // resistance broken -> becomes RBS
+        r.wasBeyond = beyond
+      } else if (r.state === 1) {
+        const beyond = close < r.price - breakoutThreshold
+        if (beyond && !r.wasBeyond) r.state = 2 // RBS broken again -> invalid
+        r.wasBeyond = beyond
+      }
     }
   }
-  if (eventIndices.length) events.push(eventIndices)
-  return events
-}
 
-// A zone only "holds" if price is rejected back to the side matching its current
-// role. If the candle right after the event closes clean through the other side,
-// the level failed at that point in time — it shouldn't count as proof the zone works.
-function classifyEvent(indices, candles, zoneLow, zoneHigh, isSupport) {
-  const next = candles[indices[indices.length - 1] + 1]
-  if (!next) return 'pending' // still unresolved at the edge of the dataset
-  if (isSupport) {
-    if (next.close > zoneHigh) return 'hold'
-    if (next.close < zoneLow) return 'break'
-  } else {
-    if (next.close < zoneLow) return 'hold'
-    if (next.close > zoneHigh) return 'break'
-  }
-  return 'pending'
-}
-
-function wickRejectionRatio(candle, isSupport) {
-  const range = candle.high - candle.low
-  if (range <= 0) return 0
-  if (isSupport) {
-    const wick = Math.min(candle.open, candle.close) - candle.low
-    return Math.max(0, wick / range)
-  }
-  const wick = candle.high - Math.max(candle.open, candle.close)
-  return Math.max(0, wick / range)
-}
-
-function scoreZone({ holdEvents, breakCount, candles, zoneLow, zoneHigh, isSupport, lastCandleTime, firstCandleTime }) {
-  const touchCount = holdEvents.length
-  const touchScore = (Math.min(touchCount, 8) / 8) * 40
-
-  const lastEventIndices = holdEvents[holdEvents.length - 1]
-  const lastTouchTime = candles[lastEventIndices[lastEventIndices.length - 1]].time
-  const totalSpan = lastCandleTime - firstCandleTime || 1
-  const recencyRatio = 1 - (lastCandleTime - lastTouchTime) / totalSpan
-  const recencyScore = Math.max(0, Math.min(1, recencyRatio)) * 25
-
-  const rejectionRatios = holdEvents.map((indices) => {
-    return indices.reduce((max, idx) => {
-      const r = wickRejectionRatio(candles[idx], isSupport)
-      return r > max ? r : max
-    }, 0)
-  })
-  const avgRejection = rejectionRatios.reduce((a, b) => a + b, 0) / (rejectionRatios.length || 1)
-  const rejectionScore = avgRejection * 20
-
-  const priceSpan = zoneHigh - zoneLow
-  const referencePrice = (zoneHigh + zoneLow) / 2
-  const tightnessRatio = 1 - Math.min(1, priceSpan / (referencePrice * 0.01))
-  const tightnessScore = Math.max(0, tightnessRatio) * 15
-
-  const rawScore = touchScore + recencyScore + rejectionScore + tightnessScore
-
-  // Zones that have failed before are less trustworthy than a clean, unbroken level,
-  // even if they've since re-established themselves — dampen the score accordingly.
-  const reliability = touchCount / (touchCount + breakCount)
-  const reliabilityMultiplier = 0.6 + 0.4 * reliability
-  const total = rawScore * reliabilityMultiplier
+  // "Latest valid" selection: walk newest-to-oldest, take the first still-valid level
+  // in each state — invalidated (state 2) levels are simply skipped over, which is how
+  // an older still-valid pivot automatically takes over once a newer one is discarded.
+  const pickLatest = (arr, wantedState) => arr.find((p) => p.state === wantedState) ?? null
 
   return {
-    total: Math.round(Math.max(0, Math.min(100, total))),
-    touchCount,
-    lastTouchTime,
+    support: pickLatest(supports, 0),
+    sbr: pickLatest(supports, 1),
+    resistance: pickLatest(resistances, 0),
+    rbs: pickLatest(resistances, 1),
   }
 }
 
-function strengthLabel(score) {
-  if (score >= 70) return 'Strong'
-  if (score >= 40) return 'Medium'
-  return 'Weak'
+// Converts one detected level into the zone shape the rest of the app (chart, cards,
+// signals) renders.
+function toZone(level, category, type, currentPrice, breakoutThreshold) {
+  if (!level) return null
+  const halfWidth = breakoutThreshold * ZONE_HALF_WIDTH_RATIO
+  return {
+    category, // 'Support' | 'Resistance' | 'SBR' | 'RBS'
+    type, // 'support' | 'resistance' — which side/color it renders as
+    price: level.price,
+    low: level.price - halfWidth,
+    high: level.price + halfWidth,
+    mid: level.price,
+    startTime: level.time,
+    broken: level.state === 1,
+    threshold: breakoutThreshold,
+    distanceFromPrice: Math.abs(currentPrice - level.price),
+    isGolden: false, // filled in later by annotateGoldenZones once every timeframe is in
+    confluence: [],
+  }
 }
 
-export function detectZones(candles, currentPrice, maxZonesPerSide = 3) {
-  if (!candles || candles.length < FRACTAL_WING * 2 + 5) return []
+// Detects the latest Support, Resistance, SBR and RBS levels for one timeframe's
+// candles (0-4 zones — old, twice-broken levels are dropped automatically).
+export function detectLevels(candles, currentPrice) {
+  if (!candles || candles.length < PIVOT_LEFT + PIVOT_RIGHT + 1) return []
 
   const atr = computeATR(candles)
-  const tolerance = Math.max(atr * 0.5, currentPrice * 0.0005)
+  const breakoutThreshold = Math.max(atr * BREAKOUT_ATR_MULT, currentPrice * 0.0002)
 
-  const swings = findSwingPoints(candles)
-  if (!swings.length) return []
+  const { support, resistance, sbr, rbs } = runStateMachine(candles, breakoutThreshold)
 
-  const clusters = clusterSwings(swings, tolerance)
-  const firstCandleTime = candles[0].time
-  const lastCandleTime = candles[candles.length - 1].time
-
-  const zones = clusters
-    .map((cluster) => {
-      const prices = cluster.map((s) => s.price)
-      const zoneLow = Math.min(...prices) - tolerance / 2
-      const zoneHigh = Math.max(...prices) + tolerance / 2
-      // Earliest swing that contributed to this cluster — the moment the level first
-      // established itself as a pivot, as opposed to a candle merely wicking through
-      // the same price range by coincidence before the level existed.
-      const startTime = Math.min(...cluster.map((s) => s.time))
-
-      // Price is currently trading inside this range — it can't act as a directional
-      // support or resistance level right now, so it isn't a usable zone.
-      if (currentPrice >= zoneLow && currentPrice <= zoneHigh) return null
-
-      const isSupport = (zoneLow + zoneHigh) / 2 < currentPrice
-
-      const events = findTouchEvents(candles, zoneLow, zoneHigh)
-      if (events.length === 0) return null
-
-      const holdEvents = []
-      let breakCount = 0
-      for (const indices of events) {
-        const outcome = classifyEvent(indices, candles, zoneLow, zoneHigh, isSupport)
-        if (outcome === 'hold') holdEvents.push(indices)
-        else if (outcome === 'break') breakCount += 1
-      }
-
-      // Never actually respected (pure fly-through, or only ever broken) — not a real level.
-      if (holdEvents.length === 0) return null
-
-      const { total, touchCount, lastTouchTime } = scoreZone({
-        holdEvents,
-        breakCount,
-        candles,
-        zoneLow,
-        zoneHigh,
-        isSupport,
-        lastCandleTime,
-        firstCandleTime,
-      })
-
-      return {
-        type: isSupport ? 'support' : 'resistance',
-        low: zoneLow,
-        high: zoneHigh,
-        mid: (zoneLow + zoneHigh) / 2,
-        startTime,
-        touchCount,
-        brokenCount: breakCount,
-        reliability: touchCount / (touchCount + breakCount),
-        lastTouchTime,
-        strengthScore: total,
-        strengthLabel: strengthLabel(total),
-        distanceFromPrice: Math.abs(currentPrice - (zoneLow + zoneHigh) / 2),
-      }
-    })
-    .filter(Boolean)
-
-  const supports = zones
-    .filter((z) => z.type === 'support')
-    .sort((a, b) => a.distanceFromPrice - b.distanceFromPrice)
-    .slice(0, maxZonesPerSide)
-
-  const resistances = zones
-    .filter((z) => z.type === 'resistance')
-    .sort((a, b) => a.distanceFromPrice - b.distanceFromPrice)
-    .slice(0, maxZonesPerSide)
-
-  // Nearest-to-price first: the zones most likely to matter for the next move show up top.
-  return [...resistances, ...supports].sort((a, b) => a.distanceFromPrice - b.distanceFromPrice)
+  return [
+    toZone(support, 'Support', 'support', currentPrice, breakoutThreshold),
+    toZone(rbs, 'RBS', 'support', currentPrice, breakoutThreshold),
+    toZone(resistance, 'Resistance', 'resistance', currentPrice, breakoutThreshold),
+    toZone(sbr, 'SBR', 'resistance', currentPrice, breakoutThreshold),
+  ].filter(Boolean)
 }
 
-// Above this reliability (share of touches that held vs broke), bet on the zone holding
-// again (LIMIT/fade). Below it, the zone fails often enough to bet on it breaking instead
-// (STOP/breakout).
-const RELIABILITY_LIMIT_THRESHOLD = 0.6
+// Golden Zone: flags (and cross-links) any level that lands within tolerance of the
+// same-category level from another timeframe. Mutates each timeframe's zones in place.
+export function annotateGoldenZones(zonesByTimeframe) {
+  const entries = Object.entries(zonesByTimeframe).filter(([, result]) => Array.isArray(result?.zones))
 
-// A zone sitting almost on top of entry (e.g. two nearby clusters on the same side)
+  for (const [tfKey, result] of entries) {
+    for (const zone of result.zones) {
+      const matches = entries
+        .filter(([otherTf]) => otherTf !== tfKey)
+        .filter(([, otherResult]) =>
+          otherResult.zones.some(
+            (z) =>
+              z.category === zone.category &&
+              Math.abs(z.price - zone.price) <= Math.min(zone.threshold, z.threshold) * GOLDEN_ZONE_RATIO
+          )
+        )
+        .map(([otherTf]) => otherTf)
+
+      zone.confluence = matches
+      zone.isGolden = matches.length > 0
+    }
+  }
+}
+
+// A zone sitting almost on top of entry (e.g. two nearby levels on the same side)
 // would otherwise surface as a "TP" worth basically nothing — require at least this
-// much reward before trusting a zone as a target over the fixed R-multiple fallback.
+// much reward before trusting a level as a target over the fixed R-multiple fallback.
 const MIN_ZONE_TP_RR = 0.5
 
 function buildTakeProfits(entryPrice, sl, direction, candidateZones) {
@@ -262,72 +238,39 @@ function buildTakeProfits(entryPrice, sl, direction, candidateZones) {
   return targets.map((price) => ({ price, rr: Math.abs(price - entryPrice) / risk }))
 }
 
-// Turns one zone into an actionable pending-order idea. Reliable zones (mostly held so
-// far) get a fade play: LIMIT entry inside the zone, betting it holds again. Unreliable
-// zones (broken often) get a breakout play: STOP entry beyond the zone, betting it fails.
-function buildSignalForZone(zone, zones, atr) {
+// Turns one level into an actionable LIMIT order idea: Golden Fairy's levels are
+// reaction/structure zones (support & RBS bid up, resistance & SBR sell off), so every
+// signal is a fade at the level itself — entry at the price, SL just beyond the
+// breakout threshold that would invalidate it, TP at the nearest opposite-side levels.
+function buildSignalForZone(zone, allZones) {
   const isSupport = zone.type === 'support'
-  const useLimit = zone.reliability >= RELIABILITY_LIMIT_THRESHOLD
-  const buffer = Math.max(atr * 0.25, (zone.high - zone.low) * 0.5)
-  const direction = useLimit === isSupport ? 'buy' : 'sell'
-
-  let entry, sl, targetPool
-
-  if (useLimit) {
-    // Fade: entry is the zone's midpoint, SL just beyond its outer (price-facing) edge.
-    entry = zone.mid
-    sl = isSupport ? zone.low - buffer : zone.high + buffer
-    targetPool = zones.filter((z) => z.type !== zone.type)
-  } else {
-    // Breakout: entry sits just past the zone's far edge, SL back on the other side of it.
-    entry = isSupport ? zone.low - buffer : zone.high + buffer
-    sl = isSupport ? zone.high + buffer : zone.low - buffer
-    targetPool = zones.filter((z) => z.type === zone.type && z !== zone)
-  }
-
+  const direction = isSupport ? 'buy' : 'sell'
+  const entry = zone.price
+  const sl = isSupport ? zone.low - zone.threshold : zone.high + zone.threshold
+  const targetPool = allZones.filter((z) => z.type !== zone.type)
   const tp = buildTakeProfits(entry, sl, direction, targetPool)
 
   return {
     zoneType: zone.type,
+    category: zone.category,
     direction,
-    orderType: useLimit ? 'LIMIT' : 'STOP',
+    orderType: 'LIMIT',
     entry,
     sl,
     tp,
-    reliability: zone.reliability,
-    strengthLabel: zone.strengthLabel,
-    confluence: zone.confluence ?? [],
+    strengthLabel: zone.isGolden ? 'Strong' : 'Medium',
+    confluence: zone.confluence,
   }
 }
 
-// A zone that also shows up on other timeframes is a much stronger level — traders
-// call this "confluence". Mutates each timeframe's zones in place, tagging every zone
-// with the list of other timeframe keys that have an overlapping same-type zone.
-export function annotateConfluence(zonesByTimeframe) {
-  const entries = Object.entries(zonesByTimeframe).filter(([, result]) => Array.isArray(result?.zones))
-
-  for (const [tfKey, result] of entries) {
-    for (const zone of result.zones) {
-      zone.confluence = entries
-        .filter(([otherTf]) => otherTf !== tfKey)
-        .filter(([, otherResult]) =>
-          otherResult.zones.some((z) => z.type === zone.type && zone.low <= z.high && z.low <= zone.high)
-        )
-        .map(([otherTf]) => otherTf)
-    }
-  }
-}
-
-// One signal for the nearest qualifying support, one for the nearest qualifying
-// resistance — both sides of price get an idea, since either could be the next move.
-export function buildSignals(zones, candles, minScore = 40) {
+// One signal for the nearest qualifying bullish level (Support/RBS), one for the
+// nearest qualifying bearish level (Resistance/SBR) — both sides of price get an idea.
+export function buildSignals(zones) {
   if (!zones.length) return []
 
-  const atr = computeATR(candles)
-  const nearestSupport = zones.find((z) => z.type === 'support' && z.strengthScore >= minScore)
-  const nearestResistance = zones.find((z) => z.type === 'resistance' && z.strengthScore >= minScore)
+  const byDistance = (a, b) => a.distanceFromPrice - b.distanceFromPrice
+  const nearestBullish = zones.filter((z) => z.type === 'support').sort(byDistance)[0]
+  const nearestBearish = zones.filter((z) => z.type === 'resistance').sort(byDistance)[0]
 
-  return [nearestSupport, nearestResistance]
-    .filter(Boolean)
-    .map((zone) => buildSignalForZone(zone, zones, atr))
+  return [nearestBullish, nearestBearish].filter(Boolean).map((zone) => buildSignalForZone(zone, zones))
 }

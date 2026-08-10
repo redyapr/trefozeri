@@ -1,4 +1,6 @@
-const STORAGE_KEY = 'gold-sr-last-known'
+// v2: bumped when the zone shape changed (Golden Fairy rewrite) so a stale v1 cache
+// from before the rewrite can't get loaded into code that expects the new fields.
+const STORAGE_KEY = 'gold-sr-last-known-v2'
 
 // Snapshots the last successfully-fetched state per symbol so a cold start (or an
 // offline reload) can show real data immediately instead of a blank "Loading..."

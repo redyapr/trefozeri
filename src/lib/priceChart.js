@@ -51,7 +51,7 @@ class ZoneRectangle {
             if (y1 == null || y2 == null) return
 
             const startX = chart.timeScale().timeToCoordinate(Math.floor(this._zone.startTime / 1000))
-            const label = `${this._zone.type === 'support' ? 'S' : 'R'} ${this._zone.strengthLabel}`
+            const label = this._zone.isGolden ? `★ ${this._zone.category}` : this._zone.category
 
             target.useBitmapCoordinateSpace((scope) => {
               const { context: ctx, horizontalPixelRatio: hRatio, verticalPixelRatio: vRatio, mediaSize } = scope

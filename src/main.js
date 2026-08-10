@@ -1,6 +1,6 @@
 import './style.css'
 import { TIMEFRAMES, SYMBOLS, fetchAllTimeframes } from './lib/twelveData.js'
-import { detectZones, buildSignals, annotateConfluence } from './lib/srDetector.js'
+import { detectLevels, buildSignals, annotateGoldenZones } from './lib/srDetector.js'
 import { fetchNewsCalendar, findUpcomingHighImpact } from './lib/newsCalendar.js'
 import { saveLastKnown, loadLastKnown } from './lib/offlineCache.js'
 import { loadUiState, saveUiState } from './lib/uiState.js'
@@ -20,7 +20,7 @@ const themeBtn = document.getElementById('theme-btn')
 const uiState = loadUiState()
 
 let activeSymbol = SYMBOLS.find((s) => s.key === uiState.symbolKey) ?? SYMBOLS[0]
-let activeTab = TIMEFRAMES.find((tf) => tf.key === uiState.tab)?.key ?? TIMEFRAMES[2].key // M30 default: reasonable middle ground
+let activeTab = TIMEFRAMES.find((tf) => tf.key === uiState.tab)?.key ?? TIMEFRAMES[1].key // H4 default: reasonable middle ground
 let zonesByTimeframe = {}
 let lastFetchedAt = {}
 let currentPrice = null
@@ -162,17 +162,17 @@ async function refreshNewsCalendar() {
 function renderZoneCard(zone) {
   const card = document.createElement('div')
   card.className = `zone-card ${zone.type}`
-  const brokenNote = zone.brokenCount > 0 ? ` · broken ${zone.brokenCount}x` : ''
-  const confluenceNote = zone.confluence?.length ? ` · also on ${zone.confluence.join(', ')}` : ''
+  const flippedFrom = zone.type === 'support' ? 'resistance' : 'support'
+  const brokenNote = zone.broken ? ` · flipped from ${flippedFrom} after one breakout` : ''
+  const confluenceNote = zone.confluence.length ? ` · also on ${zone.confluence.join(', ')}` : ''
   card.innerHTML = `
-    <span class="zone-type">${zone.type === 'support' ? 'Support' : 'Resistance'}</span>
+    <span class="zone-type">${zone.category}</span>
     <div class="zone-range">
-      <div class="zone-price">${formatPrice(zone.low)} – ${formatPrice(zone.high)}</div>
-      <div class="zone-meta">Distance: ${formatPrice(zone.distanceFromPrice)} · Last test: ${timeAgo(zone.lastTouchTime)}${brokenNote}${confluenceNote}</div>
+      <div class="zone-price">${formatPrice(zone.price)}</div>
+      <div class="zone-meta">Distance: ${formatPrice(zone.distanceFromPrice)} · Formed ${timeAgo(zone.startTime)}${brokenNote}${confluenceNote}</div>
     </div>
     <div class="zone-stats">
-      <span class="strength-badge ${zone.strengthLabel.toLowerCase()}">${zone.strengthLabel} · ${zone.strengthScore}</span>
-      <span class="touches">${zone.touchCount} touches</span>
+      <span class="strength-badge ${zone.isGolden ? 'strong' : 'medium'}">${zone.isGolden ? '★ Golden Zone' : 'Medium'}</span>
     </div>
   `
   return card
@@ -208,11 +208,11 @@ function renderContent() {
   contentEl.appendChild(chartContainer)
   activeChart = renderZoneChart(chartContainer, result.series, result.zones)
 
-  // Most-recently-touched first — a level that just got tested is more relevant to
-  // watch right now than one whose only touch was near price but long ago.
-  const byRecency = (a, b) => b.lastTouchTime - a.lastTouchTime
-  const resistances = result.zones.filter((z) => z.type === 'resistance').sort(byRecency)
-  const supports = result.zones.filter((z) => z.type === 'support').sort(byRecency)
+  // Nearest-to-price first — the levels most likely to matter for the next move show
+  // up top (there's at most one Support/Resistance/SBR/RBS each, so this is a 0-2 sort).
+  const byDistance = (a, b) => a.distanceFromPrice - b.distanceFromPrice
+  const resistances = result.zones.filter((z) => z.type === 'resistance').sort(byDistance)
+  const supports = result.zones.filter((z) => z.type === 'support').sort(byDistance)
 
   const zonesGrid = document.createElement('div')
   zonesGrid.className = 'zones-grid'
@@ -263,7 +263,7 @@ function renderSignalCard(signal) {
   card.className = `signal-card ${signal.direction}`
 
   const label = `${signal.direction === 'buy' ? 'BUY' : 'SELL'} ${signal.orderType}`
-  const zoneLabel = signal.zoneType === 'support' ? 'Support' : 'Resistance'
+  const zoneLabel = signal.category
   const entryText = formatPrice(signal.entry)
 
   const tpRows = signal.tp
@@ -360,11 +360,12 @@ async function refreshData() {
       anySuccess = true
       lastFetchedAt[tf.key] = now
       const last = series[series.length - 1]
-      if (tf.key === 'M5') {
+      // H1 is the finest timeframe still fetched, so it's the freshest source for spot.
+      if (tf.key === 'H1') {
         currentPrice = last.close
         priceEl.textContent = formatPrice(currentPrice)
       }
-      const zones = detectZones(series, currentPrice ?? last.close)
+      const zones = detectLevels(series, currentPrice ?? last.close)
       zonesByTimeframe[tf.key] = { zones, series }
     }
 
@@ -373,11 +374,11 @@ async function refreshData() {
     // message was already on screen rather than claiming a freshness that didn't happen.
     if (!anySuccess) return
 
-    // Confluence needs every timeframe's zones at once, so it only runs once all of
-    // them are in — then signals are built per timeframe with confluence attached.
-    annotateConfluence(zonesByTimeframe)
+    // Golden Zone confluence needs every timeframe's levels at once, so it only runs
+    // once all of them are in — then signals are built per timeframe with it attached.
+    annotateGoldenZones(zonesByTimeframe)
     for (const result of Object.values(zonesByTimeframe)) {
-      result.signals = buildSignals(result.zones, result.series)
+      result.signals = buildSignals(result.zones)
     }
     saveLastKnown(symbol.key, zonesByTimeframe, currentPrice)
 
