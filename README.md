@@ -1,18 +1,17 @@
 # TREFOZERI S/R Dashboard
 
 Multi-timeframe support & resistance dashboard for XAU/USD (Gold) and BTC/USD
-(Bitcoin) — a JavaScript port of the **Golden Fairy** TradingView indicator, plus
-entry/SL/TP signal cards and a high-impact USD news banner.
+(Bitcoin), with entry/SL/TP signal cards and a high-impact USD news banner.
 
 **Live:** https://redyapr.github.io/trefozeri/
 
 ## How it works
 
-- **Levels**: `src/lib/srDetector.js` ports Golden Fairy's pivot + 3-state machine
-  (pure Support/Resistance → broken-once SBR/RBS → invalidated) independently per
-  timeframe, and flags cross-timeframe confluence as "Golden Zones."
-- **Timeframes**: H1, H4, D1 only (see `TIMEFRAMES` in `src/lib/twelveData.js`) —
-  Golden Fairy's logic is pivot-based, not meant for sub-hourly noise.
+- **Levels**: `src/lib/srDetector.js` runs a pivot + 3-state machine (pure
+  Support/Resistance → broken-once SBR/RBS → invalidated) independently per timeframe,
+  and flags cross-timeframe confluence as "Golden Zones."
+- **Timeframes**: H1, H4, D1 only (see `TIMEFRAMES` in `src/lib/twelveData.js`) — this
+  pivot-based logic isn't meant for sub-hourly noise.
 - **Chart**: [lightweight-charts](https://github.com/tradingview/lightweight-charts)
   renders candles with the detected zones as shaded, labeled bands.
 - **Data**: gold candles come from Twelve Data, BTC candles from Binance.US (no key
@@ -80,7 +79,7 @@ src/
   main.js              UI wiring, render loop, refresh/cache orchestration
   lib/
     twelveData.js      Timeframe/symbol config + static-JSON quote fetching
-    srDetector.js       Golden Fairy port: pivot detection, zones, signals
+    srDetector.js       Pivot detection, zones, signals
     priceChart.js       lightweight-charts candle + zone rendering
     newsCalendar.js     Static-JSON calendar fetching + high-impact filtering
     offlineCache.js     localStorage last-known-good snapshot

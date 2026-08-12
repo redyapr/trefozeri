@@ -9,9 +9,9 @@ const DATA_ENDPOINT = `${import.meta.env.BASE_URL}data`
 // before the last cron refresh — these files are small and change every ~15 minutes.
 const cacheBust = () => `?v=${Date.now()}`
 
-// Golden Fairy's logic runs on D1/H4/H1 only (see GoldenFairy.pine) — the lower
-// timeframes were dropped rather than adapted, since sub-hourly noise is exactly what
-// that pivot-based state machine isn't meant to be run on.
+// This pivot-based state machine runs on D1/H4/H1 only — the lower timeframes were
+// dropped rather than adapted, since sub-hourly noise is exactly what it isn't meant
+// to be run on.
 //
 // minRefetchMs caps how often each timeframe is allowed to hit the API again on a
 // manual refresh — roughly proportional to how often its own bars actually change,

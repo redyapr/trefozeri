@@ -1,38 +1,34 @@
 // ============================================================================
-// Golden Fairy port — see GoldenFairy.pine / GoldenFairy.md for the reference
-// TradingView indicator this module ports.
+// Pivot-based Support/Resistance detection.
 //
 // Per timeframe, tracks the single most recent, still-valid Support, Resistance,
 // SBR (Support-Broken-Resistance) and RBS (Resistance-Broken-Support) level, using
-// the same pivot + 3-state machine as the original script:
+// a pivot + 3-state machine:
 //   state 0 -> pure Support/Resistance (never broken)
 //   state 1 -> broken once -> flips role (Support -> SBR, Resistance -> RBS)
 //   state 2 -> broken a second time -> invalid; the next older still-valid pivot
 //              takes its place automatically
 // A level from one timeframe that lands within tolerance of the same-category level
-// from another timeframe is flagged a "Golden Zone" (Golden Fairy's cross-timeframe
-// confluence signal).
+// from another timeframe is flagged a "Golden Zone" (a cross-timeframe confluence
+// signal).
 // ============================================================================
 
-const PIVOT_LEFT = 5 // bars required on each side of a swing to confirm it —
-const PIVOT_RIGHT = 5 // matches Golden Fairy's default Pivot Left/Right Bars inputs
+const PIVOT_LEFT = 5 // bars required on each side of a swing to confirm it
+const PIVOT_RIGHT = 5
 
 const MAX_KEEP = 40 // pivots retained per side/timeframe before the oldest is dropped
 
-// Golden Fairy's "Breakout Threshold (pips)" and "Golden Zone Tolerance (pips)" are
-// both a fixed multiple of a user-supplied pip size, hand-tuned per instrument. This
-// dashboard has no per-instrument settings UI, so both are derived from each series'
-// own ATR instead — same role (a volatility-scaled "how far counts as a real break"),
-// just self-calibrating instead of manually configured. One side effect: unlike the
-// Pine original (one fixed absolute threshold shared by D1/H4/H1), the threshold here
-// naturally scales with each timeframe's own volatility.
+// Breakout threshold and Golden Zone tolerance are both derived from each series' own
+// ATR — a volatility-scaled "how far counts as a real break" — rather than a fixed
+// pip value, so they self-calibrate per instrument and scale naturally with each
+// timeframe's own volatility instead of sharing one absolute threshold across D1/H4/H1.
 const BREAKOUT_ATR_MULT = 0.15
 const GOLDEN_ZONE_ATR_MULT = 0.05
 const GOLDEN_ZONE_RATIO = GOLDEN_ZONE_ATR_MULT / BREAKOUT_ATR_MULT
 
-// Golden Fairy plots a single-price line per level; this dashboard's chart draws
-// zones as shaded bands, so each level gets a sliver of width around its price purely
-// for visibility — it isn't a "zone" in the old touch-clustering sense.
+// Each level is a single price, not a touch-clustered range, but the chart draws zones
+// as shaded bands — this gives each level a sliver of width around its price purely
+// for visibility.
 const ZONE_HALF_WIDTH_RATIO = 0.15
 
 function computeATR(candles, period = 14) {
@@ -58,8 +54,7 @@ function bodyLow(c) {
   return Math.min(c.open, c.close)
 }
 
-// Swing detection on the candle *body*, not the wick — mirrors Golden Fairy's use of
-// ta.pivothigh/ta.pivotlow on max/min(open, close) so one long shadow can't fake a level.
+// Swing detection on the candle *body*, not the wick, so one long shadow can't fake a level.
 function findBodyPivots(candles, left, right) {
   const highs = []
   const lows = []
@@ -86,14 +81,14 @@ function findBodyPivots(candles, left, right) {
   return { highs, lows }
 }
 
-// Replays Golden Fairy's per-pivot state machine bar-by-bar over the full series —
-// the same simulation `f_pivotSR` runs live, one candle at a time, via request.security.
+// Replays the per-pivot state machine bar-by-bar over the full series, exactly as it
+// would evolve live, one candle at a time.
 function runStateMachine(candles, breakoutThreshold) {
   const { highs, lows } = findBodyPivots(candles, PIVOT_LEFT, PIVOT_RIGHT)
   const lowByPivotIndex = new Map(lows.map((p) => [p.index, p]))
   const highByPivotIndex = new Map(highs.map((p) => [p.index, p]))
 
-  // Newest pivot at the front, mirroring the Pine arrays (array.unshift onto the front).
+  // Newest pivot at the front — array.unshift onto the front, so index 0 is always latest.
   const supports = []
   const resistances = []
 
@@ -238,7 +233,7 @@ function buildTakeProfits(entryPrice, sl, direction, candidateZones) {
   return targets.map((price) => ({ price, rr: Math.abs(price - entryPrice) / risk }))
 }
 
-// Turns one level into an actionable LIMIT order idea: Golden Fairy's levels are
+// Turns one level into an actionable LIMIT order idea: these levels are
 // reaction/structure zones (support & RBS bid up, resistance & SBR sell off), so every
 // signal is a fade at the level itself — entry at the price, SL just beyond the
 // breakout threshold that would invalidate it, TP at the nearest opposite-side levels.

@@ -1,5 +1,5 @@
-// v2: bumped when the zone shape changed (Golden Fairy rewrite) so a stale v1 cache
-// from before the rewrite can't get loaded into code that expects the new fields.
+// v2: bumped when the zone shape changed so a stale v1 cache from before that change
+// can't get loaded into code that expects the new fields.
 const STORAGE_KEY = 'gold-sr-last-known-v2'
 
 // Snapshots the last successfully-fetched state per symbol so a cold start (or an
