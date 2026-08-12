@@ -48,12 +48,11 @@ jobs:
         env:
           GH_PAGES: 'true'
 
-      # enablement: true lets this action create/enable the Pages site itself (with
-      # build_type: workflow) on the very first run, instead of requiring the
-      # Settings → Pages → Source: GitHub Actions step to have been done by hand first.
+      # The default GITHUB_TOKEN this workflow runs with deliberately can't create a
+      # Pages site from scratch (that needs repo-admin-level API access) — Settings →
+      # Pages → Source: GitHub Actions has to be set by hand, once, by a repo admin,
+      # before this step's Get-Pages-site call has anything to find.
       - uses: actions/configure-pages@v5
-        with:
-          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:
