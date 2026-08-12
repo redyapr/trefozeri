@@ -4,6 +4,5 @@ dist
 *.pdf
 *.mp4
 .env
-.netlify
 .claude
 public/data

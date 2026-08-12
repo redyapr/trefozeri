@@ -1,9 +1,9 @@
 // Pre-fetched by scripts/fetch-data.mjs (see .github/workflows/deploy.yml) rather than
-// proxied on-demand — GitHub Pages has no server to run netlify/functions/quote.js's
-// proxy on, so a cron job writes these as static JSON ahead of time instead. The real
-// Twelve Data API key only ever lives in that CI job; the browser never sees it.
-// import.meta.env.BASE_URL respects vite.config.js's `base`, so this still resolves
-// correctly when the site is served from a GitHub Pages project subpath.
+// proxied on-demand — GitHub Pages has no server to proxy this on request, so a cron
+// job writes these as static JSON ahead of time instead. The real Twelve Data API key
+// only ever lives in that CI job; the browser never sees it. import.meta.env.BASE_URL
+// respects vite.config.js's `base`, so this still resolves correctly when the site is
+// served from a GitHub Pages project subpath.
 const DATA_ENDPOINT = `${import.meta.env.BASE_URL}data`
 // Cache-busts the static JSON so the browser doesn't keep serving a snapshot from
 // before the last cron refresh — these files are small and change every ~15 minutes.

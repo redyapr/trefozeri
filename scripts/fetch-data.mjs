@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // Pre-fetches the dashboard's price and calendar data so it can be shipped as static
-// JSON. GitHub Pages only serves static files — there's no server to run
-// netlify/functions/quote.js's proxy on request — so this script does that same
-// upstream fetch once per CI run (cron, see .github/workflows/deploy.yml) and writes
-// the result into public/data/, which Vite then copies straight into dist/.
-// TWELVE_DATA_API_KEY is only ever read here, inside the GitHub Actions runner or a
-// developer's own shell; it's never bundled into the browser code.
+// JSON. GitHub Pages only serves static files — there's no server to proxy this on
+// request — so this script does the upstream fetch once per CI run (cron, see
+// .github/workflows/deploy.yml) and writes the result into public/data/, which Vite
+// then copies straight into dist/. TWELVE_DATA_API_KEY is only ever read here, inside
+// the GitHub Actions runner or a developer's own shell; it's never bundled into the
+// browser code.
 import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
@@ -42,9 +42,11 @@ async function fetchTwelveData(apiSymbol, tf, apiKey) {
   return { status: 'ok', values: json.values }
 }
 
-// BTC/USD is served from Binance.US instead of Twelve Data — see the matching comment
-// in netlify/functions/quote.js for why (no key needed, generous rate limit, no
-// "restricted location" block on US-hosted runners).
+// BTC/USD is served from Binance.US instead of Twelve Data — no key needed, a far more
+// generous rate limit, and (being the US-compliant entity) no "restricted location"
+// block on US-hosted CI runners the way binance.com applies to that same traffic. This
+// also halves the load on the Twelve Data quota, since crypto no longer competes with
+// gold for the same per-minute allowance.
 async function fetchBinance(tf) {
   const url = `https://api.binance.us/api/v3/klines?symbol=BTCUSD&interval=${tf.binanceInterval}&limit=${tf.outputsize}`
   const res = await fetch(url)

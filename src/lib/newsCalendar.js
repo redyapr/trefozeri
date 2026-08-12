@@ -1,7 +1,7 @@
 // Pre-fetched by scripts/fetch-data.mjs (see .github/workflows/deploy.yml) into a
-// static file instead of proxied on-demand — GitHub Pages has no server to run
-// netlify/functions/calendar.js's proxy on. import.meta.env.BASE_URL respects
-// vite.config.js's `base`, so this still resolves under a GitHub Pages project subpath.
+// static file instead of proxied on-demand — GitHub Pages has no server to proxy this
+// on request. import.meta.env.BASE_URL respects vite.config.js's `base`, so this still
+// resolves under a GitHub Pages project subpath.
 const CALENDAR_ENDPOINT = `${import.meta.env.BASE_URL}data/calendar.json`
 
 let cache = []

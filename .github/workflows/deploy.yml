@@ -36,8 +36,8 @@ jobs:
 
       - run: npm ci
 
-      # Writes public/data/*.json — see scripts/fetch-data.mjs for why this replaces
-      # netlify/functions/quote.js and calendar.js's on-demand proxying.
+      # Writes public/data/*.json — see scripts/fetch-data.mjs for why GitHub Pages
+      # needs this pre-fetched instead of proxied on demand.
       - name: Fetch quote & calendar data
         run: node scripts/fetch-data.mjs
         env:

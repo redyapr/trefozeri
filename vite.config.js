@@ -1,8 +1,8 @@
 import { defineConfig } from 'vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
-// Netlify (and local dev) serve this app from the domain root, but the GitHub Pages
-// deploy (.github/workflows/deploy.yml) is a project site — https://redyapr.github.io/
+// Local dev serves this app from the domain root, but the GitHub Pages deploy
+// (.github/workflows/deploy.yml) is a project site — https://redyapr.github.io/
 // trefozeri/ — so it needs every asset path prefixed with the repo name instead. The
 // workflow sets GH_PAGES=true only for that build; every other build keeps root-basing.
 const base = process.env.GH_PAGES ? '/trefozeri/' : '/'

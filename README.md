@@ -44,7 +44,6 @@ Other scripts:
 | `npm run fetch:data` | Fetch quote + calendar data into `public/data/` (reads `.env`) |
 | `npm run build` | Production build → `dist/` |
 | `npm run preview` | Serve the built `dist/` locally |
-| `npm run dev:netlify` | Legacy: run via `netlify dev` (see [Netlify (legacy)](#netlify-legacy)) |
 
 ## Data & deployment
 
@@ -72,17 +71,7 @@ One-time setup for a fork or a new deploy target (the workflow's default
 2. **Settings → Pages → Build and deployment → Source: GitHub Actions**.
 
 `vite.config.js` bases the build at `/trefozeri/` (this repo's GitHub Pages project
-path) only when the workflow sets `GH_PAGES=true`; local dev and any other deploy
-target still base at `/`.
-
-### Netlify (legacy)
-
-The app used to run on Netlify, with `netlify/functions/quote.js` and `calendar.js`
-proxying the same upstream APIs on demand instead of pre-fetching them. Those files
-and `netlify.toml` are still in the repo but unused by the GitHub Pages deploy — kept
-around in case of a rollback. To use them again: `npm run dev:netlify` locally, or
-reconnect the repo on Netlify (it reads `netlify.toml` automatically) and set
-`TWELVE_DATA_API_KEY` in Netlify's own environment variables.
+path) only when the workflow sets `GH_PAGES=true`; local dev still bases at `/`.
 
 ## Project structure
 
@@ -98,7 +87,6 @@ src/
     uiState.js          Persisted tab/theme/symbol selection
 scripts/
   fetch-data.mjs        Pre-fetches quote + calendar data into public/data/
-netlify/functions/       Legacy on-demand proxies (unused by the GH Pages deploy)
 .github/workflows/
   deploy.yml            Cron fetch → build → deploy to GitHub Pages
 ```
