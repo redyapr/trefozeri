@@ -1,10 +1,16 @@
-const CALENDAR_ENDPOINT = '/api/calendar'
+// Pre-fetched by scripts/fetch-data.mjs (see .github/workflows/deploy.yml) into a
+// static file instead of proxied on-demand — GitHub Pages has no server to run
+// netlify/functions/calendar.js's proxy on. import.meta.env.BASE_URL respects
+// vite.config.js's `base`, so this still resolves under a GitHub Pages project subpath.
+const CALENDAR_ENDPOINT = `${import.meta.env.BASE_URL}data/calendar.json`
 
 let cache = []
 
 export async function fetchNewsCalendar() {
   try {
-    const res = await fetch(CALENDAR_ENDPOINT)
+    // Cache-busts so the browser doesn't keep serving a snapshot from before the
+    // last cron refresh — this file is small and changes every ~15 minutes.
+    const res = await fetch(`${CALENDAR_ENDPOINT}?v=${Date.now()}`)
     const events = await res.json()
     if (!Array.isArray(events)) return cache
     cache = events

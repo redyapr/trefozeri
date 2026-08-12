@@ -6,3 +6,4 @@ dist
 .env
 .netlify
 .claude
+public/data

@@ -1,0 +1,65 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [master]
+  schedule:
+    # Refreshes price & calendar data roughly every 15 minutes. This matches (and
+    # doesn't exceed) the dashboard's own refresh throttling — H1 candles are only
+    # refetched every 20 minutes even on a manual click (see minRefetchMs in
+    # src/lib/twelveData.js) — so this cadence never leaves the static snapshot
+    # staler than the app already tolerates.
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one Pages deployment at a time; let an in-flight one finish rather than
+# canceling it, since a cron tick and a code push could otherwise race.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # Writes public/data/*.json — see scripts/fetch-data.mjs for why this replaces
+      # netlify/functions/quote.js and calendar.js's on-demand proxying.
+      - name: Fetch quote & calendar data
+        run: node scripts/fetch-data.mjs
+        env:
+          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+
+      - name: Build
+        run: npm run build
+        env:
+          GH_PAGES: 'true'
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

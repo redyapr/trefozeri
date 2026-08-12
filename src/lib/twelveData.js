@@ -1,6 +1,13 @@
-// Served by netlify/functions/quote.js, which holds the real Twelve Data API key
-// server-side — the browser never sees it.
-const QUOTE_ENDPOINT = '/api/quote'
+// Pre-fetched by scripts/fetch-data.mjs (see .github/workflows/deploy.yml) rather than
+// proxied on-demand — GitHub Pages has no server to run netlify/functions/quote.js's
+// proxy on, so a cron job writes these as static JSON ahead of time instead. The real
+// Twelve Data API key only ever lives in that CI job; the browser never sees it.
+// import.meta.env.BASE_URL respects vite.config.js's `base`, so this still resolves
+// correctly when the site is served from a GitHub Pages project subpath.
+const DATA_ENDPOINT = `${import.meta.env.BASE_URL}data`
+// Cache-busts the static JSON so the browser doesn't keep serving a snapshot from
+// before the last cron refresh — these files are small and change every ~15 minutes.
+const cacheBust = () => `?v=${Date.now()}`
 
 // Golden Fairy's logic runs on D1/H4/H1 only (see GoldenFairy.pine) — the lower
 // timeframes were dropped rather than adapted, since sub-hourly noise is exactly what
@@ -33,8 +40,9 @@ function parseUtc(datetime) {
   return new Date(iso).getTime()
 }
 
-async function fetchSeries(apiSymbol, interval, outputsize) {
-  const url = `${QUOTE_ENDPOINT}?symbol=${encodeURIComponent(apiSymbol)}&interval=${interval}&outputsize=${outputsize}`
+async function fetchSeries(apiSymbol, tf) {
+  const symbolKey = SYMBOLS.find((s) => s.apiSymbol === apiSymbol)?.key
+  const url = `${DATA_ENDPOINT}/quote/${symbolKey}-${tf.key}.json${cacheBust()}`
   const res = await fetch(url)
   const json = await res.json()
 
@@ -58,7 +66,7 @@ export async function fetchAllTimeframes(apiSymbol, timeframes = TIMEFRAMES, onP
   const results = {}
   for (const tf of timeframes) {
     try {
-      results[tf.key] = await fetchSeries(apiSymbol, tf.interval, tf.outputsize)
+      results[tf.key] = await fetchSeries(apiSymbol, tf)
     } catch (err) {
       results[tf.key] = { error: err.message }
     }
