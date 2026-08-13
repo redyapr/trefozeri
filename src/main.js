@@ -7,6 +7,12 @@ import { loadUiState, saveUiState } from './lib/uiState.js'
 import { renderZoneChart } from './lib/priceChart.js'
 
 const NEWS_HORIZON_HOURS = 12
+// The cron in .github/workflows/deploy.yml refreshes the static snapshot roughly
+// every 15 minutes — polling more often than that just re-fetches the same JSON,
+// so this checks a few times per cron cycle to pick up each update promptly
+// without a manual reload. refreshData() itself is cheap to call when nothing's
+// due yet: it checks each timeframe's minRefetchMs before touching the network.
+const AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000
 
 const symbolTabsEl = document.getElementById('symbol-tabs')
 const tabsEl = document.getElementById('tabs')
@@ -14,13 +20,12 @@ const newsBannerEl = document.getElementById('news-banner')
 const contentEl = document.getElementById('content')
 const priceEl = document.getElementById('price-display')
 const lastUpdateEl = document.getElementById('last-update')
-const refreshBtn = document.getElementById('refresh-btn')
 const themeBtn = document.getElementById('theme-btn')
 
 const uiState = loadUiState()
 
 let activeSymbol = SYMBOLS.find((s) => s.key === uiState.symbolKey) ?? SYMBOLS[0]
-let activeTab = TIMEFRAMES.find((tf) => tf.key === uiState.tab)?.key ?? TIMEFRAMES[1].key // H4 default: reasonable middle ground
+let activeTab = TIMEFRAMES.find((tf) => tf.key === uiState.tab)?.key ?? TIMEFRAMES[0].key // H1 default
 let zonesByTimeframe = {}
 let lastFetchedAt = {}
 let currentPrice = null
@@ -110,7 +115,7 @@ function renderTabs() {
 }
 
 function formatPrice(p) {
-  return Math.round(p).toLocaleString('en-US')
+  return String(Math.round(p))
 }
 
 function timeAgo(ts) {
@@ -159,6 +164,13 @@ async function refreshNewsCalendar() {
   renderNewsBanner()
 }
 
+// Abbreviated for display only — 'Resistance' is long enough to crowd the price
+// next to it in the card's fixed-width label column; matching/confluence logic
+// elsewhere still uses the full zone.category string.
+function shortCategory(category) {
+  return category === 'Resistance' ? 'Resist.' : category
+}
+
 function renderZoneCard(zone) {
   const card = document.createElement('div')
   card.className = `zone-card ${zone.type}`
@@ -166,7 +178,7 @@ function renderZoneCard(zone) {
   const brokenNote = zone.broken ? ` · flipped from ${flippedFrom} after one breakout` : ''
   const confluenceNote = zone.confluence.length ? ` · also on ${zone.confluence.join(', ')}` : ''
   card.innerHTML = `
-    <span class="zone-type">${zone.category}</span>
+    <span class="zone-type">${shortCategory(zone.category)}</span>
     <div class="zone-range">
       <div class="zone-price">${formatPrice(zone.price)}</div>
       <div class="zone-meta">Distance: ${formatPrice(zone.distanceFromPrice)} · Formed ${timeAgo(zone.startTime)}${brokenNote}${confluenceNote}</div>
@@ -263,7 +275,7 @@ function renderSignalCard(signal) {
   card.className = `signal-card ${signal.direction}`
 
   const label = `${signal.direction === 'buy' ? 'BUY' : 'SELL'} ${signal.orderType}`
-  const zoneLabel = signal.category
+  const zoneLabel = shortCategory(signal.category)
   const entryText = formatPrice(signal.entry)
 
   const tpRows = signal.tp
@@ -324,21 +336,15 @@ async function refreshData() {
 
   const now = Date.now()
   // Skip timeframes that were fetched too recently to plausibly have new data yet —
-  // this is what keeps a burst of manual refreshes from re-requesting all 6
-  // timeframes every time and blowing through the API's per-minute rate limit.
+  // this is what keeps refreshData() (called on startup and on every symbol switch)
+  // from re-requesting all timeframes every time and blowing through the API's
+  // per-minute rate limit.
   const dueTimeframes = TIMEFRAMES.filter(
     (tf) => !lastFetchedAt[tf.key] || now - lastFetchedAt[tf.key] >= tf.minRefetchMs
   )
-  if (!dueTimeframes.length) {
-    // Nothing could plausibly have changed yet — skip the network round-trip, but
-    // still acknowledge the click so the button doesn't look unresponsive.
-    refreshBtn.classList.add('spinning')
-    setTimeout(() => refreshBtn.classList.remove('spinning'), 400)
-    return
-  }
+  if (!dueTimeframes.length) return
 
   refreshing = true
-  refreshBtn.classList.add('spinning')
   contentEl.querySelectorAll('.zone-card, .signal-card').forEach((c) => (c.style.opacity = '0.6'))
 
   const symbol = activeSymbol
@@ -387,17 +393,10 @@ async function refreshData() {
     console.error(err) // keep last good data on screen, no user-facing warning
   } finally {
     refreshing = false
-    refreshBtn.classList.remove('spinning')
     renderDashboard()
   }
 }
 
-// Refresh is manual-only — the button is the sole trigger, for both price data and
-// the news calendar, rather than polling on a timer.
-refreshBtn.addEventListener('click', () => {
-  refreshData()
-  refreshNewsCalendar()
-})
 themeBtn.addEventListener('click', () => {
   const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'
   applyTheme(next)
@@ -413,3 +412,7 @@ hydrateFromCache(activeSymbol)
 renderDashboard()
 refreshData()
 refreshNewsCalendar()
+setInterval(() => {
+  refreshData()
+  refreshNewsCalendar()
+}, AUTO_REFRESH_INTERVAL_MS)

@@ -13,9 +13,9 @@ const cacheBust = () => `?v=${Date.now()}`
 // dropped rather than adapted, since sub-hourly noise is exactly what it isn't meant
 // to be run on.
 //
-// minRefetchMs caps how often each timeframe is allowed to hit the API again on a
-// manual refresh — roughly proportional to how often its own bars actually change,
-// so clicking refresh repeatedly doesn't burn API calls re-fetching data that can't
+// minRefetchMs caps how often each timeframe is allowed to hit the API again —
+// roughly proportional to how often its own bars actually change, so refreshData()
+// (run on startup and on every symbol switch) doesn't re-fetch data that can't
 // plausibly have moved yet.
 export const TIMEFRAMES = [
   { key: 'H1', interval: '1h', outputsize: 300, label: 'H1', minRefetchMs: 20 * 60 * 1000 },

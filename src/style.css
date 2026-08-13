@@ -165,19 +165,6 @@ body {
   transform-origin: 50% 50%;
 }
 
-.icon-btn.spinning svg {
-  animation: spin 0.9s cubic-bezier(0.65, 0, 0.35, 1) infinite;
-}
-
-@keyframes spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 .tabs {
   display: flex;
   gap: 22px;
