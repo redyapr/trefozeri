@@ -91,6 +91,18 @@
             <span class="price-label">Spot</span>
             <span id="price-display" class="price-display">—</span>
           </div>
+          <button id="notify-btn" class="icon-btn" title="Enable price/signal alerts" aria-label="Toggle price and signal alerts">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+              <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+            </svg>
+          </button>
+          <button id="history-btn" class="icon-btn" title="Signal track record" aria-label="View signal track record">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 3v18h18" />
+              <path d="M18 17V9M13 17V5M8 17v-3" />
+            </svg>
+          </button>
           <button id="theme-btn" class="icon-btn" title="Switch to dark mode" aria-label="Toggle dark mode">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
@@ -117,6 +129,16 @@
           actionable BUY/SELL LIMIT trade signal — each with an entry price, stop loss, and take-profit levels.
         </p>
       </footer>
+    </div>
+
+    <div id="history-modal" class="modal-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="history-title">
+        <div class="modal-header">
+          <h2 id="history-title">Signal Track Record</h2>
+          <button type="button" id="history-close" class="modal-close" aria-label="Close">×</button>
+        </div>
+        <div id="history-body" class="modal-body"></div>
+      </div>
     </div>
 
     <script type="module" src="/src/main.js"></script>

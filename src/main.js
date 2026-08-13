@@ -5,6 +5,15 @@ import { fetchNewsCalendar, findUpcomingHighImpact } from './lib/newsCalendar.js
 import { saveLastKnown, loadLastKnown } from './lib/offlineCache.js'
 import { loadUiState, saveUiState } from './lib/uiState.js'
 import { renderZoneChart } from './lib/priceChart.js'
+import {
+  isSupported as isNotifySupported,
+  getPermission as getNotifyPermission,
+  isEnabled as isNotifyEnabled,
+  enableNotifications,
+  disableNotifications,
+  checkZonesAndSignals,
+} from './lib/notifications.js'
+import { recordSignals, evaluateSignals, getHistory, getStats } from './lib/signalHistory.js'
 
 const NEWS_HORIZON_HOURS = 12
 // The cron in .github/workflows/deploy.yml refreshes the static snapshot roughly
@@ -21,6 +30,11 @@ const contentEl = document.getElementById('content')
 const priceEl = document.getElementById('price-display')
 const lastUpdateEl = document.getElementById('last-update')
 const themeBtn = document.getElementById('theme-btn')
+const notifyBtn = document.getElementById('notify-btn')
+const historyBtn = document.getElementById('history-btn')
+const historyModal = document.getElementById('history-modal')
+const historyBody = document.getElementById('history-body')
+const historyCloseBtn = document.getElementById('history-close')
 
 const uiState = loadUiState()
 
@@ -96,7 +110,84 @@ function hydrateFromCache(symbol) {
 function renderDashboard() {
   renderNewsBanner()
   renderContent()
+  // Keep the track-record modal live if it's already open, instead of only updating
+  // it the next time it's opened.
+  if (!historyModal.hidden) renderHistory()
 }
+
+function updateNotifyBtn() {
+  if (!isNotifySupported()) {
+    notifyBtn.hidden = true
+    return
+  }
+  const permission = getNotifyPermission()
+  const enabled = isNotifyEnabled()
+  notifyBtn.classList.toggle('active', enabled)
+  notifyBtn.disabled = permission === 'denied'
+  notifyBtn.title =
+    permission === 'denied'
+      ? 'Notifications blocked — enable in browser settings'
+      : enabled
+        ? 'Disable price/signal alerts'
+        : 'Enable price/signal alerts'
+}
+
+notifyBtn.addEventListener('click', async () => {
+  if (getNotifyPermission() !== 'denied') {
+    if (isNotifyEnabled()) {
+      disableNotifications()
+    } else {
+      await enableNotifications()
+    }
+  }
+  // Refresh either way — permission can also change out-of-band (revoked in the
+  // browser's own site settings while the tab is still open).
+  updateNotifyBtn()
+})
+
+function renderHistory() {
+  const stats = getStats(activeSymbol.key)
+  const records = getHistory(activeSymbol.key).slice(0, 30)
+
+  const statsHtml = `
+    <div class="history-stats">
+      <div class="history-stat"><div class="num">${stats.total}</div><div class="lbl">Total</div></div>
+      <div class="history-stat win"><div class="num">${stats.wins}</div><div class="lbl">Wins</div></div>
+      <div class="history-stat loss"><div class="num">${stats.losses}</div><div class="lbl">Losses</div></div>
+      <div class="history-stat"><div class="num">${stats.winRate != null ? stats.winRate + '%' : '—'}</div><div class="lbl">Win rate</div></div>
+    </div>
+  `
+
+  const rowsHtml = records.length
+    ? `<div class="history-list">${records
+        .map(
+          (r) => `
+        <div class="history-row">
+          <div class="history-row-main">
+            <strong>${r.direction === 'buy' ? 'BUY' : 'SELL'} ${shortCategory(r.category)} · ${r.tf}</strong>
+            <span>Entry ${formatPrice(r.entry)} · ${timeAgo(r.openedAt)}</span>
+          </div>
+          <span class="history-row-badge ${r.status}">${r.status}</span>
+        </div>`
+        )
+        .join('')}</div>`
+    : `<p class="history-empty">No signals recorded yet for ${activeSymbol.label} — check back after a few refreshes.</p>`
+
+  historyBody.innerHTML = statsHtml + rowsHtml
+}
+
+historyBtn.addEventListener('click', () => {
+  renderHistory()
+  historyModal.hidden = false
+})
+
+historyCloseBtn.addEventListener('click', () => {
+  historyModal.hidden = true
+})
+
+historyModal.addEventListener('click', (e) => {
+  if (e.target === historyModal) historyModal.hidden = true
+})
 
 function renderTabs() {
   tabsEl.innerHTML = ''
@@ -383,9 +474,12 @@ async function refreshData() {
     // Golden Zone confluence needs every timeframe's levels at once, so it only runs
     // once all of them are in — then signals are built per timeframe with it attached.
     annotateGoldenZones(zonesByTimeframe)
-    for (const result of Object.values(zonesByTimeframe)) {
+    for (const [tfKey, result] of Object.entries(zonesByTimeframe)) {
       result.signals = buildSignals(result.zones)
+      recordSignals(symbol.key, tfKey, result.signals)
     }
+    evaluateSignals(symbol.key, currentPrice)
+    checkZonesAndSignals(symbol.key, symbol.label, zonesByTimeframe, currentPrice)
     saveLastKnown(symbol.key, zonesByTimeframe, currentPrice)
 
     lastUpdateEl.textContent = `Last updated: ${new Date().toLocaleTimeString('en-US')}`
@@ -408,6 +502,7 @@ themeBtn.addEventListener('click', () => {
 renderSymbolTabs()
 renderTabs()
 applyTheme(uiState.theme === 'dark' ? 'dark' : 'light')
+updateNotifyBtn()
 hydrateFromCache(activeSymbol)
 renderDashboard()
 refreshData()

@@ -21,6 +21,12 @@ Multi-timeframe support & resistance dashboard for XAU/USD (Gold) and BTC/USD
 - **Offline-friendly**: last-known-good zones/price are cached to `localStorage`
   (`src/lib/offlineCache.js`) and a PWA service worker precaches the app shell, so a
   repeat visit still shows something useful without a network round-trip.
+- **Alerts**: `src/lib/notifications.js` fires a browser notification when price closes
+  in on a zone or a new signal forms — opt-in via the bell icon (requests Notification
+  permission, then toggles on/off without needing to touch browser settings again).
+- **Track record**: `src/lib/signalHistory.js` logs every signal to `localStorage` as
+  `pending`, then scores it `win`/`loss` once price plausibly hits its first take-profit
+  or stop-loss. View it via the chart-icon button in the header.
 
 ## Local development
 
