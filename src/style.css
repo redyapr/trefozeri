@@ -232,7 +232,7 @@ body {
 
 .history-stats {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 10px;
   margin-bottom: 18px;
 }
@@ -257,6 +257,10 @@ body {
 
 .history-stat.loss .num {
   color: var(--resistance);
+}
+
+.history-stat.running .num {
+  color: var(--navy-bright);
 }
 
 .history-stat .lbl {
@@ -318,6 +322,11 @@ body {
 .history-row-badge.pending {
   color: var(--navy);
   border: 1px solid var(--navy);
+}
+
+.history-row-badge.running {
+  color: #fff;
+  background: var(--navy-bright);
 }
 
 .history-empty {

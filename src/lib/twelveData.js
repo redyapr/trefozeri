@@ -25,9 +25,14 @@ export const TIMEFRAMES = [
 
 // unitsPerLot is just the position-size calculator's starting point — gold CFDs
 // commonly use 100oz/lot, crypto CFDs commonly use 1 BTC/lot; either is editable.
+//
+// pipSize is only used for the track record's win/loss pip readout: 0.1 is the common
+// gold-CFD broker convention (4400.00 -> 4400.10 = 1 pip) — adjust if your broker
+// quotes differently. null means "don't show pips" — there's no standard pip
+// convention for crypto, so BTCUSD's track record just shows the raw $ move instead.
 export const SYMBOLS = [
-  { key: 'XAUUSD', apiSymbol: 'XAU/USD', label: 'XAU/USD', eyebrow: 'Gold', unitsPerLot: 100 },
-  { key: 'BTCUSD', apiSymbol: 'BTC/USD', label: 'BTC/USD', eyebrow: 'Bitcoin', unitsPerLot: 1 },
+  { key: 'XAUUSD', apiSymbol: 'XAU/USD', label: 'XAUUSD', eyebrow: 'Gold', unitsPerLot: 100, pipSize: 0.1 },
+  { key: 'BTCUSD', apiSymbol: 'BTC/USD', label: 'BTCUSD', eyebrow: 'Bitcoin', unitsPerLot: 1, pipSize: null },
 ]
 
 // Twelve Data returns naive "YYYY-MM-DD[ HH:mm:ss]" strings with no offset. We request

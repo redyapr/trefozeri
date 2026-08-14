@@ -21,7 +21,7 @@ export default defineConfig({
       manifest: {
         name: 'TREFOZERI S/R Dashboard',
         short_name: 'S/R Dashboard',
-        description: 'Multi-timeframe support & resistance signals for XAU/USD and BTC/USD',
+        description: 'Multi-timeframe support & resistance signals for XAUUSD and BTCUSD',
         theme_color: '#1b3a6b',
         background_color: '#ffffff',
         display: 'standalone',

@@ -6,10 +6,21 @@
 // then copies straight into dist/. TWELVE_DATA_API_KEY is only ever read here, inside
 // the GitHub Actions runner or a developer's own shell; it's never bundled into the
 // browser code.
-import { mkdir, writeFile } from 'node:fs/promises'
+//
+// This run also maintains the shared signal track record (data/signal-history.json):
+// it runs the same detection/signal logic the browser runs (srDetector.js is plain JS,
+// portable to Node), updates the record with whatever fresh candles it just fetched,
+// and writes it to a path that IS git-tracked (unlike public/data/, which is
+// regenerated from scratch every run and never committed) — the workflow commits it
+// back to the repo when it changes, so the record survives across these otherwise
+// stateless CI runs and every visitor to the site fetches the same file.
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { detectLevels, buildSignals, annotateGoldenZones } from '../src/lib/srDetector.js'
+import { recordSignals, evaluateSignals, trimRecords } from '../src/lib/signalHistoryCore.js'
 
 const OUT_DIR = path.join(process.cwd(), 'public', 'data')
+const HISTORY_PATH = path.join(process.cwd(), 'data', 'signal-history.json')
 
 // If today's upstream fetch fails (rate limit, outage), fall back to whatever is
 // already live rather than shipping a hole in the data — a stale snapshot beats a
@@ -92,9 +103,61 @@ async function writeJson(relPath, data) {
   console.log(`[fetch-data] wrote ${relPath}`)
 }
 
+// Twelve Data (and our Binance mapping, see fetchBinance) both return naive
+// "YYYY-MM-DD[ HH:mm:ss]" strings with no offset — kept as a local copy of
+// src/lib/twelveData.js's parseUtc rather than importing it, since that module reads
+// import.meta.env (a Vite/browser concern) that plain Node doesn't have.
+function parseUtc(datetime) {
+  const iso = datetime.includes(' ') ? datetime.replace(' ', 'T') + 'Z' : `${datetime}T00:00:00Z`
+  return new Date(iso).getTime()
+}
+
+function toCandles(values) {
+  return values.map((v) => ({
+    time: parseUtc(v.datetime),
+    open: parseFloat(v.open),
+    high: parseFloat(v.high),
+    low: parseFloat(v.low),
+    close: parseFloat(v.close),
+  }))
+}
+
+async function loadSignalHistory() {
+  try {
+    const json = JSON.parse(await readFile(HISTORY_PATH, 'utf8'))
+    return Array.isArray(json) ? json : []
+  } catch {
+    return [] // first run ever, or the file's missing/corrupt — start fresh rather than fail the build
+  }
+}
+
+// Mirrors exactly what main.js does per refresh: build zones per timeframe, cross-link
+// Golden Zones once every timeframe's in, turn each timeframe's zones into signals,
+// then fold those into the shared history. Mutates `history` in place.
+function updateSignalHistoryForSymbol(history, symbolKey, seriesByTf) {
+  const currentPrice = seriesByTf.H1?.at(-1)?.close
+  const zonesByTimeframe = {}
+
+  for (const [tfKey, series] of Object.entries(seriesByTf)) {
+    if (!series?.length) continue
+    const last = series.at(-1)
+    zonesByTimeframe[tfKey] = { zones: detectLevels(series, currentPrice ?? last.close) }
+  }
+
+  annotateGoldenZones(zonesByTimeframe)
+
+  for (const [tfKey, result] of Object.entries(zonesByTimeframe)) {
+    recordSignals(history, symbolKey, tfKey, buildSignals(result.zones))
+  }
+  evaluateSignals(history, symbolKey, currentPrice)
+}
+
 async function main() {
   const apiKey = process.env.TWELVE_DATA_API_KEY
   if (!apiKey) throw new Error('TWELVE_DATA_API_KEY is not set')
+
+  const history = await loadSignalHistory()
+  const seriesByTfBySymbol = { XAUUSD: {}, BTCUSD: {} }
 
   for (const tf of TIMEFRAMES) {
     const gold = await fetchWithFallback(
@@ -102,11 +165,28 @@ async function main() {
       () => fetchTwelveData('XAU/USD', tf, apiKey),
       `quote/XAUUSD-${tf.key}.json`
     )
-    if (gold) await writeJson(`quote/XAUUSD-${tf.key}.json`, gold)
+    if (gold) {
+      await writeJson(`quote/XAUUSD-${tf.key}.json`, gold)
+      seriesByTfBySymbol.XAUUSD[tf.key] = toCandles(gold.values)
+    }
 
     const btc = await fetchWithFallback(`BTCUSD ${tf.key}`, () => fetchBinance(tf), `quote/BTCUSD-${tf.key}.json`)
-    if (btc) await writeJson(`quote/BTCUSD-${tf.key}.json`, btc)
+    if (btc) {
+      await writeJson(`quote/BTCUSD-${tf.key}.json`, btc)
+      seriesByTfBySymbol.BTCUSD[tf.key] = toCandles(btc.values)
+    }
   }
+
+  for (const [symbolKey, seriesByTf] of Object.entries(seriesByTfBySymbol)) {
+    updateSignalHistoryForSymbol(history, symbolKey, seriesByTf)
+  }
+  const trimmed = trimRecords(history)
+
+  // Two writes: the git-tracked canonical copy (survives to the next CI run) and the
+  // public/data copy (gitignored, but what the deployed site's browser actually fetches).
+  await mkdir(path.dirname(HISTORY_PATH), { recursive: true })
+  await writeFile(HISTORY_PATH, JSON.stringify(trimmed))
+  await writeJson('signal-history.json', trimmed)
 
   const calendar = await fetchWithFallback('calendar', fetchCalendar, 'calendar.json')
   if (calendar) await writeJson('calendar.json', calendar)

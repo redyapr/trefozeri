@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write # the build job commits data/signal-history.json back to the repo (see below)
   pages: write
   id-token: write
 
@@ -42,6 +42,24 @@ jobs:
         run: node scripts/fetch-data.mjs
         env:
           TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+
+      # data/signal-history.json is the one piece of state that has to survive across
+      # otherwise-stateless CI runs (see scripts/fetch-data.mjs) — everything else here
+      # is regenerated fresh every time. Only commits when the record actually changed
+      # (new signal opened, or one hit its SL/TP), so this doesn't spam a commit every
+      # 15 minutes. Pushing with the default GITHUB_TOKEN is safe from a trigger-loop
+      # standpoint: GitHub doesn't fire `on: push` for commits made with that token.
+      - name: Persist shared signal track record
+        run: |
+          git add data/signal-history.json
+          if git diff --cached --quiet; then
+            echo "No signal track record changes to commit"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git commit -m "Update signal track record"
+            git push
+          fi
 
       - name: Build
         run: npm run build

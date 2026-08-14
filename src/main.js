@@ -13,7 +13,7 @@ import {
   disableNotifications,
   checkZonesAndSignals,
 } from './lib/notifications.js'
-import { recordSignals, evaluateSignals, getHistory, getStats } from './lib/signalHistory.js'
+import { loadHistory, getHistory, getStats } from './lib/signalHistory.js'
 
 const NEWS_HORIZON_HOURS = 12
 // The cron in .github/workflows/deploy.yml refreshes the static snapshot roughly
@@ -152,6 +152,7 @@ function renderHistory() {
   const statsHtml = `
     <div class="history-stats">
       <div class="history-stat"><div class="num">${stats.total}</div><div class="lbl">Total</div></div>
+      <div class="history-stat running"><div class="num">${stats.running}</div><div class="lbl">Running</div></div>
       <div class="history-stat win"><div class="num">${stats.wins}</div><div class="lbl">Wins</div></div>
       <div class="history-stat loss"><div class="num">${stats.losses}</div><div class="lbl">Losses</div></div>
       <div class="history-stat"><div class="num">${stats.winRate != null ? stats.winRate + '%' : '—'}</div><div class="lbl">Win rate</div></div>
@@ -160,16 +161,26 @@ function renderHistory() {
 
   const rowsHtml = records.length
     ? `<div class="history-list">${records
-        .map(
-          (r) => `
+        .map((r) => {
+          // pending: order not filled yet, nothing more to show.
+          // running: filled, waiting on SL/TP.
+          // win/loss: closed — show what it hit, at what price, and the pip/price move.
+          const secondLine =
+            r.status === 'running'
+              ? `<span>Filled ${formatDateTime(r.filledAt)} (${timeAgo(r.filledAt)}) · running</span>`
+              : r.status !== 'pending'
+                ? `<span>${historyExitLine(r, activeSymbol)} (${timeAgo(r.closedAt)})</span>`
+                : ''
+          return `
         <div class="history-row">
           <div class="history-row-main">
             <strong>${r.direction === 'buy' ? 'BUY' : 'SELL'} ${shortCategory(r.category)} · ${r.tf}</strong>
-            <span>Entry ${formatPrice(r.entry)} · ${timeAgo(r.openedAt)}</span>
+            <span>Entry ${formatPrice(r.entry)} · Opened ${formatDateTime(r.openedAt)} (${timeAgo(r.openedAt)})</span>
+            ${secondLine}
           </div>
           <span class="history-row-badge ${r.status}">${r.status}</span>
         </div>`
-        )
+        })
         .join('')}</div>`
     : `<p class="history-empty">No signals recorded yet for ${activeSymbol.label} — check back after a few refreshes.</p>`
 
@@ -207,6 +218,41 @@ function renderTabs() {
 
 function formatPrice(p) {
   return String(Math.round(p))
+}
+
+// Track-record rows need real precision (pips are a fraction of a whole price unit),
+// unlike the rest of the app's rounded-to-whole-number display.
+function formatExitPrice(p) {
+  return p.toFixed(2)
+}
+
+function formatDateTime(ts) {
+  const d = new Date(ts)
+  return `${d.toLocaleDateString('en-US')} ${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`
+}
+
+// How far price moved from entry to exit, in the trade's favor being positive —
+// e.g. a sell's exit price is *below* entry on a win, so this flips the raw sign
+// rather than just reporting exitPrice - entry verbatim.
+function formatMove(symbol, entry, exitPrice, isBuy) {
+  const raw = exitPrice - entry
+  const favorable = isBuy ? raw : -raw
+  const sign = favorable >= 0 ? '+' : ''
+  if (symbol.pipSize) {
+    const pips = Math.round(favorable / symbol.pipSize)
+    return `${sign}${pips} pips`
+  }
+  // No standard pip convention for this symbol (e.g. crypto) — show the raw $ move instead.
+  return `${sign}${favorable.toFixed(2)}`
+}
+
+// One line describing how a closed signal ended: which target (or the SL) it hit,
+// at what price, how far that was from entry, and when.
+function historyExitLine(r, symbol) {
+  const isBuy = r.direction === 'buy'
+  const label = r.status === 'win' ? `TP${(r.hitTpIndex ?? 0) + 1} hit` : 'SL hit'
+  const move = formatMove(symbol, r.entry, r.exitPrice, isBuy)
+  return `${label} @ ${formatExitPrice(r.exitPrice)} (${move}) · ${formatDateTime(r.closedAt)}`
 }
 
 function timeAgo(ts) {
@@ -253,6 +299,14 @@ function renderNewsBanner() {
 async function refreshNewsCalendar() {
   newsEvents = await fetchNewsCalendar()
   renderNewsBanner()
+}
+
+// The shared track record is a static file the cron job rewrites roughly every 15
+// minutes (see scripts/fetch-data.mjs) — refetch it on the same cadence as price data
+// rather than only once at startup, so a track record modal left open updates on its own.
+async function refreshHistory() {
+  await loadHistory()
+  renderDashboard()
 }
 
 // Abbreviated for display only — 'Resistance' is long enough to crowd the price
@@ -476,9 +530,7 @@ async function refreshData() {
     annotateGoldenZones(zonesByTimeframe)
     for (const [tfKey, result] of Object.entries(zonesByTimeframe)) {
       result.signals = buildSignals(result.zones)
-      recordSignals(symbol.key, tfKey, result.signals)
     }
-    evaluateSignals(symbol.key, currentPrice)
     checkZonesAndSignals(symbol.key, symbol.label, zonesByTimeframe, currentPrice)
     saveLastKnown(symbol.key, zonesByTimeframe, currentPrice)
 
@@ -507,7 +559,9 @@ hydrateFromCache(activeSymbol)
 renderDashboard()
 refreshData()
 refreshNewsCalendar()
+refreshHistory()
 setInterval(() => {
   refreshData()
   refreshNewsCalendar()
+  refreshHistory()
 }, AUTO_REFRESH_INTERVAL_MS)

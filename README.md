@@ -1,6 +1,6 @@
 # TREFOZERI S/R Dashboard
 
-Multi-timeframe support & resistance dashboard for XAU/USD (Gold) and BTC/USD
+Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
 (Bitcoin), with entry/SL/TP signal cards and a high-impact USD news banner.
 
 **Live:** https://redyapr.github.io/trefozeri/
@@ -24,9 +24,13 @@ Multi-timeframe support & resistance dashboard for XAU/USD (Gold) and BTC/USD
 - **Alerts**: `src/lib/notifications.js` fires a browser notification when price closes
   in on a zone or a new signal forms — opt-in via the bell icon (requests Notification
   permission, then toggles on/off without needing to touch browser settings again).
-- **Track record**: `src/lib/signalHistory.js` logs every signal to `localStorage` as
-  `pending`, then scores it `win`/`loss` once price plausibly hits its first take-profit
-  or stop-loss. View it via the chart-icon button in the header.
+- **Track record**: shared across every visitor, not per-browser. `scripts/fetch-data.mjs`
+  logs each signal to `data/signal-history.json` as `pending` during the cron run, then
+  scores it `win`/`loss` once price plausibly hits its first take-profit or stop-loss;
+  the workflow commits that file back to the repo when it changes (see
+  [Data & deployment](#data--deployment)), so it survives across CI runs and everyone
+  sees the same record. The browser (`src/lib/signalHistory.js`) only ever reads it.
+  View it via the chart-icon button in the header.
 
 ## Local development
 
@@ -68,6 +72,13 @@ into browser code.
   already tolerates),
 - and on manual `workflow_dispatch`.
 
+Every CI run is otherwise stateless (fresh checkout, `public/data/` is gitignored and
+rebuilt from scratch each time) — `data/signal-history.json` is the one exception. The
+fetch step updates it in place, then a dedicated workflow step commits it back to
+`master` with the default `GITHUB_TOKEN`, but only when it actually changed (a new
+signal opened, or one hit its SL/TP) — most 15-minute ticks commit nothing. Pushing
+with that token doesn't re-trigger the `on: push` rule, so this can't loop.
+
 One-time setup for a fork or a new deploy target (the workflow's default
 `GITHUB_TOKEN` can't do either of these via API — both need repo-admin access):
 
@@ -90,8 +101,13 @@ src/
     newsCalendar.js     Static-JSON calendar fetching + high-impact filtering
     offlineCache.js     localStorage last-known-good snapshot
     uiState.js          Persisted tab/theme/symbol selection
+    signalHistoryCore.js Pure record-keeping logic, shared by the browser and the cron script
+    signalHistory.js    Browser-side: fetches the shared signal-history.json (read-only)
 scripts/
-  fetch-data.mjs        Pre-fetches quote + calendar data into public/data/
+  fetch-data.mjs        Pre-fetches quote + calendar data into public/data/, and
+                        maintains data/signal-history.json (the shared track record)
+data/
+  signal-history.json   Git-tracked shared signal track record — committed by CI
 .github/workflows/
-  deploy.yml            Cron fetch → build → deploy to GitHub Pages
+  deploy.yml            Cron fetch → persist track record → build → deploy to GitHub Pages
 ```
