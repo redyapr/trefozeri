@@ -742,6 +742,20 @@ body {
   font-weight: 600;
 }
 
+.app-footer p + p {
+  margin-top: 8px;
+}
+
+.app-footer a {
+  color: var(--navy-bright);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.app-footer a:hover {
+  text-decoration: underline;
+}
+
 @media (max-width: 480px) {
   .brand-logo {
     height: 30px;

@@ -165,6 +165,12 @@ async function sendTelegramMessage(text, replyToMessageId) {
   }
 }
 
+// Rounds to 1 decimal, but drops it entirely when it'd just be ".0" — 4301 instead of
+// 4301.0, 4307.8 stays 4307.8.
+function formatChatNumber(n) {
+  return String(Number(n.toFixed(1)))
+}
+
 // group is almost always a single signal now that TELEGRAM_TIMEFRAMES filters down to
 // H1 before grouping — kept as a group (rather than a single signal) so this still
 // works unchanged if TELEGRAM_TIMEFRAMES is ever widened back out. The timeframe
@@ -174,36 +180,32 @@ export function buildNewSignalMessage(symbolKey, group) {
   group.sort((a, b) => TF_ORDER.indexOf(a.tf) - TF_ORDER.indexOf(b.tf))
   const primary = group[0]
   const isBuy = primary.direction === 'buy'
+  const isGolden = primary.strengthLabel === 'Strong'
   const lines = [
-    `🆕 <b>${isBuy ? 'BUY' : 'SELL'} LIMIT</b> — ${symbolKey}`,
-    `Zone: ${primary.category}`,
-    `Entry: ${primary.entry.toFixed(2)}`,
-    `SL: ${primary.sl.toFixed(2)}`,
-    ...primary.tp.map((t, i) => `TP${i + 1}: ${t.price.toFixed(2)} (${t.rr.toFixed(1)}R)`),
+    `${isBuy ? '🔵' : '🔴'} ${isBuy ? 'BUY' : 'SELL'} LIMIT — ${symbolKey}${isGolden ? ' ⭐ Golden Zone' : ''}`,
+    `Zone: ${primary.category} (${primary.strengthLabel})`,
+    `Price: ${formatChatNumber(primary.entry)}`,
+    `SL: ${formatChatNumber(primary.sl)}`,
+    ...primary.tp.map((t, i) => `TP${i + 1}: ${formatChatNumber(t.price)} (${formatChatNumber(t.rr)}R)`),
   ]
   return lines.join('\n')
 }
 
-export function buildFillMessage(symbolKey, record) {
-  const isBuy = record.direction === 'buy'
-  const lines = [
-    `🟡 <b>ENTRY FILLED</b> — ${symbolKey} ${isBuy ? 'BUY' : 'SELL'}`,
-    `Entry: ${record.entry.toFixed(2)}`,
-  ]
-  return lines.join('\n')
+// No symbol/direction/price here either, same reasoning as buildCloseMessage — it's a
+// reply to the signal that already states all of that.
+export function buildFillMessage() {
+  return '🟡 ENTRY FILLED'
 }
 
+// No exit price here — it's a reply to the signal that already states its SL/TP
+// levels, so restating the price would just be redundant. Just which one it was and
+// the pip/price result.
 export function buildCloseMessage(symbolKey, record) {
   const isBuy = record.direction === 'buy'
   const isWin = record.status === 'win'
   const label = isWin ? `TP${(record.hitTpIndex ?? 0) + 1} HIT` : 'SL HIT'
   const move = formatMove(PIP_SIZES[symbolKey], record.entry, record.exitPrice, isBuy)
-  const lines = [
-    `${isWin ? '🟢' : '🔴'} <b>${label}</b> — ${symbolKey} ${isBuy ? 'BUY' : 'SELL'}`,
-    `Exit: ${record.exitPrice.toFixed(2)}`,
-    `Result: ${move}`,
-  ]
-  return lines.join('\n')
+  return `${isWin ? '✅' : '❌'} ${label} ${move}`
 }
 
 // Sends one Telegram message per newly-added signal, EXCEPT when the same level also
@@ -237,9 +239,9 @@ async function notifyNewSignals(symbolKey, added, signalByKey) {
   }
 }
 
-async function notifyFilledSignals(symbolKey, filled) {
+async function notifyFilledSignals(filled) {
   for (const record of filled) {
-    await sendTelegramMessage(buildFillMessage(symbolKey, record), record.telegramMessageId)
+    await sendTelegramMessage(buildFillMessage(), record.telegramMessageId)
   }
 }
 
@@ -294,7 +296,7 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
     // didn't exist.
     const onlyH1 = (r) => TELEGRAM_TIMEFRAMES.has(r.tf)
     await notifyNewSignals(symbolKey, added.filter(onlyH1), signalByKey)
-    await notifyFilledSignals(symbolKey, filled.filter(onlyH1))
+    await notifyFilledSignals(filled.filter(onlyH1))
     await notifyClosedSignals(symbolKey, closed.filter(onlyH1))
   }
 }
