@@ -414,6 +414,23 @@ body {
   font-weight: 600;
 }
 
+.market-status-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text-dim);
+  font-size: 0.82rem;
+}
+
+.market-status-banner-icon {
+  font-size: 0.9rem;
+}
+
 .content {
   min-height: 200px;
   padding-top: 18px;

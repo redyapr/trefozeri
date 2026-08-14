@@ -36,16 +36,24 @@ jobs:
 
       - run: npm ci
 
+      # Gates everything below: a failing test here stops the job before it can fetch,
+      # commit, build, or deploy anything.
+      - name: Run tests
+        run: npm test
+
       # Writes public/data/*.json — see scripts/fetch-data.mjs for why GitHub Pages
       # needs this pre-fetched instead of proxied on demand. Also sends Telegram
-      # notifications for new/closed signals (XAUUSD only for now) — TELEGRAM_BOT_TOKEN/
-      # TELEGRAM_CHAT_ID are optional; sendTelegramMessage() no-ops if either is unset.
+      # notifications for new/closed signals (XAUUSD only for now) to TELEGRAM_CHAT_ID,
+      # and separately alerts TELEGRAM_PERSONAL_CHAT_ID (a private DM, not the public
+      # channel) if a data source or the whole run fails. All three are optional;
+      # sendTelegramMessage()/sendAdminAlert() no-op if their target is unset.
       - name: Fetch quote & calendar data
         run: node scripts/fetch-data.mjs
         env:
           TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_PERSONAL_CHAT_ID: ${{ secrets.TELEGRAM_PERSONAL_CHAT_ID }}
 
       # data/signal-history.json is the one piece of state that has to survive across
       # otherwise-stateless CI runs (see scripts/fetch-data.mjs) — everything else here

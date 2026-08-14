@@ -25,16 +25,13 @@ export const TIMEFRAMES = [
   { key: 'D1', interval: '1day', outputsize: 300, label: 'D1', minRefetchMs: 4 * 60 * 60 * 1000 },
 ]
 
-// unitsPerLot is just the position-size calculator's starting point — gold CFDs
-// commonly use 100oz/lot, crypto CFDs commonly use 1 BTC/lot; either is editable.
-//
 // pipSize (used for the track record's win/loss pip readout) comes from
 // signalHistoryCore.js's PIP_SIZES — the one source of truth, since the cron script
 // that sends Telegram notifications needs the same value and can't import this module
 // (it reads import.meta.env, a Vite/browser-only API).
 export const SYMBOLS = [
-  { key: 'XAUUSD', apiSymbol: 'XAU/USD', label: 'XAUUSD', eyebrow: 'Gold', unitsPerLot: 100, pipSize: PIP_SIZES.XAUUSD },
-  { key: 'BTCUSD', apiSymbol: 'BTC/USD', label: 'BTCUSD', eyebrow: 'Bitcoin', unitsPerLot: 1, pipSize: PIP_SIZES.BTCUSD },
+  { key: 'XAUUSD', apiSymbol: 'XAU/USD', label: 'XAUUSD', eyebrow: 'Gold', pipSize: PIP_SIZES.XAUUSD },
+  { key: 'BTCUSD', apiSymbol: 'BTC/USD', label: 'BTCUSD', eyebrow: 'Bitcoin', pipSize: PIP_SIZES.BTCUSD },
 ]
 
 // Twelve Data returns naive "YYYY-MM-DD[ HH:mm:ss]" strings with no offset. We request

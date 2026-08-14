@@ -14,7 +14,8 @@ import {
   checkZonesAndSignals,
 } from './lib/notifications.js'
 import { loadHistory, getHistory, getStats } from './lib/signalHistory.js'
-import { formatMove } from './lib/signalHistoryCore.js'
+import { formatMove, formatPrice } from './lib/signalHistoryCore.js'
+import { isGoldMarketClosed } from './lib/marketHours.js'
 
 const NEWS_HORIZON_HOURS = 12
 // The cron in .github/workflows/deploy.yml refreshes the static snapshot roughly
@@ -26,6 +27,7 @@ const AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000
 
 const symbolTabsEl = document.getElementById('symbol-tabs')
 const tabsEl = document.getElementById('tabs')
+const marketStatusBannerEl = document.getElementById('market-status-banner')
 const newsBannerEl = document.getElementById('news-banner')
 const contentEl = document.getElementById('content')
 const priceEl = document.getElementById('price-display')
@@ -36,6 +38,7 @@ const historyBtn = document.getElementById('history-btn')
 const historyModal = document.getElementById('history-modal')
 const historyBody = document.getElementById('history-body')
 const historyCloseBtn = document.getElementById('history-close')
+const installBtn = document.getElementById('install-btn')
 
 const uiState = loadUiState()
 
@@ -108,7 +111,20 @@ function hydrateFromCache(symbol) {
   lastUpdateEl.textContent = `Showing cached data from ${new Date(cached.savedAt).toLocaleString('en-US')}`
 }
 
+function renderMarketStatusBanner() {
+  if (activeSymbol.key !== 'XAUUSD' || !isGoldMarketClosed()) {
+    marketStatusBannerEl.hidden = true
+    return
+  }
+  marketStatusBannerEl.hidden = false
+  marketStatusBannerEl.innerHTML = `
+    <span class="market-status-banner-icon">🌙</span>
+    <span>Gold market is closed for the weekend (reopens Sunday 22:00 UTC) — prices and signals may be stale.</span>
+  `
+}
+
 function renderDashboard() {
+  renderMarketStatusBanner()
   renderNewsBanner()
   renderContent()
   // Keep the track-record modal live if it's already open, instead of only updating
@@ -218,16 +234,6 @@ function renderTabs() {
   }
 }
 
-function formatPrice(p) {
-  return String(Math.round(p))
-}
-
-// Track-record rows need real precision (pips are a fraction of a whole price unit),
-// unlike the rest of the app's rounded-to-whole-number display.
-function formatExitPrice(p) {
-  return p.toFixed(2)
-}
-
 function formatDateTime(ts) {
   const d = new Date(ts)
   return `${d.toLocaleDateString('en-US')} ${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`
@@ -239,7 +245,7 @@ function historyExitLine(r, symbol) {
   const isBuy = r.direction === 'buy'
   const label = r.status === 'win' ? `TP${(r.hitTpIndex ?? 0) + 1} hit` : 'SL hit'
   const move = formatMove(symbol.pipSize, r.entry, r.exitPrice, isBuy)
-  return `${label} @ ${formatExitPrice(r.exitPrice)} (${move}) · ${formatDateTime(r.closedAt)}`
+  return `${label} @ ${formatPrice(r.exitPrice)} (${move}) · ${formatDateTime(r.closedAt)}`
 }
 
 function timeAgo(ts) {
@@ -536,6 +542,33 @@ themeBtn.addEventListener('click', () => {
   saveUiState({ theme: next })
   // Chart colors are read from CSS vars at creation time, so it needs a rebuild to pick up the new theme.
   renderContent()
+})
+
+// Custom install prompt: the browser's own default install UI is inconsistent (a tiny
+// address-bar icon on some browsers, nothing visible at all on others) and fires on
+// its own schedule — capturing the event instead lets the app show one obvious button
+// and trigger the native prompt whenever the user actually clicks it.
+let deferredInstallPrompt = null
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault()
+  deferredInstallPrompt = e
+  installBtn.hidden = false
+})
+
+installBtn.addEventListener('click', async () => {
+  if (!deferredInstallPrompt) return
+  installBtn.hidden = true
+  deferredInstallPrompt.prompt()
+  await deferredInstallPrompt.userChoice
+  deferredInstallPrompt = null
+})
+
+// Already installed (or the browser installed it without ever asking) — nothing left
+// to prompt, so the button should never appear even if beforeinstallprompt fires late.
+window.addEventListener('appinstalled', () => {
+  installBtn.hidden = true
+  deferredInstallPrompt = null
 })
 
 renderSymbolTabs()

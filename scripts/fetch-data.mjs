@@ -17,7 +17,8 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { detectLevels, buildSignals, annotateGoldenZones } from '../src/lib/srDetector.js'
-import { recordSignals, evaluateSignals, trimRecords, keyFor, PIP_SIZES, formatMove } from '../src/lib/signalHistoryCore.js'
+import { recordSignals, evaluateSignals, trimRecords, keyFor, PIP_SIZES, formatMove, formatPrice } from '../src/lib/signalHistoryCore.js'
+import { isGoldMarketClosed } from '../src/lib/marketHours.js'
 
 const OUT_DIR = path.join(process.cwd(), 'public', 'data')
 const HISTORY_PATH = path.join(process.cwd(), 'data', 'signal-history.json')
@@ -29,6 +30,21 @@ const HISTORY_PATH = path.join(process.cwd(), 'data', 'signal-history.json')
 const TELEGRAM_SYMBOLS = new Set(['XAUUSD'])
 const TELEGRAM_TIMEFRAMES = new Set(['H1'])
 const TF_ORDER = ['H1', 'H4', 'D1']
+
+// Ops alerting: a *separate* chat from the public signals channel (TELEGRAM_CHAT_ID) —
+// TELEGRAM_PERSONAL_CHAT_ID is a private DM with the bot, so run-health noise (a data
+// source down, a fatal script error) never lands in front of channel subscribers. Also
+// no-ops if unset, same as the public channel.
+const FAILURES = []
+function recordFailure(message) {
+  FAILURES.push(message)
+}
+export function getFailures() {
+  return FAILURES
+}
+export function resetFailures() {
+  FAILURES.length = 0
+}
 
 // If today's upstream fetch fails (rate limit, outage), fall back to whatever is
 // already live rather than shipping a hole in the data — a stale snapshot beats a
@@ -88,17 +104,49 @@ async function fetchCalendar() {
   return res.json()
 }
 
-async function fetchWithFallback(label, primary, fallbackRelPath) {
+// A transient blip (rate limit, a momentary 5xx, a dropped connection) shouldn't
+// immediately give up and serve stale data — retry a couple of times with backoff
+// first. Only once retries are exhausted does fetchWithFallback fall back to the last
+// published snapshot.
+const RETRY_ATTEMPTS = 2 // 1 initial try + this many retries
+const RETRY_BASE_DELAY_MS = 1000 // 1s, then 2s
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// attempts/baseDelayMs are overridable (rather than always reading the module
+// constants) so tests can drive this with near-zero delay instead of eating the real
+// backoff on every retry-path test case.
+export async function withRetry(fn, label, { attempts = RETRY_ATTEMPTS, baseDelayMs = RETRY_BASE_DELAY_MS } = {}) {
+  let lastErr
+  for (let attempt = 0; attempt <= attempts; attempt++) {
+    try {
+      return await fn()
+    } catch (err) {
+      lastErr = err
+      if (attempt < attempts) {
+        const backoff = baseDelayMs * 2 ** attempt
+        console.warn(`[fetch-data] ${label} attempt ${attempt + 1} failed (${err.message}), retrying in ${backoff}ms`)
+        await delay(backoff)
+      }
+    }
+  }
+  throw lastErr
+}
+
+export async function fetchWithFallback(label, primary, fallbackRelPath, retryOptions) {
   try {
-    return await primary()
+    return await withRetry(primary, label, retryOptions)
   } catch (err) {
-    console.warn(`[fetch-data] ${label} failed (${err.message}) — falling back to last published snapshot`)
+    console.warn(`[fetch-data] ${label} failed after retries (${err.message}) — falling back to last published snapshot`)
     try {
       const res = await fetch(`${LIVE_BASE}/${fallbackRelPath}`)
       if (!res.ok) throw new Error(`fallback fetch returned ${res.status}`)
       return await res.json()
     } catch (fallbackErr) {
       console.warn(`[fetch-data] ${label} fallback also failed (${fallbackErr.message}) — leaving this file unwritten`)
+      recordFailure(`${label}: primary failed after retries (${err.message}); fallback also failed (${fallbackErr.message})`)
       return null
     }
   }
@@ -130,13 +178,13 @@ function toCandles(values) {
   }))
 }
 
-// Posts one message to the configured chat, optionally as a reply to an earlier
-// message (used to thread a SL/TP result under the signal that opened it). Returns
-// the sent message's id (so it can later be replied to), or null on any failure —
-// notifications are best-effort and should never fail the whole cron run.
-async function sendTelegramMessage(text, replyToMessageId) {
+// Posts one message to `chatId` (defaults to the public signals channel), optionally
+// as a reply to an earlier message (used to thread a SL/TP result under the signal
+// that opened it). Returns the sent message's id (so it can later be replied to), or
+// null on any failure — notifications are best-effort and should never fail the whole
+// cron run.
+export async function sendTelegramMessage(text, replyToMessageId, chatId = process.env.TELEGRAM_CHAT_ID) {
   const token = process.env.TELEGRAM_BOT_TOKEN
-  const chatId = process.env.TELEGRAM_CHAT_ID
   if (!token || !chatId) return null
 
   try {
@@ -165,10 +213,13 @@ async function sendTelegramMessage(text, replyToMessageId) {
   }
 }
 
-// Rounds to 1 decimal, but drops it entirely when it'd just be ".0" — 4301 instead of
-// 4301.0, 4307.8 stays 4307.8.
-function formatChatNumber(n) {
-  return String(Number(n.toFixed(1)))
+// Ops alert to the personal chat — never the public channel. Best-effort like
+// sendTelegramMessage: a failure here is logged, not thrown, so it can never mask or
+// replace the actual error/failure being reported.
+export async function sendAdminAlert(text) {
+  const chatId = process.env.TELEGRAM_PERSONAL_CHAT_ID
+  if (!chatId) return
+  await sendTelegramMessage(`⚠️ <b>trefozeri cron</b>\n${text}`, undefined, chatId)
 }
 
 // group is almost always a single signal now that TELEGRAM_TIMEFRAMES filters down to
@@ -184,9 +235,9 @@ export function buildNewSignalMessage(symbolKey, group) {
   const lines = [
     `${isBuy ? '🔵' : '🔴'} ${isBuy ? 'BUY' : 'SELL'} LIMIT — ${symbolKey}${isGolden ? ' ⭐ Golden Zone' : ''}`,
     `Zone: ${primary.category} (${primary.strengthLabel})`,
-    `Price: ${formatChatNumber(primary.entry)}`,
-    `SL: ${formatChatNumber(primary.sl)}`,
-    ...primary.tp.map((t, i) => `TP${i + 1}: ${formatChatNumber(t.price)} (${formatChatNumber(t.rr)}R)`),
+    `Price: ${formatPrice(primary.entry)}`,
+    `SL: ${formatPrice(primary.sl)}`,
+    ...primary.tp.map((t, i) => `TP${i + 1}: ${formatPrice(t.price)} (${formatPrice(t.rr)}R)`),
   ]
   return lines.join('\n')
 }
@@ -209,12 +260,17 @@ export function buildCloseMessage(symbolKey, record) {
 }
 
 // Sends one Telegram message per newly-added signal, EXCEPT when the same level also
-// just appeared on another timeframe (cross-timeframe confluence, see
-// annotateGoldenZones in srDetector.js) — those are folded into a single message
-// naming every timeframe involved, rather than one message per timeframe. All records
-// in a folded group get the same telegramMessageId so a SL/TP hit on any of them later
-// replies to that one shared message.
-async function notifyNewSignals(symbolKey, added, signalByKey) {
+// just appeared on another timeframe that ALSO reaches Telegram (cross-timeframe
+// confluence, see annotateGoldenZones in srDetector.js) — those are folded into a
+// single message naming every timeframe involved, rather than one message per
+// timeframe. All records in a folded group get the same telegramMessageId so a SL/TP
+// hit on any of them later replies to that one shared message. With
+// TELEGRAM_TIMEFRAMES currently just {H1}, `added` is already filtered down to H1
+// before this runs (see the call site), so in practice a group is always exactly one
+// signal today — an H4/D1 confluence partner never even reaches `added` here, so it
+// can't be folded in. This still does the right thing unchanged if TELEGRAM_TIMEFRAMES
+// is ever widened to include more than one timeframe.
+export async function notifyNewSignals(symbolKey, added, signalByKey) {
   const handled = new Set()
 
   for (const record of added) {
@@ -239,13 +295,13 @@ async function notifyNewSignals(symbolKey, added, signalByKey) {
   }
 }
 
-async function notifyFilledSignals(filled) {
+export async function notifyFilledSignals(filled) {
   for (const record of filled) {
     await sendTelegramMessage(buildFillMessage(), record.telegramMessageId)
   }
 }
 
-async function notifyClosedSignals(symbolKey, closed) {
+export async function notifyClosedSignals(symbolKey, closed) {
   for (const record of closed) {
     await sendTelegramMessage(buildCloseMessage(symbolKey, record), record.telegramMessageId)
   }
@@ -267,6 +323,11 @@ async function loadSignalHistory() {
 // newly-closed signals.
 export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByTf) {
   const currentPrice = seriesByTf.H1?.at(-1)?.close
+  // The data's own timestamp, not wall-clock now — normally the same thing (this runs
+  // every ~15 minutes), but ties "is the market closed" to what the candles actually
+  // show rather than whenever the script happens to execute, and makes it deterministic
+  // to test.
+  const currentTime = seriesByTf.H1?.at(-1)?.time
   const zonesByTimeframe = {}
 
   for (const [tfKey, series] of Object.entries(seriesByTf)) {
@@ -295,7 +356,11 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
     // never even be mentioned in an H1 message's timeframe list, the same as if it
     // didn't exist.
     const onlyH1 = (r) => TELEGRAM_TIMEFRAMES.has(r.tf)
-    await notifyNewSignals(symbolKey, added.filter(onlyH1), signalByKey)
+    // New signals only — not fills/closes, which are for trades already live and
+    // shouldn't go silent just because the market's since closed for the weekend. This
+    // is specifically about not opening brand-new "signals" off stale weekend candles.
+    const skipNewSignals = symbolKey === 'XAUUSD' && isGoldMarketClosed(currentTime != null ? new Date(currentTime) : undefined)
+    if (!skipNewSignals) await notifyNewSignals(symbolKey, added.filter(onlyH1), signalByKey)
     await notifyFilledSignals(filled.filter(onlyH1))
     await notifyClosedSignals(symbolKey, closed.filter(onlyH1))
   }
@@ -339,14 +404,19 @@ async function main() {
 
   const calendar = await fetchWithFallback('calendar', fetchCalendar, 'calendar.json')
   if (calendar) await writeJson('calendar.json', calendar)
+
+  if (FAILURES.length) {
+    await sendAdminAlert(`${FAILURES.length} data source(s) failed this run (retries + fallback both exhausted):\n${FAILURES.join('\n')}`)
+  }
 }
 
 // Only auto-run when executed directly (`node scripts/fetch-data.mjs`), not when
 // imported — lets the exported pieces above be exercised directly (e.g. in tests)
 // without triggering a real network run.
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch((err) => {
+  main().catch(async (err) => {
     console.error('[fetch-data] fatal:', err)
+    await sendAdminAlert(`Fatal error, run aborted:\n${err.message}`)
     process.exit(1)
   })
 }

@@ -182,3 +182,11 @@ export function formatMove(pipSize, entry, exitPrice, isBuy) {
   }
   return `${sign}${favorable.toFixed(2)}`
 }
+
+// The one shared price display format — rounds to 1 decimal, but drops it entirely
+// when it'd just be ".0" (4301 instead of 4301.0, 4307.8 stays 4307.8). Used
+// everywhere a price is shown to a person: the dashboard (spot ticker, zone/signal
+// cards, track record) and the cron script's Telegram messages, so they always agree.
+export function formatPrice(n) {
+  return String(Number(n.toFixed(1)))
+}

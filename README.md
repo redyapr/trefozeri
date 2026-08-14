@@ -43,14 +43,23 @@ they happen.
   `scripts/fetch-data.mjs`; H4/D1 signals never post, even as part of a confluence
   group). The cron run posts a message for every newly-opened signal — direction,
   zone, price, SL, and every TP, with a ⭐ Golden Zone flag when it's a cross-timeframe
-  confluence level. Once price reaches the entry (the order "fills") and again once it
-  closes on a SL/TP hit, a short reply posts under that same message (no price restated
-  — it's already in the opening message — just which target and the move in pips, or
-  raw $ for symbols with no pip convention). A fill that closes within the same
-  ~15-minute poll (a fast move skipping past the entry and straight through the stop)
-  only posts the close, not a separate fill message first. Optional — no-ops if
-  `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` aren't set (see
+  confluence level (new signals are skipped entirely while the gold market's closed —
+  see Market status below). Once price reaches the entry (the order "fills") and again
+  once it closes on a SL/TP hit, a short reply posts under that same message (no price
+  restated — it's already in the opening message — just which target and the move in
+  pips, or raw $ for symbols with no pip convention); those still post even while the
+  market's closed, since a trade already running shouldn't go silent. A fill that
+  closes within the same ~15-minute poll (a fast move skipping past the entry and
+  straight through the stop) only posts the close, not a separate fill message first.
+  Optional — no-ops if `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` aren't set (see
   [Data & deployment](#data--deployment)).
+- **Market status**: `src/lib/marketHours.js` knows gold's ~23/5 trading week (closed
+  Friday 22:00 UTC → Sunday 22:00 UTC) — the dashboard shows a banner during that
+  window (XAUUSD tab only), and the cron job uses it to skip opening brand-new signals
+  off stale weekend candles (see above).
+- **Install prompt**: the browser's own "add to home screen" UI is inconsistent across
+  browsers — `src/main.js` captures `beforeinstallprompt` itself and shows one obvious
+  button in the header instead, hidden again once installed.
 
 ## Local development
 
@@ -74,27 +83,41 @@ Other scripts:
 | --- | --- |
 | `npm run dev` | Vite dev server |
 | `npm run fetch:data` | Fetch quote + calendar data into `public/data/` (reads `.env`) |
+| `npm test` | Run the test suite ([Node's built-in test runner](https://nodejs.org/api/test.html), no extra dependency) |
 | `npm run build` | Production build → `dist/` |
 | `npm run preview` | Serve the built `dist/` locally |
+
+`test/` covers the pure logic modules — `srDetector.js` (pivot state machine, SL
+sizing, TP dedup), `signalHistoryCore.js` (record lifecycle, pip formatting),
+`marketHours.js`, and `fetch-data.mjs`'s Telegram message building / grouping /
+retry / admin-alert wiring (with `fetch` mocked, so it never touches the real network
+or a real chat) — not the DOM-coupled browser files (`main.js`, `notifications.js`,
+etc.), which would need a jsdom-style environment to test meaningfully.
 
 ## Data & deployment
 
 The app is deployed to **GitHub Pages**, which only serves static files — there's no
 server to proxy API requests on demand. Instead, `scripts/fetch-data.mjs` fetches
-Twelve Data / Binance.US / the calendar feed once per run and writes the result as
-static JSON into `public/data/`, which `vite build` copies straight into `dist/`. The
-`TWELVE_DATA_API_KEY` secret is only ever read inside that script — it's never bundled
-into browser code.
+Twelve Data / Binance.US / the calendar feed once per run — retrying a couple of times
+with backoff on a transient failure before falling back to the last published snapshot
+— and writes the result as static JSON into `public/data/`, which `vite build` copies
+straight into `dist/`. All secrets (`TWELVE_DATA_API_KEY`, `TELEGRAM_BOT_TOKEN`,
+`TELEGRAM_CHAT_ID`, `TELEGRAM_PERSONAL_CHAT_ID`) are only ever read inside that same
+script — none of them are ever bundled into browser code.
 
-`.github/workflows/deploy.yml` runs this fetch-then-build-then-deploy pipeline:
+`.github/workflows/deploy.yml` runs this test-then-fetch-then-build-then-deploy
+pipeline:
 
 - on every push to `master`,
 - on a **15-minute cron** (matches the app's own refresh throttling — the dashboard
   polls every 5 minutes but each timeframe only actually refetches on its own cadence,
-  e.g. H1 every 20 minutes, D1 every 4 hours, see `minRefetchMs` in
+  e.g. H1 every 20 minutes, H4 every hour, D1 every 4 hours, see `minRefetchMs` in
   `src/lib/twelveData.js` — so the cadence never leaves data staler than the app
   already tolerates),
 - and on manual `workflow_dispatch`.
+
+The very first step is `npm test` — a failing test stops the run before it can fetch,
+commit, build, or deploy anything.
 
 Every CI run is otherwise stateless (fresh checkout, `public/data/` is gitignored and
 rebuilt from scratch each time) — `data/signal-history.json` is the one exception. The
@@ -103,13 +126,20 @@ fetch step updates it in place, then a dedicated workflow step commits it back t
 signal opened, or one hit its SL/TP) — most 15-minute ticks commit nothing. Pushing
 with that token doesn't re-trigger the `on: push` rule, so this can't loop.
 
+**Ops alerting**: if a data source fails even after retries and the fallback snapshot,
+or the whole run hits a fatal error, `scripts/fetch-data.mjs` sends an alert to
+`TELEGRAM_PERSONAL_CHAT_ID` — a private DM with the bot, deliberately kept separate
+from `TELEGRAM_CHAT_ID` (the public signals channel), so run-health noise never lands
+in front of channel subscribers.
+
 One-time setup for a fork or a new deploy target (the workflow's default
 `GITHUB_TOKEN` can't do either of these via API — both need repo-admin access):
 
 1. **Settings → Secrets and variables → Actions → New repository secret** — add
    `TWELVE_DATA_API_KEY`, and optionally `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` for
    Telegram notifications (create a bot via [@BotFather](https://t.me/BotFather), add
-   it to the target chat, and use that chat's numeric id — negative for a group).
+   it to the target chat, and use that chat's numeric id — negative for a group) plus
+   `TELEGRAM_PERSONAL_CHAT_ID` (the same bot, but a private DM chat id) for ops alerts.
 2. **Settings → Pages → Build and deployment → Source: GitHub Actions**.
 
 `vite.config.js` bases the build at `/trefozeri/` (this repo's GitHub Pages project
@@ -129,15 +159,20 @@ src/
     notifications.js     Opt-in browser notifications for zone/signal alerts
     offlineCache.js      localStorage last-known-good snapshot
     uiState.js           Persisted tab/theme/symbol selection
-    signalHistoryCore.js Pure record-keeping + pip-formatting logic, shared by the
-                         browser and the cron script (also the source of PIP_SIZES)
+    signalHistoryCore.js Pure record-keeping + pip/price-formatting logic, shared by
+                         the browser and the cron script (also the source of PIP_SIZES)
     signalHistory.js     Browser-side: fetches the shared signal-history.json (read-only)
+    marketHours.js       Gold's ~23/5 trading week — shared by the dashboard banner
+                         and the cron job's weekend-signal gating
 scripts/
   fetch-data.mjs          Pre-fetches quote + calendar data into public/data/,
                           maintains data/signal-history.json (the shared track record),
-                          and sends Telegram notifications for XAUUSD signals
+                          sends Telegram notifications for XAUUSD signals, and alerts
+                          TELEGRAM_PERSONAL_CHAT_ID on data/run failures
+test/
+  *.test.mjs              node --test suite — see Local development above
 data/
   signal-history.json     Git-tracked shared signal track record — committed by CI
 .github/workflows/
-  deploy.yml              Cron fetch → persist track record → build → deploy to GitHub Pages
+  deploy.yml              Test → cron fetch → persist track record → build → deploy
 ```
