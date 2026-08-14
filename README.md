@@ -5,8 +5,8 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
 
 **Live:** https://redyapr.github.io/trefozeri/
 
-**Telegram:** https://t.me/trefozeri — new XAUUSD H1 signals, fills, and SL/TP results
-pushed as they happen.
+**Telegram:** https://t.me/trefozeri — new signals, fills, and SL/TP results pushed as
+they happen.
 
 ## How it works
 
