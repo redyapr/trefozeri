@@ -151,7 +151,6 @@ function renderHistory() {
 
   const statsHtml = `
     <div class="history-stats">
-      <div class="history-stat"><div class="num">${stats.total}</div><div class="lbl">Total</div></div>
       <div class="history-stat running"><div class="num">${stats.running}</div><div class="lbl">Running</div></div>
       <div class="history-stat win"><div class="num">${stats.wins}</div><div class="lbl">Wins</div></div>
       <div class="history-stat loss"><div class="num">${stats.losses}</div><div class="lbl">Losses</div></div>
@@ -174,8 +173,8 @@ function renderHistory() {
           return `
         <div class="history-row">
           <div class="history-row-main">
-            <strong>${r.direction === 'buy' ? 'BUY' : 'SELL'} ${shortCategory(r.category)} · ${r.tf}</strong>
-            <span>Entry ${formatPrice(r.entry)} · Opened ${formatDateTime(r.openedAt)} (${timeAgo(r.openedAt)})</span>
+            <strong>${r.direction === 'buy' ? 'BUY' : 'SELL'} ${shortCategory(r.category)} · ${r.tf} at ${formatPrice(r.entry)}</strong>
+            <span>Opened ${formatDateTime(r.openedAt)} (${timeAgo(r.openedAt)})</span>
             ${secondLine}
           </div>
           <span class="history-row-badge ${r.status}">${r.status}</span>
