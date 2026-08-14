@@ -4,6 +4,8 @@
 // only ever lives in that CI job; the browser never sees it. import.meta.env.BASE_URL
 // respects vite.config.js's `base`, so this still resolves correctly when the site is
 // served from a GitHub Pages project subpath.
+import { PIP_SIZES } from './signalHistoryCore.js'
+
 const DATA_ENDPOINT = `${import.meta.env.BASE_URL}data`
 // Cache-busts the static JSON so the browser doesn't keep serving a snapshot from
 // before the last cron refresh — these files are small and change every ~15 minutes.
@@ -26,13 +28,13 @@ export const TIMEFRAMES = [
 // unitsPerLot is just the position-size calculator's starting point — gold CFDs
 // commonly use 100oz/lot, crypto CFDs commonly use 1 BTC/lot; either is editable.
 //
-// pipSize is only used for the track record's win/loss pip readout: 0.1 is the common
-// gold-CFD broker convention (4400.00 -> 4400.10 = 1 pip) — adjust if your broker
-// quotes differently. null means "don't show pips" — there's no standard pip
-// convention for crypto, so BTCUSD's track record just shows the raw $ move instead.
+// pipSize (used for the track record's win/loss pip readout) comes from
+// signalHistoryCore.js's PIP_SIZES — the one source of truth, since the cron script
+// that sends Telegram notifications needs the same value and can't import this module
+// (it reads import.meta.env, a Vite/browser-only API).
 export const SYMBOLS = [
-  { key: 'XAUUSD', apiSymbol: 'XAU/USD', label: 'XAUUSD', eyebrow: 'Gold', unitsPerLot: 100, pipSize: 0.1 },
-  { key: 'BTCUSD', apiSymbol: 'BTC/USD', label: 'BTCUSD', eyebrow: 'Bitcoin', unitsPerLot: 1, pipSize: null },
+  { key: 'XAUUSD', apiSymbol: 'XAU/USD', label: 'XAUUSD', eyebrow: 'Gold', unitsPerLot: 100, pipSize: PIP_SIZES.XAUUSD },
+  { key: 'BTCUSD', apiSymbol: 'BTC/USD', label: 'BTCUSD', eyebrow: 'Bitcoin', unitsPerLot: 1, pipSize: PIP_SIZES.BTCUSD },
 ]
 
 // Twelve Data returns naive "YYYY-MM-DD[ HH:mm:ss]" strings with no offset. We request

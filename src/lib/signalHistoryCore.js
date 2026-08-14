@@ -28,8 +28,10 @@ export const keyFor = (symbolKey, tf, signal) => `${symbolKey}-${tf}-${signal.ca
 
 const isOpen = (r) => r.status === 'pending' || r.status === 'running'
 
-// Mutates and returns `records`: drops stale unfilled orders whose level moved on
-// without them, then appends any newly-seen signal as a fresh 'pending' row.
+// Mutates `records`: drops stale unfilled orders whose level moved on without them,
+// then appends any newly-seen signal as a fresh 'pending' row. Returns just the
+// records that were newly appended this call (e.g. so a caller can notify about them
+// without re-notifying about ones that were already open).
 export function recordSignals(records, symbolKey, tf, signals) {
   // A 'pending' (still unfilled) record whose key+price no longer matches any of this
   // tick's fresh signals had its level either fully invalidated or replaced by a
@@ -47,11 +49,12 @@ export function recordSignals(records, symbolKey, tf, signals) {
   }
 
   const openKeys = new Set(records.filter(isOpen).map((r) => r.key))
+  const added = []
 
   for (const signal of signals) {
     const key = keyFor(symbolKey, tf, signal)
     if (openKeys.has(key)) continue
-    records.push({
+    const record = {
       key,
       symbolKey,
       tf,
@@ -62,32 +65,40 @@ export function recordSignals(records, symbolKey, tf, signals) {
       tp: signal.tp,
       openedAt: Date.now(),
       status: 'pending',
-    })
+    }
+    records.push(record)
+    added.push(record)
   }
 
-  return records
+  return added
 }
 
 // Advances every open record for this symbol: fills a 'pending' limit order once price
 // reaches its entry, then (whether just filled or already running) closes it out as a
 // 'win' or 'loss' once price plausibly hits its first take-profit or its stop-loss.
-// Mutates `records` in place; returns whether anything changed.
+// Mutates `records` in place; returns `{ filled, closed }` — the records that changed
+// state this call, e.g. so a caller can notify about them. A record that fills AND
+// closes within the same call (a fast move a coarse ~15-minute poll can't see the
+// middle of) only appears in `closed`, not `filled` — a "filled" notification would be
+// redundant noise immediately followed by the close.
 export function evaluateSignals(records, symbolKey, currentPrice) {
-  if (currentPrice == null) return false
-  let changed = false
+  if (currentPrice == null) return { filled: [], closed: [] }
+  const filled = []
+  const closed = []
 
   for (const r of records) {
     if (r.symbolKey !== symbolKey || !isOpen(r)) continue
     const isBuy = r.direction === 'buy'
+    let justFilled = false
 
     if (r.status === 'pending') {
       // A fade-the-level limit order: buy fills on the way down to entry, sell fills
       // on the way up to it.
-      const filled = isBuy ? currentPrice <= r.entry : currentPrice >= r.entry
-      if (!filled) continue
+      const isFilled = isBuy ? currentPrice <= r.entry : currentPrice >= r.entry
+      if (!isFilled) continue
       r.status = 'running'
       r.filledAt = Date.now()
-      changed = true
+      justFilled = true
       // Fall through to check SL/TP the same tick — a coarse ~15-minute poll can
       // otherwise miss a fill-and-close that both happened between two checks.
     }
@@ -109,17 +120,19 @@ export function evaluateSignals(records, symbolKey, currentPrice) {
       r.status = 'loss'
       r.closedAt = Date.now()
       r.exitPrice = currentPrice
-      changed = true
+      closed.push(r)
     } else if (hitTpIndex >= 0) {
       r.status = 'win'
       r.closedAt = Date.now()
       r.exitPrice = currentPrice
       r.hitTpIndex = hitTpIndex
-      changed = true
+      closed.push(r)
+    } else if (justFilled) {
+      filled.push(r)
     }
   }
 
-  return changed
+  return { filled, closed }
 }
 
 export function trimRecords(records) {
@@ -145,4 +158,27 @@ export function getStats(records, symbolKey) {
     pending,
     winRate: closed ? Math.round((wins / closed) * 100) : null,
   }
+}
+
+// 0.1 is the common gold-CFD broker convention (4400.00 -> 4400.10 = 1 pip) — adjust if
+// your broker quotes differently. null means "don't show pips": there's no standard pip
+// convention for crypto, so BTCUSD's move is shown as a raw $ figure instead. This is
+// the one source of truth for pip size — twelveData.js's SYMBOLS reads from here too,
+// since this module (unlike twelveData.js) has no import.meta.env dependency and so is
+// importable from both the browser and the Node cron script (scripts/fetch-data.mjs).
+export const PIP_SIZES = { XAUUSD: 0.1, BTCUSD: null }
+
+// How far price moved from entry to exit, in the trade's favor being positive — e.g. a
+// sell's exit price is *below* entry on a win, so this flips the raw sign rather than
+// just reporting exitPrice - entry verbatim. Shared by the dashboard's track-record
+// modal and the cron script's Telegram notifications so both report the same number.
+export function formatMove(pipSize, entry, exitPrice, isBuy) {
+  const raw = exitPrice - entry
+  const favorable = isBuy ? raw : -raw
+  const sign = favorable >= 0 ? '+' : ''
+  if (pipSize) {
+    const pips = Math.round(favorable / pipSize)
+    return `${sign}${pips} pips`
+  }
+  return `${sign}${favorable.toFixed(2)}`
 }

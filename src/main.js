@@ -14,6 +14,7 @@ import {
   checkZonesAndSignals,
 } from './lib/notifications.js'
 import { loadHistory, getHistory, getStats } from './lib/signalHistory.js'
+import { formatMove } from './lib/signalHistoryCore.js'
 
 const NEWS_HORIZON_HOURS = 12
 // The cron in .github/workflows/deploy.yml refreshes the static snapshot roughly
@@ -232,27 +233,12 @@ function formatDateTime(ts) {
   return `${d.toLocaleDateString('en-US')} ${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`
 }
 
-// How far price moved from entry to exit, in the trade's favor being positive —
-// e.g. a sell's exit price is *below* entry on a win, so this flips the raw sign
-// rather than just reporting exitPrice - entry verbatim.
-function formatMove(symbol, entry, exitPrice, isBuy) {
-  const raw = exitPrice - entry
-  const favorable = isBuy ? raw : -raw
-  const sign = favorable >= 0 ? '+' : ''
-  if (symbol.pipSize) {
-    const pips = Math.round(favorable / symbol.pipSize)
-    return `${sign}${pips} pips`
-  }
-  // No standard pip convention for this symbol (e.g. crypto) — show the raw $ move instead.
-  return `${sign}${favorable.toFixed(2)}`
-}
-
 // One line describing how a closed signal ended: which target (or the SL) it hit,
 // at what price, how far that was from entry, and when.
 function historyExitLine(r, symbol) {
   const isBuy = r.direction === 'buy'
   const label = r.status === 'win' ? `TP${(r.hitTpIndex ?? 0) + 1} hit` : 'SL hit'
-  const move = formatMove(symbol, r.entry, r.exitPrice, isBuy)
+  const move = formatMove(symbol.pipSize, r.entry, r.exitPrice, isBuy)
   return `${label} @ ${formatExitPrice(r.exitPrice)} (${move}) · ${formatDateTime(r.closedAt)}`
 }
 

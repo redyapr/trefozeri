@@ -5,10 +5,10 @@ on:
     branches: [master]
   schedule:
     # Refreshes price & calendar data roughly every 15 minutes. This matches (and
-    # doesn't exceed) the dashboard's own refresh throttling — H1 candles are only
-    # refetched every 20 minutes even on a manual click (see minRefetchMs in
-    # src/lib/twelveData.js) — so this cadence never leaves the static snapshot
-    # staler than the app already tolerates.
+    # doesn't exceed) the dashboard's own refresh throttling — each timeframe only
+    # actually refetches on its own cadence (e.g. H1 every 20 minutes, D1 every 4
+    # hours, see minRefetchMs in src/lib/twelveData.js) — so this cadence never
+    # leaves the static snapshot staler than the app already tolerates.
     - cron: '*/15 * * * *'
   workflow_dispatch:
 
@@ -37,11 +37,15 @@ jobs:
       - run: npm ci
 
       # Writes public/data/*.json — see scripts/fetch-data.mjs for why GitHub Pages
-      # needs this pre-fetched instead of proxied on demand.
+      # needs this pre-fetched instead of proxied on demand. Also sends Telegram
+      # notifications for new/closed signals (XAUUSD only for now) — TELEGRAM_BOT_TOKEN/
+      # TELEGRAM_CHAT_ID are optional; sendTelegramMessage() no-ops if either is unset.
       - name: Fetch quote & calendar data
         run: node scripts/fetch-data.mjs
         env:
           TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
       # data/signal-history.json is the one piece of state that has to survive across
       # otherwise-stateless CI runs (see scripts/fetch-data.mjs) — everything else here

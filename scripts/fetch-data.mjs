@@ -17,10 +17,16 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { detectLevels, buildSignals, annotateGoldenZones } from '../src/lib/srDetector.js'
-import { recordSignals, evaluateSignals, trimRecords } from '../src/lib/signalHistoryCore.js'
+import { recordSignals, evaluateSignals, trimRecords, keyFor, PIP_SIZES, formatMove } from '../src/lib/signalHistoryCore.js'
 
 const OUT_DIR = path.join(process.cwd(), 'public', 'data')
 const HISTORY_PATH = path.join(process.cwd(), 'data', 'signal-history.json')
+
+// Telegram notifications are opt-in per symbol — XAUUSD only for now, per request.
+// Silently a no-op (see sendTelegramMessage) if TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID
+// aren't set, so local dev without them still works.
+const TELEGRAM_SYMBOLS = new Set(['XAUUSD'])
+const TF_ORDER = ['H1', 'H4', 'D1']
 
 // If today's upstream fetch fails (rate limit, outage), fall back to whatever is
 // already live rather than shipping a hole in the data — a stale snapshot beats a
@@ -122,6 +128,121 @@ function toCandles(values) {
   }))
 }
 
+// Posts one message to the configured chat, optionally as a reply to an earlier
+// message (used to thread a SL/TP result under the signal that opened it). Returns
+// the sent message's id (so it can later be replied to), or null on any failure —
+// notifications are best-effort and should never fail the whole cron run.
+async function sendTelegramMessage(text, replyToMessageId) {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  const chatId = process.env.TELEGRAM_CHAT_ID
+  if (!token || !chatId) return null
+
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        parse_mode: 'HTML',
+        // allow_sending_without_reply: the original message could in principle have
+        // been deleted from the chat since — fall back to a plain message rather than
+        // failing the notification outright.
+        ...(replyToMessageId ? { reply_to_message_id: replyToMessageId, allow_sending_without_reply: true } : {}),
+      }),
+    })
+    const json = await res.json()
+    if (!json.ok) {
+      console.warn(`[telegram] sendMessage failed: ${json.description}`)
+      return null
+    }
+    return json.result.message_id
+  } catch (err) {
+    console.warn(`[telegram] sendMessage error: ${err.message}`)
+    return null
+  }
+}
+
+export function buildNewSignalMessage(symbolKey, group) {
+  group.sort((a, b) => TF_ORDER.indexOf(a.tf) - TF_ORDER.indexOf(b.tf))
+  const primary = group[0]
+  const isBuy = primary.direction === 'buy'
+  const tfList = group.map((g) => g.tf).join(', ')
+  const lines = [
+    `🆕 <b>${isBuy ? 'BUY' : 'SELL'} LIMIT</b> — ${symbolKey}`,
+    `Zone: ${primary.category} · Timeframe: ${tfList}`,
+    `Entry: ${primary.entry.toFixed(2)}`,
+    `SL: ${primary.sl.toFixed(2)}`,
+    ...primary.tp.map((t, i) => `TP${i + 1}: ${t.price.toFixed(2)} (${t.rr.toFixed(1)}R)`),
+  ]
+  return lines.join('\n')
+}
+
+export function buildFillMessage(symbolKey, record) {
+  const isBuy = record.direction === 'buy'
+  const lines = [
+    `🟡 <b>ENTRY FILLED</b> — ${symbolKey} ${isBuy ? 'BUY' : 'SELL'} (${record.tf})`,
+    `Entry: ${record.entry.toFixed(2)}`,
+  ]
+  return lines.join('\n')
+}
+
+export function buildCloseMessage(symbolKey, record) {
+  const isBuy = record.direction === 'buy'
+  const isWin = record.status === 'win'
+  const label = isWin ? `TP${(record.hitTpIndex ?? 0) + 1} HIT` : 'SL HIT'
+  const move = formatMove(PIP_SIZES[symbolKey], record.entry, record.exitPrice, isBuy)
+  const lines = [
+    `${isWin ? '🟢' : '🔴'} <b>${label}</b> — ${symbolKey} ${isBuy ? 'BUY' : 'SELL'} (${record.tf})`,
+    `Exit: ${record.exitPrice.toFixed(2)}`,
+    `Result: ${move}`,
+  ]
+  return lines.join('\n')
+}
+
+// Sends one Telegram message per newly-added signal, EXCEPT when the same level also
+// just appeared on another timeframe (cross-timeframe confluence, see
+// annotateGoldenZones in srDetector.js) — those are folded into a single message
+// naming every timeframe involved, rather than one message per timeframe. All records
+// in a folded group get the same telegramMessageId so a SL/TP hit on any of them later
+// replies to that one shared message.
+async function notifyNewSignals(symbolKey, added, signalByKey) {
+  const handled = new Set()
+
+  for (const record of added) {
+    if (handled.has(record.key)) continue
+    const signal = signalByKey.get(record.key)
+    const group = [{ ...signal, tf: record.tf }]
+    const groupRecords = [record]
+    handled.add(record.key)
+
+    for (const otherTf of signal?.confluence ?? []) {
+      const otherKey = keyFor(symbolKey, otherTf, signal)
+      if (handled.has(otherKey)) continue
+      const otherRecord = added.find((r) => r.key === otherKey)
+      if (!otherRecord) continue // that timeframe's signal wasn't newly opened this tick
+      group.push({ ...signalByKey.get(otherKey), tf: otherTf })
+      groupRecords.push(otherRecord)
+      handled.add(otherKey)
+    }
+
+    const messageId = await sendTelegramMessage(buildNewSignalMessage(symbolKey, group))
+    if (messageId) for (const r of groupRecords) r.telegramMessageId = messageId
+  }
+}
+
+async function notifyFilledSignals(symbolKey, filled) {
+  for (const record of filled) {
+    await sendTelegramMessage(buildFillMessage(symbolKey, record), record.telegramMessageId)
+  }
+}
+
+async function notifyClosedSignals(symbolKey, closed) {
+  for (const record of closed) {
+    await sendTelegramMessage(buildCloseMessage(symbolKey, record), record.telegramMessageId)
+  }
+}
+
 async function loadSignalHistory() {
   try {
     const json = JSON.parse(await readFile(HISTORY_PATH, 'utf8'))
@@ -133,8 +254,10 @@ async function loadSignalHistory() {
 
 // Mirrors exactly what main.js does per refresh: build zones per timeframe, cross-link
 // Golden Zones once every timeframe's in, turn each timeframe's zones into signals,
-// then fold those into the shared history. Mutates `history` in place.
-function updateSignalHistoryForSymbol(history, symbolKey, seriesByTf) {
+// then fold those into the shared history. Mutates `history` in place, and (for
+// TELEGRAM_SYMBOLS) sends notifications for newly-opened, newly-filled, and
+// newly-closed signals.
+export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByTf) {
   const currentPrice = seriesByTf.H1?.at(-1)?.close
   const zonesByTimeframe = {}
 
@@ -146,10 +269,24 @@ function updateSignalHistoryForSymbol(history, symbolKey, seriesByTf) {
 
   annotateGoldenZones(zonesByTimeframe)
 
+  // Keep the freshly-built signals (and their .confluence) around by key, so a
+  // newly-added record can be matched back to the signal that produced it — records
+  // themselves don't carry .confluence, only signals do.
+  const signalByKey = new Map()
+  const added = []
   for (const [tfKey, result] of Object.entries(zonesByTimeframe)) {
-    recordSignals(history, symbolKey, tfKey, buildSignals(result.zones))
+    const signals = buildSignals(result.zones)
+    for (const s of signals) signalByKey.set(keyFor(symbolKey, tfKey, s), s)
+    added.push(...recordSignals(history, symbolKey, tfKey, signals))
   }
-  evaluateSignals(history, symbolKey, currentPrice)
+
+  const { filled, closed } = evaluateSignals(history, symbolKey, currentPrice)
+
+  if (TELEGRAM_SYMBOLS.has(symbolKey)) {
+    await notifyNewSignals(symbolKey, added, signalByKey)
+    await notifyFilledSignals(symbolKey, filled)
+    await notifyClosedSignals(symbolKey, closed)
+  }
 }
 
 async function main() {
@@ -178,7 +315,7 @@ async function main() {
   }
 
   for (const [symbolKey, seriesByTf] of Object.entries(seriesByTfBySymbol)) {
-    updateSignalHistoryForSymbol(history, symbolKey, seriesByTf)
+    await updateSignalHistoryForSymbol(history, symbolKey, seriesByTf)
   }
   const trimmed = trimRecords(history)
 
@@ -192,7 +329,12 @@ async function main() {
   if (calendar) await writeJson('calendar.json', calendar)
 }
 
-main().catch((err) => {
-  console.error('[fetch-data] fatal:', err)
-  process.exit(1)
-})
+// Only auto-run when executed directly (`node scripts/fetch-data.mjs`), not when
+// imported — lets the exported pieces above be exercised directly (e.g. in tests)
+// without triggering a real network run.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((err) => {
+    console.error('[fetch-data] fatal:', err)
+    process.exit(1)
+  })
+}

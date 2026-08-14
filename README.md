@@ -25,12 +25,27 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
   in on a zone or a new signal forms — opt-in via the bell icon (requests Notification
   permission, then toggles on/off without needing to touch browser settings again).
 - **Track record**: shared across every visitor, not per-browser. `scripts/fetch-data.mjs`
-  logs each signal to `data/signal-history.json` as `pending` during the cron run, then
-  scores it `win`/`loss` once price plausibly hits its first take-profit or stop-loss;
-  the workflow commits that file back to the repo when it changes (see
+  logs each signal to `data/signal-history.json` as `pending` during the cron run
+  (every signal is a LIMIT order — see `srDetector.js`), flips it to `running` once
+  price actually reaches the entry, then scores it `win`/`loss` once price plausibly
+  hits its first take-profit or stop-loss. A still-`pending` order whose level gets
+  invalidated or replaced before ever filling is dropped rather than kept around
+  forever. The workflow commits the file back to the repo when it changes (see
   [Data & deployment](#data--deployment)), so it survives across CI runs and everyone
   sees the same record. The browser (`src/lib/signalHistory.js`) only ever reads it.
-  View it via the chart-icon button in the header.
+  View it via the chart-icon button in the header — `pending` signals aren't repeated
+  there since they're already visible as live cards on the dashboard.
+- **Telegram notifications** (XAUUSD only for now — see `TELEGRAM_SYMBOLS` in
+  `scripts/fetch-data.mjs`): the cron run posts a message for every newly-opened
+  signal, folding cross-timeframe confluence into a single message that names every
+  timeframe involved rather than one message per timeframe. Once price reaches the
+  entry (the order "fills") and again once it closes on a SL/TP hit, a reply posts
+  under that same message — the close reply includes the exit price and the move in
+  pips (or raw $ for symbols with no pip convention). A fill that closes within the
+  same ~15-minute poll (a fast move skipping past the entry and straight through the
+  stop) only posts the close, not a separate fill message first. Optional — no-ops if
+  `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` aren't set (see
+  [Data & deployment](#data--deployment)).
 
 ## Local development
 
@@ -43,7 +58,10 @@ npm run dev
 
 `npm run fetch:data` has to be re-run manually to refresh the local snapshot (there's
 no dev-time proxy) — data won't go stale during a single dev session, since it's just
-fetched once into `public/data/`, which is gitignored.
+fetched once into `public/data/`, which is gitignored. It also updates the git-tracked
+`data/signal-history.json` in place (same as the CI cron job does) — check `git diff`
+before committing anything else if you don't want to also commit a local test run's
+track-record changes.
 
 Other scripts:
 
@@ -66,8 +84,9 @@ into browser code.
 `.github/workflows/deploy.yml` runs this fetch-then-build-then-deploy pipeline:
 
 - on every push to `master`,
-- on a **15-minute cron** (matches the app's own refresh throttling — H1 candles are
-  only refetched every 20 minutes even on a manual click, see `minRefetchMs` in
+- on a **15-minute cron** (matches the app's own refresh throttling — the dashboard
+  polls every 5 minutes but each timeframe only actually refetches on its own cadence,
+  e.g. H1 every 20 minutes, D1 every 4 hours, see `minRefetchMs` in
   `src/lib/twelveData.js` — so the cadence never leaves data staler than the app
   already tolerates),
 - and on manual `workflow_dispatch`.
@@ -83,7 +102,9 @@ One-time setup for a fork or a new deploy target (the workflow's default
 `GITHUB_TOKEN` can't do either of these via API — both need repo-admin access):
 
 1. **Settings → Secrets and variables → Actions → New repository secret** — add
-   `TWELVE_DATA_API_KEY`.
+   `TWELVE_DATA_API_KEY`, and optionally `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` for
+   Telegram notifications (create a bot via [@BotFather](https://t.me/BotFather), add
+   it to the target chat, and use that chat's numeric id — negative for a group).
 2. **Settings → Pages → Build and deployment → Source: GitHub Actions**.
 
 `vite.config.js` bases the build at `/trefozeri/` (this repo's GitHub Pages project
@@ -93,21 +114,25 @@ path) only when the workflow sets `GH_PAGES=true`; local dev still bases at `/`.
 
 ```
 src/
-  main.js              UI wiring, render loop, refresh/cache orchestration
+  main.js                UI wiring, render loop, refresh/cache orchestration
+  style.css              All styling (light/dark theme via CSS custom properties)
   lib/
-    twelveData.js      Timeframe/symbol config + static-JSON quote fetching
-    srDetector.js       Pivot detection, zones, signals
-    priceChart.js       lightweight-charts candle + zone rendering
-    newsCalendar.js     Static-JSON calendar fetching + high-impact filtering
-    offlineCache.js     localStorage last-known-good snapshot
-    uiState.js          Persisted tab/theme/symbol selection
-    signalHistoryCore.js Pure record-keeping logic, shared by the browser and the cron script
-    signalHistory.js    Browser-side: fetches the shared signal-history.json (read-only)
+    twelveData.js        Timeframe/symbol config + static-JSON quote fetching
+    srDetector.js        Pivot detection, zones, signals
+    priceChart.js        lightweight-charts candle + zone rendering
+    newsCalendar.js      Static-JSON calendar fetching + high-impact filtering
+    notifications.js     Opt-in browser notifications for zone/signal alerts
+    offlineCache.js      localStorage last-known-good snapshot
+    uiState.js           Persisted tab/theme/symbol selection
+    signalHistoryCore.js Pure record-keeping + pip-formatting logic, shared by the
+                         browser and the cron script (also the source of PIP_SIZES)
+    signalHistory.js     Browser-side: fetches the shared signal-history.json (read-only)
 scripts/
-  fetch-data.mjs        Pre-fetches quote + calendar data into public/data/, and
-                        maintains data/signal-history.json (the shared track record)
+  fetch-data.mjs          Pre-fetches quote + calendar data into public/data/,
+                          maintains data/signal-history.json (the shared track record),
+                          and sends Telegram notifications for XAUUSD signals
 data/
-  signal-history.json   Git-tracked shared signal track record — committed by CI
+  signal-history.json     Git-tracked shared signal track record — committed by CI
 .github/workflows/
-  deploy.yml            Cron fetch → persist track record → build → deploy to GitHub Pages
+  deploy.yml              Cron fetch → persist track record → build → deploy to GitHub Pages
 ```
