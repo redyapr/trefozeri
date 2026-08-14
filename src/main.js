@@ -516,7 +516,7 @@ async function refreshData() {
     // once all of them are in — then signals are built per timeframe with it attached.
     annotateGoldenZones(zonesByTimeframe)
     for (const [tfKey, result] of Object.entries(zonesByTimeframe)) {
-      result.signals = buildSignals(result.zones)
+      result.signals = buildSignals(result.zones, currentPrice)
     }
     checkZonesAndSignals(symbol.key, symbol.label, zonesByTimeframe, currentPrice)
     saveLastKnown(symbol.key, zonesByTimeframe, currentPrice)

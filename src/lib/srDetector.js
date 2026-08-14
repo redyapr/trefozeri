@@ -342,12 +342,22 @@ function buildSignalForZone(zone, allZones) {
 
 // One signal for the nearest qualifying bullish level (Support/RBS), one for the
 // nearest qualifying bearish level (Resistance/SBR) — both sides of price get an idea.
-export function buildSignals(zones) {
-  if (!zones.length) return []
+export function buildSignals(zones, currentPrice) {
+  if (!zones.length || currentPrice == null) return []
+
+  // A LIMIT order only makes sense on the correct side of current price: a sell
+  // (resistance-type) needs its entry above price — price has to rally UP to reach it
+  // — and a buy (support-type) needs its entry below. A zone that's already on the
+  // wrong side is already run over, not a live order price is approaching — this
+  // happens when this timeframe's own candles haven't closed yet to reflect a break
+  // that a fresher currentPrice (from a lower timeframe's more frequent candles, e.g.
+  // H1 feeding an H4/D1 zone) already shows. Signaling it would just auto-fill
+  // nonsensically the instant it's created.
+  const onCorrectSide = (z) => (z.type === 'support' ? z.price < currentPrice : z.price > currentPrice)
 
   const byDistance = (a, b) => a.distanceFromPrice - b.distanceFromPrice
-  const nearestBullish = zones.filter((z) => z.type === 'support').sort(byDistance)[0]
-  const nearestBearish = zones.filter((z) => z.type === 'resistance').sort(byDistance)[0]
+  const nearestBullish = zones.filter((z) => z.type === 'support' && onCorrectSide(z)).sort(byDistance)[0]
+  const nearestBearish = zones.filter((z) => z.type === 'resistance' && onCorrectSide(z)).sort(byDistance)[0]
 
   return [nearestBullish, nearestBearish].filter(Boolean).map((zone) => buildSignalForZone(zone, zones))
 }

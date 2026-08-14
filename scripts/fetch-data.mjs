@@ -275,7 +275,7 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
   const signalByKey = new Map()
   const added = []
   for (const [tfKey, result] of Object.entries(zonesByTimeframe)) {
-    const signals = buildSignals(result.zones)
+    const signals = buildSignals(result.zones, currentPrice)
     for (const s of signals) signalByKey.set(keyFor(symbolKey, tfKey, s), s)
     added.push(...recordSignals(history, symbolKey, tfKey, signals))
   }
