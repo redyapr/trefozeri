@@ -35,15 +35,15 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
   sees the same record. The browser (`src/lib/signalHistory.js`) only ever reads it.
   View it via the chart-icon button in the header — `pending` signals aren't repeated
   there since they're already visible as live cards on the dashboard.
-- **Telegram notifications** (XAUUSD only for now — see `TELEGRAM_SYMBOLS` in
-  `scripts/fetch-data.mjs`): the cron run posts a message for every newly-opened
-  signal, folding cross-timeframe confluence into a single message that names every
-  timeframe involved rather than one message per timeframe. Once price reaches the
-  entry (the order "fills") and again once it closes on a SL/TP hit, a reply posts
-  under that same message — the close reply includes the exit price and the move in
-  pips (or raw $ for symbols with no pip convention). A fill that closes within the
-  same ~15-minute poll (a fast move skipping past the entry and straight through the
-  stop) only posts the close, not a separate fill message first. Optional — no-ops if
+- **Telegram notifications** (XAUUSD H1 only for now — see `TELEGRAM_SYMBOLS`/
+  `TELEGRAM_TIMEFRAMES` in `scripts/fetch-data.mjs`; H4/D1 signals never post, even as
+  part of a confluence group, so timeframe isn't named in the message): the cron run
+  posts a message for every newly-opened signal. Once price reaches the entry (the
+  order "fills") and again once it closes on a SL/TP hit, a reply posts under that same
+  message — the close reply includes the exit price and the move in pips (or raw $ for
+  symbols with no pip convention). A fill that closes within the same ~15-minute poll
+  (a fast move skipping past the entry and straight through the stop) only posts the
+  close, not a separate fill message first. Optional — no-ops if
   `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` aren't set (see
   [Data & deployment](#data--deployment)).
 

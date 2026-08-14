@@ -22,10 +22,12 @@ import { recordSignals, evaluateSignals, trimRecords, keyFor, PIP_SIZES, formatM
 const OUT_DIR = path.join(process.cwd(), 'public', 'data')
 const HISTORY_PATH = path.join(process.cwd(), 'data', 'signal-history.json')
 
-// Telegram notifications are opt-in per symbol — XAUUSD only for now, per request.
-// Silently a no-op (see sendTelegramMessage) if TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID
-// aren't set, so local dev without them still works.
+// Telegram notifications are opt-in per symbol (XAUUSD only for now) and per
+// timeframe (H1 only for now) — H4/D1 signals never post, even as part of a
+// cross-timeframe confluence group. Silently a no-op (see sendTelegramMessage) if
+// TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID aren't set, so local dev without them still works.
 const TELEGRAM_SYMBOLS = new Set(['XAUUSD'])
+const TELEGRAM_TIMEFRAMES = new Set(['H1'])
 const TF_ORDER = ['H1', 'H4', 'D1']
 
 // If today's upstream fetch fails (rate limit, outage), fall back to whatever is
@@ -163,14 +165,18 @@ async function sendTelegramMessage(text, replyToMessageId) {
   }
 }
 
+// group is almost always a single signal now that TELEGRAM_TIMEFRAMES filters down to
+// H1 before grouping — kept as a group (rather than a single signal) so this still
+// works unchanged if TELEGRAM_TIMEFRAMES is ever widened back out. The timeframe
+// itself isn't printed: with only one timeframe ever reaching Telegram, naming it on
+// every message is just noise.
 export function buildNewSignalMessage(symbolKey, group) {
   group.sort((a, b) => TF_ORDER.indexOf(a.tf) - TF_ORDER.indexOf(b.tf))
   const primary = group[0]
   const isBuy = primary.direction === 'buy'
-  const tfList = group.map((g) => g.tf).join(', ')
   const lines = [
     `🆕 <b>${isBuy ? 'BUY' : 'SELL'} LIMIT</b> — ${symbolKey}`,
-    `Zone: ${primary.category} · Timeframe: ${tfList}`,
+    `Zone: ${primary.category}`,
     `Entry: ${primary.entry.toFixed(2)}`,
     `SL: ${primary.sl.toFixed(2)}`,
     ...primary.tp.map((t, i) => `TP${i + 1}: ${t.price.toFixed(2)} (${t.rr.toFixed(1)}R)`),
@@ -181,7 +187,7 @@ export function buildNewSignalMessage(symbolKey, group) {
 export function buildFillMessage(symbolKey, record) {
   const isBuy = record.direction === 'buy'
   const lines = [
-    `🟡 <b>ENTRY FILLED</b> — ${symbolKey} ${isBuy ? 'BUY' : 'SELL'} (${record.tf})`,
+    `🟡 <b>ENTRY FILLED</b> — ${symbolKey} ${isBuy ? 'BUY' : 'SELL'}`,
     `Entry: ${record.entry.toFixed(2)}`,
   ]
   return lines.join('\n')
@@ -193,7 +199,7 @@ export function buildCloseMessage(symbolKey, record) {
   const label = isWin ? `TP${(record.hitTpIndex ?? 0) + 1} HIT` : 'SL HIT'
   const move = formatMove(PIP_SIZES[symbolKey], record.entry, record.exitPrice, isBuy)
   const lines = [
-    `${isWin ? '🟢' : '🔴'} <b>${label}</b> — ${symbolKey} ${isBuy ? 'BUY' : 'SELL'} (${record.tf})`,
+    `${isWin ? '🟢' : '🔴'} <b>${label}</b> — ${symbolKey} ${isBuy ? 'BUY' : 'SELL'}`,
     `Exit: ${record.exitPrice.toFixed(2)}`,
     `Result: ${move}`,
   ]
@@ -283,9 +289,13 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
   const { filled, closed } = evaluateSignals(history, symbolKey, currentPrice)
 
   if (TELEGRAM_SYMBOLS.has(symbolKey)) {
-    await notifyNewSignals(symbolKey, added, signalByKey)
-    await notifyFilledSignals(symbolKey, filled)
-    await notifyClosedSignals(symbolKey, closed)
+    // Filtered to H1 before grouping, not after — an H4/D1 confluence partner should
+    // never even be mentioned in an H1 message's timeframe list, the same as if it
+    // didn't exist.
+    const onlyH1 = (r) => TELEGRAM_TIMEFRAMES.has(r.tf)
+    await notifyNewSignals(symbolKey, added.filter(onlyH1), signalByKey)
+    await notifyFilledSignals(symbolKey, filled.filter(onlyH1))
+    await notifyClosedSignals(symbolKey, closed.filter(onlyH1))
   }
 }
 
