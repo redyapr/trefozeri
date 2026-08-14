@@ -147,7 +147,12 @@ notifyBtn.addEventListener('click', async () => {
 
 function renderHistory() {
   const stats = getStats(activeSymbol.key)
-  const records = getHistory(activeSymbol.key).slice(0, 30)
+  // 'pending' (not yet filled) signals are already visible as live cards on the main
+  // dashboard — the track record is for what's actually happened, so it only lists
+  // trades that have at least filled.
+  const records = getHistory(activeSymbol.key)
+    .filter((r) => r.status !== 'pending')
+    .slice(0, 30)
 
   const statsHtml = `
     <div class="history-stats">
@@ -161,15 +166,12 @@ function renderHistory() {
   const rowsHtml = records.length
     ? `<div class="history-list">${records
         .map((r) => {
-          // pending: order not filled yet, nothing more to show.
-          // running: filled, waiting on SL/TP.
-          // win/loss: closed — show what it hit, at what price, and the pip/price move.
+          // running: filled, waiting on SL/TP. win/loss: closed — show what it hit,
+          // at what price, and the pip/price move. ('pending' rows are filtered out above.)
           const secondLine =
             r.status === 'running'
               ? `<span>Filled ${formatDateTime(r.filledAt)} (${timeAgo(r.filledAt)}) · running</span>`
-              : r.status !== 'pending'
-                ? `<span>${historyExitLine(r, activeSymbol)} (${timeAgo(r.closedAt)})</span>`
-                : ''
+              : `<span>${historyExitLine(r, activeSymbol)} (${timeAgo(r.closedAt)})</span>`
           return `
         <div class="history-row">
           <div class="history-row-main">
@@ -181,7 +183,7 @@ function renderHistory() {
         </div>`
         })
         .join('')}</div>`
-    : `<p class="history-empty">No signals recorded yet for ${activeSymbol.label} — check back after a few refreshes.</p>`
+    : `<p class="history-empty">No filled signals yet for ${activeSymbol.label} — pending ones are on the dashboard, check back here once one fills.</p>`
 
   historyBody.innerHTML = statsHtml + rowsHtml
 }
