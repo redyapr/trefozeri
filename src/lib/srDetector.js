@@ -294,10 +294,17 @@ function buildTakeProfits(entryPrice, sl, direction, candidateZones) {
 // small buffer, floored/capped by ATR so a wick sitting right on the level (too tight)
 // or a freak spike (too wide) can't drag the SL to an extreme.
 function structuralSlDistance(zone, isSupport) {
-  const buffer = zone.atr * SL_STRUCTURE_BUFFER_RATIO
+  // A stretch of perfectly flat candles (a data-provider glitch, or a duplicated
+  // trailing bar) makes ATR come out as exactly 0 — floor and cap would then both
+  // collapse to 0 too, forcing the SL onto the entry price itself (and, via
+  // buildTakeProfits' risk === 0 guard, wiping out every TP). zone.threshold never
+  // hits 0 (detectLevels floors it at price * 0.0002), so fall back to the ATR that
+  // would've produced it as a sane, self-calibrated stand-in.
+  const effectiveAtr = zone.atr || zone.threshold / BREAKOUT_ATR_MULT
+  const buffer = effectiveAtr * SL_STRUCTURE_BUFFER_RATIO
   const wickDistance = isSupport ? zone.price - zone.structureAnchor : zone.structureAnchor - zone.price
   const raw = wickDistance + buffer
-  return Math.min(Math.max(raw, zone.atr * SL_ATR_FLOOR_MULT), zone.atr * SL_ATR_CAP_MULT)
+  return Math.min(Math.max(raw, effectiveAtr * SL_ATR_FLOOR_MULT), effectiveAtr * SL_ATR_CAP_MULT)
 }
 
 // Turns one level into an actionable LIMIT order idea: these levels are
