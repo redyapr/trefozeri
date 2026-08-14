@@ -255,6 +255,13 @@ export function annotateGoldenZones(zonesByTimeframe) {
 // much reward before trusting a level as a target over the fixed R-multiple fallback.
 const MIN_ZONE_TP_RR = 0.5
 
+// Prices display rounded to the nearest whole unit (see formatPrice in main.js). Two
+// targets closer together than that would still round to the *same shown number* even
+// after clearing the threshold-based dedup below (e.g. 4399.55 and 4400.44 are 0.89
+// apart — more than a ~0.88 breakout threshold, but both round to "4400") — so this is
+// enforced as a floor on top of the zone's own (sometimes much smaller) threshold.
+const MIN_TP_DISPLAY_SEPARATION = 1
+
 function buildTakeProfits(entryPrice, sl, direction, candidateZones) {
   const risk = Math.abs(entryPrice - sl)
   if (!risk) return []
@@ -271,7 +278,7 @@ function buildTakeProfits(entryPrice, sl, direction, candidateZones) {
   const fromZones = []
   for (const z of sortedZones) {
     const last = fromZones[fromZones.length - 1]
-    if (last && Math.abs(z.mid - last) <= z.threshold) continue
+    if (last && Math.abs(z.mid - last) <= Math.max(z.threshold, MIN_TP_DISPLAY_SEPARATION)) continue
     fromZones.push(z.mid)
     if (fromZones.length === 3) break
   }
