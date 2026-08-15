@@ -103,7 +103,7 @@ jobs:
       # Pages site from scratch (that needs repo-admin-level API access) — Settings →
       # Pages → Source: GitHub Actions has to be set by hand, once, by a repo admin,
       # before this step's Get-Pages-site call has anything to find.
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
 
       - uses: actions/upload-pages-artifact@v3
         with:
