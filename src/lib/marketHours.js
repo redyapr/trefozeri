@@ -14,3 +14,25 @@ export function isGoldMarketClosed(date = new Date()) {
   if (day === 5) return hour >= 22 // Friday from the 22:00 UTC close
   return false
 }
+
+// Plain calendar Saturday/Sunday (UTC) — distinct from isGoldMarketClosed's Friday
+// 22:00 -> Sunday 22:00 forex-hours window above. BTCUSD trades 24/7 so there's no
+// "market closed" reason to gate anything for it; this is used instead to only send
+// BTCUSD's weekend-only Telegram signals (see fetch-data.mjs) on the two days gold's
+// own channel is otherwise quiet.
+export function isWeekendUtc(date = new Date()) {
+  const day = date.getUTCDay()
+  return day === 0 || day === 6
+}
+
+// The next Sunday-22:00-UTC reopen moment on or after `date`, as an actual Date —
+// used so the market-closed banner can display it in the visitor's own local time
+// (via toLocaleString with no explicit timeZone) instead of a fixed "Sunday 22:00
+// UTC" string that most readers would have to mentally convert.
+export function nextGoldReopenUtc(date = new Date()) {
+  const reopen = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 22, 0, 0, 0))
+  const daysUntilSunday = (7 - date.getUTCDay()) % 7 // 0 if `date` is already Sunday
+  reopen.setUTCDate(reopen.getUTCDate() + daysUntilSunday)
+  if (reopen <= date) reopen.setUTCDate(reopen.getUTCDate() + 7) // that Sunday's 22:00 has already passed
+  return reopen
+}

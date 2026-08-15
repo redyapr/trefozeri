@@ -50,13 +50,17 @@ they happen.
   the Telegram channel itself reflects, instead of always the combined figure. Capped
   at 300 records per symbol (not 300 combined) so a busier symbol can't crowd a
   quieter one out of its own history.
-- **Telegram notifications** — public channel: **https://t.me/trefozeri** (XAUUSD H1
-  only for now — see `TELEGRAM_SYMBOLS`/`TELEGRAM_TIMEFRAMES` in
+- **Telegram notifications** — public channel: **https://t.me/trefozeri** (H1 only for
+  both symbols — see `TELEGRAM_SYMBOLS`/`TELEGRAM_TIMEFRAMES` in
   `scripts/fetch-data.mjs`; H4/D1 signals never post, even as part of a confluence
   group). The cron run posts a message for every newly-opened signal — direction,
   zone, price, SL, and every TP, with a ⭐ Golden Zone flag when it's a cross-timeframe
-  confluence level (new signals are skipped entirely while the gold market's closed —
-  see Market status below). Once price reaches the entry (the order "fills") and again
+  confluence level. New-signal posts are gated oppositely per symbol: XAUUSD skips
+  them while the gold market's actually closed (see Market status below), while
+  BTCUSD — which trades 24/7 — only posts new signals on the weekend (Sat/Sun UTC),
+  the two days gold's own channel activity is otherwise quiet. Fills/closes for both
+  symbols always post regardless of the day. Once price reaches the entry (the order
+  "fills") and again
   once it closes on a SL/TP hit, a short reply posts under that same message (no price
   restated — it's already in the opening message — just which target and the move in
   pips, or raw $ for symbols with no pip convention); those still post even while the
@@ -192,17 +196,18 @@ src/
     newsCalendar.js      Static-JSON calendar fetching + high-impact filtering
     notifications.js     Opt-in browser notifications for zone/signal alerts
     offlineCache.js      localStorage last-known-good snapshot
-    uiState.js           Persisted tab/theme/symbol selection
+    uiState.js           Persisted tab/symbol selection
     signalHistoryCore.js Pure record-keeping + pip/price-formatting logic, shared by
                          the browser and the cron script (also the source of PIP_SIZES)
     signalHistory.js     Browser-side: fetches the shared signal-history.json (read-only)
-    marketHours.js       Gold's ~23/5 trading week — shared by the dashboard banner
-                         and the cron job's weekend-signal gating
+    marketHours.js       Gold's ~23/5 trading week (dashboard banner + cron job's
+                         XAUUSD gating) and plain Sat/Sun detection (cron job's
+                         BTCUSD weekend-only gating)
 scripts/
   fetch-data.mjs          Pre-fetches quote + calendar data into public/data/,
                           maintains data/signal-history.json (the shared track record),
-                          sends Telegram notifications for XAUUSD signals, and alerts
-                          TELEGRAM_PERSONAL_CHAT_ID on data/run failures
+                          sends Telegram notifications for XAUUSD and BTCUSD signals,
+                          and alerts TELEGRAM_PERSONAL_CHAT_ID on data/run failures
 test/
   *.test.mjs              node --test suite — see Local development above
 test-helpers/

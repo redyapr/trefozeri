@@ -615,4 +615,54 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
       restore()
     }
   })
+
+  await t.test('skips new-signal notifications for BTCUSD on a weekday (weekend-only, opposite of XAUUSD)', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const base = seriesWithLowPivot(60000)
+      const weekday = Date.UTC(2026, 7, 12, 12, 0, 0) // Wednesday
+      const weekdaySeries = { H1: base.map((c, i) => ({ ...c, time: weekday - (base.length - i) * 3600000 })) }
+      const history = []
+      await updateSignalHistoryForSymbol(history, 'BTCUSD', weekdaySeries)
+      assert.equal(sent.length, 0, 'no new-signal message for BTCUSD on a weekday')
+      assert.ok(history.length > 0, 'still tracked in the shared history')
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('sends new-signal notifications for BTCUSD on the weekend', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const base = seriesWithLowPivot(60000)
+      const saturday = Date.UTC(2026, 7, 15, 12, 0, 0) // Saturday
+      const weekendSeries = { H1: base.map((c, i) => ({ ...c, time: saturday - (base.length - i) * 3600000 })) }
+      const history = []
+      await updateSignalHistoryForSymbol(history, 'BTCUSD', weekendSeries)
+      assert.ok(sent.length > 0, 'BTCUSD signals do post on the weekend')
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('still notifies BTCUSD fills/closes on a weekday, even though new signals are weekend-only', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const base = seriesWithLowPivot(60000)
+      const saturday = Date.UTC(2026, 7, 15, 12, 0, 0)
+      const openSeries = { H1: base.map((c, i) => ({ ...c, time: saturday - (base.length - i) * 3600000 })) }
+      const history = []
+      await updateSignalHistoryForSymbol(history, 'BTCUSD', openSeries) // opens on the weekend
+
+      const h1 = history.find((r) => r.tf === 'H1')
+      const monday = Date.UTC(2026, 7, 17, 12, 0, 0) // Monday — back to a weekday
+      const filledOnMonday = { H1: [...openSeries.H1, candle(monday, h1.entry, h1.entry + 1, h1.entry - 1, h1.entry)] }
+      await updateSignalHistoryForSymbol(history, 'BTCUSD', filledOnMonday)
+
+      assert.equal(sent.length, 2, 'open (weekend) + fill (weekday) — fills are never gated by the weekend-only rule')
+      assert.equal(sent[1].text, '🟡 ENTRY FILLED')
+    } finally {
+      restore()
+    }
+  })
 })

@@ -15,7 +15,7 @@ import {
 } from './lib/notifications.js'
 import { loadHistory, getHistory, getStats } from './lib/signalHistory.js'
 import { formatMove, formatPrice } from './lib/signalHistoryCore.js'
-import { isGoldMarketClosed } from './lib/marketHours.js'
+import { isGoldMarketClosed, nextGoldReopenUtc } from './lib/marketHours.js'
 
 const NEWS_HORIZON_HOURS = 12
 // The cron in .github/workflows/deploy.yml refreshes the static snapshot roughly
@@ -114,9 +114,18 @@ function renderMarketStatusBanner() {
     return
   }
   marketStatusBannerEl.hidden = false
+  // No explicit timeZone — toLocaleString reads the browser's own local zone, so
+  // this shows whenever the market actually reopens for the visitor, not a fixed
+  // "22:00 UTC" they'd have to convert themselves.
+  const reopenText = nextGoldReopenUtc().toLocaleString(undefined, {
+    weekday: 'long',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  })
   marketStatusBannerEl.innerHTML = `
     <span class="market-status-banner-icon">🌙</span>
-    <span>Gold market is closed for the weekend (reopens Sunday 22:00 UTC) — prices and signals may be stale.</span>
+    <span>Gold market is closed for the weekend (reopens ${reopenText}) — prices and signals may be stale.</span>
   `
 }
 

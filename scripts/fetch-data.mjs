@@ -18,7 +18,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { detectLevels, buildSignals, annotateGoldenZones } from '../src/lib/srDetector.js'
 import { recordSignals, evaluateSignals, trimRecords, keyFor, PIP_SIZES, formatMove, formatPrice } from '../src/lib/signalHistoryCore.js'
-import { isGoldMarketClosed } from '../src/lib/marketHours.js'
+import { isGoldMarketClosed, isWeekendUtc } from '../src/lib/marketHours.js'
 
 const OUT_DIR = path.join(process.cwd(), 'public', 'data')
 const HISTORY_PATH = path.join(process.cwd(), 'data', 'signal-history.json')
@@ -29,11 +29,11 @@ const ALERT_STATE_PATH = path.join(process.cwd(), 'data', 'last-alert.json')
 // via ALERT_SUPPRESS_HOURS for anyone who wants alerts more/less often than the default.
 const ALERT_SUPPRESS_MS = (Number(process.env.ALERT_SUPPRESS_HOURS) || 6) * 60 * 60 * 1000
 
-// Telegram notifications are opt-in per symbol (XAUUSD only for now) and per
-// timeframe (H1 only for now) — H4/D1 signals never post, even as part of a
-// cross-timeframe confluence group. Silently a no-op (see sendTelegramMessage) if
+// Telegram notifications are opt-in per symbol (XAUUSD and BTCUSD) and per timeframe
+// (H1 only for now) — H4/D1 signals never post, even as part of a cross-timeframe
+// confluence group. Silently a no-op (see sendTelegramMessage) if
 // TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID aren't set, so local dev without them still works.
-const TELEGRAM_SYMBOLS = new Set(['XAUUSD'])
+const TELEGRAM_SYMBOLS = new Set(['XAUUSD', 'BTCUSD'])
 const TELEGRAM_TIMEFRAMES = new Set(['H1'])
 const TF_ORDER = ['H1', 'H4', 'D1']
 
@@ -400,9 +400,17 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
     // didn't exist.
     const onlyH1 = (r) => TELEGRAM_TIMEFRAMES.has(r.tf)
     // New signals only — not fills/closes, which are for trades already live and
-    // shouldn't go silent just because the market's since closed for the weekend. This
-    // is specifically about not opening brand-new "signals" off stale weekend candles.
-    const skipNewSignals = symbolKey === 'XAUUSD' && isGoldMarketClosed(currentTime != null ? new Date(currentTime) : undefined)
+    // shouldn't go silent just because a symbol's own gating window has passed. This
+    // is specifically about not opening brand-new "signals" at the wrong time, not
+    // about following up on ones already posted.
+    const currentDate = currentTime != null ? new Date(currentTime) : new Date()
+    const skipNewSignals =
+      // XAUUSD: don't open new signals off stale weekend candles while gold's own
+      // market is actually closed (Fri 22:00 UTC -> Sun 22:00 UTC).
+      (symbolKey === 'XAUUSD' && isGoldMarketClosed(currentDate)) ||
+      // BTCUSD trades 24/7, so there's nothing to gate on market hours — instead it's
+      // deliberately weekend-only (Sat/Sun), the two days gold's own channel is quiet.
+      (symbolKey === 'BTCUSD' && !isWeekendUtc(currentDate))
     if (!skipNewSignals) await notifyNewSignals(symbolKey, added.filter(onlyH1), signalByKey)
     await notifyFilledSignals(filled.filter(onlyH1))
     await notifyClosedSignals(symbolKey, closed.filter(onlyH1))
