@@ -430,7 +430,7 @@ function buildSignalText(signal) {
     `${label} — ${activeSymbol.label} ${activeTab}`,
     `Entry: ${formatPrice(signal.entry)}`,
     `SL: ${formatPrice(signal.sl)}`,
-    ...signal.tp.map((t, i) => `TP${i + 1}: ${formatPrice(t.price)} (${t.rr.toFixed(1)}R)`),
+    ...signal.tp.map((t, i) => `TP${i + 1}: ${formatPrice(t.price)} (${formatPrice(t.rr)}R)`),
   ].join('\n')
 }
 
@@ -448,7 +448,7 @@ function renderSignalCard(signal) {
       <div class="signal-tp-row">
         <span>TP${i + 1}</span>
         <span>${formatPrice(t.price)}</span>
-        <span class="rr">${t.rr.toFixed(1)}R</span>
+        <span class="rr">${formatPrice(t.rr)}R</span>
       </div>`
     )
     .join('')
