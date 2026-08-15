@@ -382,7 +382,12 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
   const signalByKey = new Map()
   const added = []
   for (const [tfKey, result] of Object.entries(zonesByTimeframe)) {
-    const signals = buildSignals(result.zones, currentPrice)
+    // TIMEFRAMES is ordered finest-to-broadest (H1, H4, D1) — everything after this
+    // timeframe's own index is "higher" and gets offered as extra TP candidates (see
+    // buildSignals in srDetector.js). Kept in sync with the same logic in main.js.
+    const tfIndex = TIMEFRAMES.findIndex((tf) => tf.key === tfKey)
+    const higherTfZones = TIMEFRAMES.slice(tfIndex + 1).flatMap((tf) => zonesByTimeframe[tf.key]?.zones ?? [])
+    const signals = buildSignals(result.zones, currentPrice, higherTfZones)
     for (const s of signals) signalByKey.set(keyFor(symbolKey, tfKey, s), s)
     added.push(...recordSignals(history, symbolKey, tfKey, signals))
   }

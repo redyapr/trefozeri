@@ -329,4 +329,90 @@ test('take-profit building and display-collision dedup', async (t) => {
     assert.equal(signal.tp.length, 3)
     signal.tp.forEach((t, i) => assert.ok(Math.abs(t.rr - [1.5, 2.5, 3.5][i]) < 1e-6))
   })
+
+  await t.test('more than 3 qualifying opposite-side zones all surface — no cap', () => {
+    const zones = [4370, 4380, 4390, 4400, 4410].map((price, i) => ({
+      category: i % 2 ? 'SBR' : 'Resistance',
+      type: 'resistance',
+      price,
+      mid: price,
+      threshold: 0.88,
+      atr: 3,
+      structureAnchor: price + 3,
+      distanceFromPrice: 40,
+      isGolden: false,
+      confluence: [],
+    }))
+    const signal = buySignalWith(zones)
+    assert.equal(signal.tp.length, 5, 'every genuinely distinct zone becomes its own TP, not just the first 3')
+  })
+})
+
+test('buildSignals: cross-timeframe TP borrowing (higher timeframes only)', async (t) => {
+  function activeSupportZone() {
+    return {
+      category: 'Support',
+      type: 'support',
+      price: 4300,
+      mid: 4300,
+      threshold: 2, // small — active (e.g. H1) timeframe's own scale
+      atr: 3,
+      structureAnchor: 4295,
+      distanceFromPrice: 5,
+      isGolden: false,
+      confluence: [],
+    }
+  }
+
+  function higherTfResistance(price, overrides = {}) {
+    return {
+      category: 'Resistance',
+      type: 'resistance',
+      price,
+      mid: price,
+      threshold: 20, // much larger — a higher timeframe's own (bigger) scale
+      atr: 30,
+      structureAnchor: price + 15,
+      distanceFromPrice: 100,
+      isGolden: false,
+      confluence: [],
+      ...overrides,
+    }
+  }
+
+  await t.test('a borrowed higher-timeframe zone becomes an extra TP when none exist locally', () => {
+    const zone = activeSupportZone()
+    const higherTfZones = [higherTfResistance(4340)]
+    const [signal] = buildSignals([zone], 4300, higherTfZones)
+    assert.equal(signal.tp.length, 1)
+    assert.equal(signal.tp[0].price, 4340)
+  })
+
+  await t.test('same-timeframe and borrowed targets are merged and sorted by nearest distance first', () => {
+    const zone = activeSupportZone()
+    const localResistance = { ...higherTfResistance(4320), threshold: 2, atr: 3 } // local scale
+    const higherTfZones = [higherTfResistance(4360), higherTfResistance(4400)]
+    const [signal] = buildSignals([zone, localResistance], 4300, higherTfZones)
+    assert.deepEqual(
+      signal.tp.map((t) => t.price),
+      [4320, 4360, 4400],
+      'nearest first regardless of which timeframe each target came from'
+    )
+  })
+
+  await t.test('the merge/dedup distance uses the active zone\'s own (smaller) threshold, not the borrowed zone\'s', () => {
+    const zone = activeSupportZone() // threshold: 2
+    // Two borrowed targets 5 apart — closer than the borrowed zone's own threshold
+    // (20), which would wrongly merge them, but farther than the active zone's
+    // threshold (2), which correctly keeps them distinct.
+    const higherTfZones = [higherTfResistance(4340), higherTfResistance(4345)]
+    const [signal] = buildSignals([zone], 4300, higherTfZones)
+    assert.equal(signal.tp.length, 2, 'active-timeframe scale keeps genuinely separated borrowed targets apart')
+  })
+
+  await t.test('borrowing is opt-in per call — omitting higherTfZones behaves exactly as before', () => {
+    const zone = activeSupportZone()
+    const [signal] = buildSignals([zone], 4300)
+    assert.equal(signal.tp.length, 3, 'falls back to fixed R-multiples, unaffected by any higher-timeframe zone')
+  })
 })

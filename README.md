@@ -13,6 +13,14 @@ they happen.
 - **Levels**: `src/lib/srDetector.js` runs a pivot + 3-state machine (pure
   Support/Resistance → broken-once SBR/RBS → invalidated) independently per timeframe,
   and flags cross-timeframe confluence as "Golden Zones."
+- **Take-profits**: each signal's TPs come from opposite-side levels on its own
+  timeframe, plus any qualifying levels from *higher* timeframes only (e.g. an H1
+  signal can target H4/D1 structure; H4/D1 never borrow down from H1) — a real level
+  holds regardless of which timeframe drew it, and a higher timeframe's structure is
+  more likely to actually hold than a lower one's noise. All qualifying targets surface
+  (no fixed cap); near-duplicate targets are merged using the *signal's own* timeframe
+  scale, not a borrowed target's. Falls back to fixed 1.5R/2.5R/3.5R targets only when
+  no structural level qualifies at all.
 - **Timeframes**: H1, H4, D1 only (see `TIMEFRAMES` in `src/lib/twelveData.js`) — this
   pivot-based logic isn't meant for sub-hourly noise.
 - **Chart**: [lightweight-charts](https://github.com/tradingview/lightweight-charts)

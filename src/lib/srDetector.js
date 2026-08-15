@@ -262,7 +262,7 @@ const MIN_ZONE_TP_RR = 0.5
 // enforced as a floor on top of the zone's own (sometimes much smaller) threshold.
 const MIN_TP_DISPLAY_SEPARATION = 1
 
-function buildTakeProfits(entryPrice, sl, direction, candidateZones) {
+function buildTakeProfits(entryPrice, sl, direction, candidateZones, mergeThreshold) {
   const risk = Math.abs(entryPrice - sl)
   if (!risk) return []
 
@@ -274,15 +274,22 @@ function buildTakeProfits(entryPrice, sl, direction, candidateZones) {
 
   // Different zone categories (e.g. a fresh Resistance and an older SBR) can sit at
   // the same or near-identical price — collapse those into a single target instead of
-  // surfacing "TP1" and "TP2" as the same number.
+  // surfacing "TP1" and "TP2" as the same number. The merge distance is scaled to the
+  // *active* signal's own threshold, not each candidate zone's own — a target borrowed
+  // from a higher timeframe (see buildSignalForZone) carries a much larger threshold of
+  // its own (bigger ATR), which would otherwise over-merge targets that are
+  // meaningfully separated at the scale actually being traded.
+  const mergeDistance = Math.max(mergeThreshold, MIN_TP_DISPLAY_SEPARATION)
   const fromZones = []
   for (const z of sortedZones) {
     const last = fromZones[fromZones.length - 1]
-    if (last && Math.abs(z.mid - last) <= Math.max(z.threshold, MIN_TP_DISPLAY_SEPARATION)) continue
+    if (last && Math.abs(z.mid - last) <= mergeDistance) continue
     fromZones.push(z.mid)
-    if (fromZones.length === 3) break
   }
 
+  // No cap on how many real structural targets surface — however many opposite-side
+  // zones qualify (same-timeframe plus any borrowed higher-timeframe ones) all become
+  // TPs. Only the synthetic R-multiple fallback below is a fixed set of 3.
   const targets = fromZones.length
     ? fromZones
     : [1.5, 2.5, 3.5].map((mult) => entryPrice + (isBuy ? 1 : -1) * risk * mult)
@@ -316,15 +323,21 @@ function structuralSlDistance(zone, isSupport) {
 // reaction/structure zones (support & RBS bid up, resistance & SBR sell off), so every
 // signal is a fade at the level itself — entry at the price, SL beyond the deepest wick
 // that already tested this level in its current role (see structuralSlDistance), TP at
-// the nearest opposite-side levels.
-function buildSignalForZone(zone, allZones) {
+// the nearest opposite-side levels — same-timeframe zones plus any higher-timeframe
+// ones the caller allows borrowing from (see buildSignals). A real level is a real
+// level regardless of which timeframe's candles drew it, and a higher timeframe's
+// structure is more likely to actually hold as a target than reaching down to a lower
+// timeframe's noise would be.
+function buildSignalForZone(zone, allZones, higherTfZones = []) {
   const isSupport = zone.type === 'support'
   const direction = isSupport ? 'buy' : 'sell'
   const entry = zone.price
   const slDistance = structuralSlDistance(zone, isSupport)
   const sl = isSupport ? entry - slDistance : entry + slDistance
-  const targetPool = allZones.filter((z) => z.type !== zone.type)
-  const tp = buildTakeProfits(entry, sl, direction, targetPool)
+  const targetPool = [...allZones, ...higherTfZones].filter((z) => z.type !== zone.type)
+  // Merge/dedup distance always uses the active zone's own threshold (its own
+  // timeframe's ATR), not a borrowed target's — see buildTakeProfits.
+  const tp = buildTakeProfits(entry, sl, direction, targetPool, zone.threshold)
 
   return {
     zoneType: zone.type,
@@ -342,7 +355,11 @@ function buildSignalForZone(zone, allZones) {
 
 // One signal for the nearest qualifying bullish level (Support/RBS), one for the
 // nearest qualifying bearish level (Resistance/SBR) — both sides of price get an idea.
-export function buildSignals(zones, currentPrice) {
+// higherTfZones (optional): zones from timeframes higher than the one `zones` came
+// from, made available as extra TP candidates (see buildSignalForZone) — the caller
+// (main.js / fetch-data.mjs) is responsible for only ever passing *higher* timeframes'
+// zones here, never lower ones.
+export function buildSignals(zones, currentPrice, higherTfZones = []) {
   if (!zones.length || currentPrice == null) return []
 
   // A LIMIT order only makes sense on the correct side of current price: a sell
@@ -360,5 +377,7 @@ export function buildSignals(zones, currentPrice) {
   const nearestBullish = zones.filter((z) => z.type === 'support' && onCorrectSide(z)).sort(byDistance)[0]
   const nearestBearish = zones.filter((z) => z.type === 'resistance' && onCorrectSide(z)).sort(byDistance)[0]
 
-  return [nearestBullish, nearestBearish].filter(Boolean).map((zone) => buildSignalForZone(zone, zones))
+  return [nearestBullish, nearestBearish]
+    .filter(Boolean)
+    .map((zone) => buildSignalForZone(zone, zones, higherTfZones))
 }

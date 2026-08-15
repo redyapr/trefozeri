@@ -548,7 +548,12 @@ async function refreshData() {
     // once all of them are in — then signals are built per timeframe with it attached.
     annotateGoldenZones(zonesByTimeframe)
     for (const [tfKey, result] of Object.entries(zonesByTimeframe)) {
-      result.signals = buildSignals(result.zones, currentPrice)
+      // TIMEFRAMES is ordered finest-to-broadest (H1, H4, D1) — everything after this
+      // timeframe's own index is "higher" and gets offered as extra TP candidates (see
+      // buildSignals). H1 can borrow H4/D1 structure; D1 has nothing above it to borrow.
+      const tfIndex = TIMEFRAMES.findIndex((tf) => tf.key === tfKey)
+      const higherTfZones = TIMEFRAMES.slice(tfIndex + 1).flatMap((tf) => zonesByTimeframe[tf.key]?.zones ?? [])
+      result.signals = buildSignals(result.zones, currentPrice, higherTfZones)
     }
     checkZonesAndSignals(symbol.key, symbol.label, zonesByTimeframe, currentPrice)
     saveLastKnown(symbol.key, zonesByTimeframe, currentPrice)
