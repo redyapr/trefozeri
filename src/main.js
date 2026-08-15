@@ -395,16 +395,16 @@ function renderContent() {
   const zonesGrid = document.createElement('div')
   zonesGrid.className = 'zones-grid'
 
-  if (resistances.length) {
-    const column = document.createElement('div')
-    column.className = 'zone-column'
-    resistances.forEach((zone) => column.appendChild(renderZoneCard(zone)))
-    zonesGrid.appendChild(column)
-  }
   if (supports.length) {
     const column = document.createElement('div')
     column.className = 'zone-column'
     supports.forEach((zone) => column.appendChild(renderZoneCard(zone)))
+    zonesGrid.appendChild(column)
+  }
+  if (resistances.length) {
+    const column = document.createElement('div')
+    column.className = 'zone-column'
+    resistances.forEach((zone) => column.appendChild(renderZoneCard(zone)))
     zonesGrid.appendChild(column)
   }
   contentEl.appendChild(zonesGrid)
