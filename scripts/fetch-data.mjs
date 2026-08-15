@@ -22,6 +22,12 @@ import { isGoldMarketClosed } from '../src/lib/marketHours.js'
 
 const OUT_DIR = path.join(process.cwd(), 'public', 'data')
 const HISTORY_PATH = path.join(process.cwd(), 'data', 'signal-history.json')
+const ALERT_STATE_PATH = path.join(process.cwd(), 'data', 'last-alert.json')
+// A persistent cause (an expired API key, say) would otherwise re-alert every single
+// 15-minute cron tick forever — suppress a repeat of the exact same alert text until
+// this long has passed since it was last actually sent. Overridable (hours, not ms)
+// via ALERT_SUPPRESS_HOURS for anyone who wants alerts more/less often than the default.
+const ALERT_SUPPRESS_MS = (Number(process.env.ALERT_SUPPRESS_HOURS) || 6) * 60 * 60 * 1000
 
 // Telegram notifications are opt-in per symbol (XAUUSD only for now) and per
 // timeframe (H1 only for now) — H4/D1 signals never post, even as part of a
@@ -48,8 +54,10 @@ export function resetFailures() {
 
 // If today's upstream fetch fails (rate limit, outage), fall back to whatever is
 // already live rather than shipping a hole in the data — a stale snapshot beats a
-// missing one, and the next successful cron run heals it anyway.
-const LIVE_BASE = 'https://redyapr.github.io/trefozeri/data'
+// missing one, and the next successful cron run heals it anyway. SITE_URL is optional
+// (defaults to this repo's own deployment) so a fork/rename/domain change is one env
+// var, not a code edit that's easy to forget.
+const LIVE_BASE = `${process.env.SITE_URL || 'https://redyapr.github.io/trefozeri'}/data`
 
 // Kept as a local, minimal copy rather than importing src/lib/twelveData.js — that
 // module reads import.meta.env (a Vite/browser concern), which plain Node doesn't have.
@@ -220,6 +228,36 @@ export async function sendAdminAlert(text) {
   const chatId = process.env.TELEGRAM_PERSONAL_CHAT_ID
   if (!chatId) return
   await sendTelegramMessage(`⚠️ <b>trefozeri cron</b>\n${text}`, undefined, chatId)
+}
+
+async function loadAlertState() {
+  try {
+    return JSON.parse(await readFile(ALERT_STATE_PATH, 'utf8'))
+  } catch {
+    return null // never alerted before, or the file's missing/corrupt
+  }
+}
+
+async function saveAlertState(state) {
+  await mkdir(path.dirname(ALERT_STATE_PATH), { recursive: true })
+  await writeFile(ALERT_STATE_PATH, JSON.stringify(state))
+}
+
+// Wraps sendAdminAlert with de-duplication, persisted across runs (data/last-alert.json
+// is git-tracked the same way data/signal-history.json is — see the workflow's persist
+// step) since every run is otherwise a fresh, stateless process. Only resends if the
+// alert text changed, or ALERT_SUPPRESS_MS has passed since this same text last
+// actually sent — a transient blip that resolves itself never touches this at all,
+// since FAILURES/fatal errors are the only callers.
+export async function sendAdminAlertDeduped(text) {
+  const state = await loadAlertState()
+  const now = Date.now()
+  if (state && state.text === text && now - state.sentAt < ALERT_SUPPRESS_MS) {
+    console.warn('[fetch-data] suppressing repeat admin alert (already sent recently):', text.split('\n')[0])
+    return
+  }
+  await sendAdminAlert(text)
+  await saveAlertState({ text, sentAt: now })
 }
 
 // group is almost always a single signal now that TELEGRAM_TIMEFRAMES filters down to
@@ -406,7 +444,7 @@ async function main() {
   if (calendar) await writeJson('calendar.json', calendar)
 
   if (FAILURES.length) {
-    await sendAdminAlert(`${FAILURES.length} data source(s) failed this run (retries + fallback both exhausted):\n${FAILURES.join('\n')}`)
+    await sendAdminAlertDeduped(`${FAILURES.length} data source(s) failed this run (retries + fallback both exhausted):\n${FAILURES.join('\n')}`)
   }
 }
 
@@ -416,7 +454,7 @@ async function main() {
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch(async (err) => {
     console.error('[fetch-data] fatal:', err)
-    await sendAdminAlert(`Fatal error, run aborted:\n${err.message}`)
+    await sendAdminAlertDeduped(`Fatal error, run aborted:\n${err.message}`)
     process.exit(1)
   })
 }

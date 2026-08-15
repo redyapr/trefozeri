@@ -54,23 +54,44 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_PERSONAL_CHAT_ID: ${{ secrets.TELEGRAM_PERSONAL_CHAT_ID }}
+          # Not a secret — a repository *variable*. Only needed on a fork/rename/domain
+          # change; defaults to this repo's own deployment when unset.
+          SITE_URL: ${{ vars.SITE_URL }}
 
-      # data/signal-history.json is the one piece of state that has to survive across
-      # otherwise-stateless CI runs (see scripts/fetch-data.mjs) — everything else here
-      # is regenerated fresh every time. Only commits when the record actually changed
-      # (new signal opened, or one hit its SL/TP), so this doesn't spam a commit every
-      # 15 minutes. Pushing with the default GITHUB_TOKEN is safe from a trigger-loop
-      # standpoint: GitHub doesn't fire `on: push` for commits made with that token.
+      # data/signal-history.json and data/last-alert.json are the state that has to
+      # survive across otherwise-stateless CI runs (see scripts/fetch-data.mjs) —
+      # everything else here is regenerated fresh every time. Only commits when
+      # something actually changed (a new signal opened/hit its SL-TP, or an admin
+      # alert fired), so this doesn't spam a commit every 15 minutes. Pushing with the
+      # default GITHUB_TOKEN is safe from a trigger-loop standpoint: GitHub doesn't
+      # fire `on: push` for commits made with that token.
       - name: Persist shared signal track record
         run: |
-          git add data/signal-history.json
+          git add data/signal-history.json data/last-alert.json
           if git diff --cached --quiet; then
             echo "No signal track record changes to commit"
           else
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git commit -m "Update signal track record"
-            git push
+
+            # A push can be rejected if something else landed on master in the narrow
+            # window between this run's checkout and this step (e.g. a manual push
+            # racing a cron tick) — rebase onto whatever's now there and retry a couple
+            # of times before actually failing the job.
+            pushed=false
+            for attempt in 1 2 3; do
+              if git push; then
+                pushed=true
+                break
+              fi
+              echo "Push rejected (attempt $attempt/3) — rebasing onto latest master and retrying..."
+              git pull --rebase origin master
+            done
+            if [ "$pushed" = false ]; then
+              echo "::error::Failed to push the signal track record after 3 attempts"
+              exit 1
+            fi
           fi
 
       - name: Build

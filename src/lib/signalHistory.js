@@ -28,10 +28,10 @@ export async function loadHistory() {
   return records
 }
 
-export function getHistory(symbolKey) {
-  return coreGetHistory(records, symbolKey)
+export function getHistory(symbolKey, tf) {
+  return coreGetHistory(records, symbolKey, tf)
 }
 
-export function getStats(symbolKey) {
-  return coreGetStats(records, symbolKey)
+export function getStats(symbolKey, tf) {
+  return coreGetStats(records, symbolKey, tf)
 }

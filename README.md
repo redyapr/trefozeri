@@ -37,7 +37,11 @@ they happen.
   [Data & deployment](#data--deployment)), so it survives across CI runs and everyone
   sees the same record. The browser (`src/lib/signalHistory.js`) only ever reads it.
   View it via the chart-icon button in the header — `pending` signals aren't repeated
-  there since they're already visible as live cards on the dashboard.
+  there since they're already visible as live cards on the dashboard. A timeframe
+  filter (All/H1/H4/D1) lets the win rate be checked against just H1, matching what
+  the Telegram channel itself reflects, instead of always the combined figure. Capped
+  at 300 records per symbol (not 300 combined) so a busier symbol can't crowd a
+  quieter one out of its own history.
 - **Telegram notifications** — public channel: **https://t.me/trefozeri** (XAUUSD H1
   only for now — see `TELEGRAM_SYMBOLS`/`TELEGRAM_TIMEFRAMES` in
   `scripts/fetch-data.mjs`; H4/D1 signals never post, even as part of a confluence
@@ -91,8 +95,10 @@ Other scripts:
 sizing, TP dedup), `signalHistoryCore.js` (record lifecycle, pip formatting),
 `marketHours.js`, and `fetch-data.mjs`'s Telegram message building / grouping /
 retry / admin-alert wiring (with `fetch` mocked, so it never touches the real network
-or a real chat) — not the DOM-coupled browser files (`main.js`, `notifications.js`,
-etc.), which would need a jsdom-style environment to test meaningfully.
+or a real chat) — plus the DOM-coupled browser modules (`notifications.js`,
+`offlineCache.js`, `uiState.js`) via `jsdom` (the one dev dependency the suite needs;
+see `test-helpers/setupDom.mjs`, which also mocks the `Notification` API since jsdom
+itself doesn't implement it).
 
 ## Data & deployment
 
@@ -124,13 +130,29 @@ rebuilt from scratch each time) — `data/signal-history.json` is the one except
 fetch step updates it in place, then a dedicated workflow step commits it back to
 `master` with the default `GITHUB_TOKEN`, but only when it actually changed (a new
 signal opened, or one hit its SL/TP) — most 15-minute ticks commit nothing. Pushing
-with that token doesn't re-trigger the `on: push` rule, so this can't loop.
+with that token doesn't re-trigger the `on: push` rule, so this can't loop. If the push
+itself is ever rejected (something else landed on `master` in the narrow window
+between this run's checkout and this step — a manual push racing a cron tick, say),
+it rebases onto the latest `master` and retries up to 3 times before actually failing
+the job.
 
 **Ops alerting**: if a data source fails even after retries and the fallback snapshot,
 or the whole run hits a fatal error, `scripts/fetch-data.mjs` sends an alert to
 `TELEGRAM_PERSONAL_CHAT_ID` — a private DM with the bot, deliberately kept separate
 from `TELEGRAM_CHAT_ID` (the public signals channel), so run-health noise never lands
-in front of channel subscribers.
+in front of channel subscribers. De-duplicated against `data/last-alert.json`
+(git-tracked the same way as `data/signal-history.json`): the exact same failure text
+recurring every 15-minute tick — an expired API key, say — only re-alerts once
+`ALERT_SUPPRESS_HOURS` (default 6) have passed since it last actually sent, instead of
+paging every single run.
+
+The fallback snapshot itself (`fetchWithFallback`'s last resort when a source fails
+even after retries) fetches from this repo's own live deployment by default — override
+with the optional `SITE_URL` repository **variable** (not a secret) if you fork this,
+rename it, or move it to a different domain.
+
+**Dependency updates**: `.github/dependabot.yml` opens a weekly PR for outdated/
+vulnerable npm packages and pinned GitHub Actions versions — nothing to run manually.
 
 One-time setup for a fork or a new deploy target (the workflow's default
 `GITHUB_TOKEN` can't do either of these via API — both need repo-admin access):
@@ -141,6 +163,10 @@ One-time setup for a fork or a new deploy target (the workflow's default
    it to the target chat, and use that chat's numeric id — negative for a group) plus
    `TELEGRAM_PERSONAL_CHAT_ID` (the same bot, but a private DM chat id) for ops alerts.
 2. **Settings → Pages → Build and deployment → Source: GitHub Actions**.
+3. On a fork/rename/domain change only — **Settings → Secrets and variables →
+   Actions → Variables tab → New repository variable** — add `SITE_URL` (e.g.
+   `https://you.github.io/your-repo`) so the fallback snapshot points at your own
+   deployment instead of this repo's.
 
 `vite.config.js` bases the build at `/trefozeri/` (this repo's GitHub Pages project
 path) only when the workflow sets `GH_PAGES=true`; local dev still bases at `/`.
@@ -171,8 +197,15 @@ scripts/
                           TELEGRAM_PERSONAL_CHAT_ID on data/run failures
 test/
   *.test.mjs              node --test suite — see Local development above
+test-helpers/
+  setupDom.mjs            jsdom + a Notification-API mock, shared by the DOM-coupled
+                          tests — deliberately outside test/ so node --test's
+                          auto-discovery doesn't try to run it as a test file itself
 data/
   signal-history.json     Git-tracked shared signal track record — committed by CI
+  last-alert.json         Git-tracked admin-alert de-dup state — committed by CI
 .github/workflows/
   deploy.yml              Test → cron fetch → persist track record → build → deploy
+.github/
+  dependabot.yml          Weekly PRs for outdated/vulnerable npm + Actions deps
 ```

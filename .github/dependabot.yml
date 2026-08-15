@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # npm deps (vite, vite-plugin-pwa, lightweight-charts, jsdom, etc.) — a weekly PR
+  # bundling available updates, rather than a same-day flood every time anything bumps.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  # The workflow pins actions/checkout, actions/setup-node, actions/deploy-pages, etc.
+  # by major version (@v4) — Dependabot still flags newer majors/minors/patches here.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

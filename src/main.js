@@ -162,14 +162,31 @@ notifyBtn.addEventListener('click', async () => {
   updateNotifyBtn()
 })
 
+// 'ALL' combines every timeframe. Telegram only ever posts H1 signals (see
+// TELEGRAM_TIMEFRAMES in scripts/fetch-data.mjs), so the combined win rate here can
+// otherwise read differently than the channel's own H1-only track record — this lets
+// someone line the two up directly instead of wondering why they don't match.
+let historyTfFilter = 'ALL'
+
 function renderHistory() {
-  const stats = getStats(activeSymbol.key)
+  const stats = getStats(activeSymbol.key, historyTfFilter)
   // 'pending' (not yet filled) signals are already visible as live cards on the main
   // dashboard — the track record is for what's actually happened, so it only lists
   // trades that have at least filled.
-  const records = getHistory(activeSymbol.key)
+  const records = getHistory(activeSymbol.key, historyTfFilter)
     .filter((r) => r.status !== 'pending')
     .slice(0, 30)
+
+  const tfFilterHtml = `
+    <div class="history-tf-filter">
+      ${['ALL', ...TIMEFRAMES.map((tf) => tf.key)]
+        .map(
+          (tf) =>
+            `<button type="button" class="history-tf-btn${tf === historyTfFilter ? ' active' : ''}" data-tf-filter="${tf}">${tf === 'ALL' ? 'All' : tf}</button>`
+        )
+        .join('')}
+    </div>
+  `
 
   const statsHtml = `
     <div class="history-stats">
@@ -200,10 +217,19 @@ function renderHistory() {
         </div>`
         })
         .join('')}</div>`
-    : `<p class="history-empty">No filled signals yet for ${activeSymbol.label} — pending ones are on the dashboard, check back here once one fills.</p>`
+    : `<p class="history-empty">No filled signals yet for ${activeSymbol.label}${historyTfFilter !== 'ALL' ? ` on ${historyTfFilter}` : ''} — pending ones are on the dashboard, check back here once one fills.</p>`
 
-  historyBody.innerHTML = statsHtml + rowsHtml
+  historyBody.innerHTML = tfFilterHtml + statsHtml + rowsHtml
 }
+
+// Delegated once on the stable container rather than re-attached per render, since
+// renderHistory() replaces historyBody's entire innerHTML each time it runs.
+historyBody.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-tf-filter]')
+  if (!btn) return
+  historyTfFilter = btn.dataset.tfFilter
+  renderHistory()
+})
 
 historyBtn.addEventListener('click', () => {
   renderHistory()

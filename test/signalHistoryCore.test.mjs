@@ -174,11 +174,31 @@ test('evaluateSignals', async (t) => {
   })
 })
 
-test('trimRecords caps total history length, oldest first', () => {
-  const history = Array.from({ length: MAX_RECORDS + 10 }, (_, i) => ({ key: `k${i}`, openedAt: i }))
-  const trimmed = trimRecords(history)
-  assert.equal(trimmed.length, MAX_RECORDS)
-  assert.equal(trimmed[0].key, 'k10', 'the oldest 10 were dropped')
+test('trimRecords', async (t) => {
+  await t.test('caps a single symbol at MAX_RECORDS, oldest first', () => {
+    const history = Array.from({ length: MAX_RECORDS + 10 }, (_, i) => ({ key: `k${i}`, symbolKey: 'XAUUSD', openedAt: i }))
+    const trimmed = trimRecords(history)
+    assert.equal(trimmed.length, MAX_RECORDS)
+    assert.equal(trimmed[0].key, 'k10', 'the oldest 10 were dropped')
+  })
+
+  await t.test('caps each symbol independently — a busy symbol cannot crowd out a quiet one', () => {
+    const busy = Array.from({ length: MAX_RECORDS + 10 }, (_, i) => ({ key: `busy${i}`, symbolKey: 'XAUUSD', openedAt: i }))
+    const quiet = Array.from({ length: 5 }, (_, i) => ({ key: `quiet${i}`, symbolKey: 'BTCUSD', openedAt: i }))
+    const trimmed = trimRecords([...busy, ...quiet])
+    assert.equal(trimmed.filter((r) => r.symbolKey === 'XAUUSD').length, MAX_RECORDS)
+    assert.equal(trimmed.filter((r) => r.symbolKey === 'BTCUSD').length, 5, 'none of the quiet symbol dropped')
+  })
+
+  await t.test('returns records sorted oldest-first overall, symbols interleaved', () => {
+    const records = [
+      { key: 'a', symbolKey: 'XAUUSD', openedAt: 3 },
+      { key: 'b', symbolKey: 'BTCUSD', openedAt: 1 },
+      { key: 'c', symbolKey: 'XAUUSD', openedAt: 2 },
+    ]
+    const trimmed = trimRecords(records)
+    assert.deepEqual(trimmed.map((r) => r.key), ['b', 'c', 'a'])
+  })
 })
 
 test('getHistory / getStats', async (t) => {
@@ -212,6 +232,30 @@ test('getHistory / getStats', async (t) => {
   await t.test('win rate is null when nothing has closed yet', () => {
     const stats = getStats([{ symbolKey: 'XAUUSD', openedAt: 1, status: 'pending' }], 'XAUUSD')
     assert.equal(stats.winRate, null)
+  })
+
+  await t.test('an optional tf filters down to just that timeframe', () => {
+    const history = [
+      { symbolKey: 'XAUUSD', tf: 'H1', openedAt: 1, status: 'win' },
+      { symbolKey: 'XAUUSD', tf: 'H4', openedAt: 2, status: 'loss' },
+      { symbolKey: 'XAUUSD', tf: 'D1', openedAt: 3, status: 'win' },
+    ]
+    assert.equal(getHistory(history, 'XAUUSD', 'H1').length, 1)
+    assert.equal(getHistory(history, 'XAUUSD', 'H1')[0].tf, 'H1')
+
+    const h1Stats = getStats(history, 'XAUUSD', 'H1')
+    assert.equal(h1Stats.total, 1)
+    assert.equal(h1Stats.winRate, 100)
+  })
+
+  await t.test('omitting tf (or passing "ALL") combines every timeframe, matching the pre-filter default', () => {
+    const history = [
+      { symbolKey: 'XAUUSD', tf: 'H1', openedAt: 1, status: 'win' },
+      { symbolKey: 'XAUUSD', tf: 'H4', openedAt: 2, status: 'loss' },
+    ]
+    assert.equal(getHistory(history, 'XAUUSD').length, 2)
+    assert.equal(getHistory(history, 'XAUUSD', 'ALL').length, 2)
+    assert.equal(getStats(history, 'XAUUSD').total, 2)
   })
 })
 

@@ -230,6 +230,34 @@ body {
   overflow-y: auto;
 }
 
+.history-tf-filter {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.history-tf-btn {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.history-tf-btn:hover {
+  border-color: var(--navy);
+}
+
+.history-tf-btn.active {
+  color: #fff;
+  background: var(--navy);
+  border-color: var(--navy);
+}
+
 .history-stats {
   display: grid;
   grid-template-columns: repeat(4, 1fr);

@@ -1,5 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFile, writeFile, rm } from 'node:fs/promises'
+import path from 'node:path'
 
 // This module has top-level env-var reads inside its functions (not at import time),
 // so setting them before import is enough — no need to mock process.env per-test.
@@ -19,9 +21,26 @@ const {
   fetchWithFallback,
   sendTelegramMessage,
   sendAdminAlert,
+  sendAdminAlertDeduped,
   getFailures,
   resetFailures,
 } = await import('../scripts/fetch-data.mjs')
+
+// sendAdminAlertDeduped persists its de-dup state to this real file (there's no
+// injectable path — it has to survive across separate CI processes) — back it up and
+// restore it around any test that exercises the wrapper, so the suite never leaves the
+// repo's actual alert state altered.
+const ALERT_STATE_PATH = path.join(process.cwd(), 'data', 'last-alert.json')
+async function withClearAlertState(fn) {
+  const backup = await readFile(ALERT_STATE_PATH, 'utf8').catch(() => null)
+  await rm(ALERT_STATE_PATH, { force: true })
+  try {
+    await fn()
+  } finally {
+    if (backup == null) await rm(ALERT_STATE_PATH, { force: true })
+    else await writeFile(ALERT_STATE_PATH, backup)
+  }
+}
 
 // Intercepts calls to api.telegram.org and records them instead of hitting the network.
 // Any other fetch() call (e.g. a real fallback snapshot fetch) is left to a caller-
@@ -209,9 +228,9 @@ test('fetchWithFallback', async (t) => {
     }
   })
 
-  await t.test('falls back to the last snapshot when the primary fails', async () => {
+  await t.test('falls back to the last snapshot when the primary fails, using the default SITE_URL', async () => {
     const { restore } = mockTelegram((url) => {
-      assert.match(String(url), /irrelevant\.json$/)
+      assert.equal(String(url), 'https://redyapr.github.io/trefozeri/data/irrelevant.json')
       return { ok: true, json: async () => ({ fallback: true }) }
     })
     try {
@@ -224,6 +243,34 @@ test('fetchWithFallback', async (t) => {
       assert.deepEqual(result, { fallback: true })
     } finally {
       restore()
+    }
+  })
+
+  await t.test('SITE_URL overrides the default fallback base (a fork/rename/domain change needs no code edit)', async () => {
+    const saved = process.env.SITE_URL
+    process.env.SITE_URL = 'https://example.com/myfork'
+    try {
+      // A fresh module instance — LIVE_BASE is computed once at import time from
+      // whatever SITE_URL was set then, so overriding it after the top-of-file import
+      // wouldn't be visible without re-importing.
+      const fresh = await import(`../scripts/fetch-data.mjs?t=${Date.now()}`)
+      const { restore } = mockTelegram((url) => {
+        assert.equal(String(url), 'https://example.com/myfork/data/irrelevant.json')
+        return { ok: true, json: async () => ({ fallback: true }) }
+      })
+      try {
+        const result = await fresh.fetchWithFallback(
+          'SRC',
+          async () => { throw new Error('primary down') },
+          'irrelevant.json',
+          { attempts: 0 }
+        )
+        assert.deepEqual(result, { fallback: true })
+      } finally {
+        restore()
+      }
+    } finally {
+      process.env.SITE_URL = saved
     }
   })
 
@@ -310,6 +357,83 @@ test('sendAdminAlert', async (t) => {
       process.env.TELEGRAM_PERSONAL_CHAT_ID = saved
       restore()
     }
+  })
+})
+
+test('sendAdminAlertDeduped', async (t) => {
+  await t.test('sends the first time a given failure text is seen', async () => {
+    await withClearAlertState(async () => {
+      const { sent, restore } = mockTelegram()
+      try {
+        await sendAdminAlertDeduped('API key expired')
+        assert.equal(sent.length, 1)
+      } finally {
+        restore()
+      }
+    })
+  })
+
+  await t.test('suppresses an immediate repeat of the exact same text', async () => {
+    await withClearAlertState(async () => {
+      const { sent, restore } = mockTelegram()
+      try {
+        await sendAdminAlertDeduped('API key expired')
+        await sendAdminAlertDeduped('API key expired')
+        await sendAdminAlertDeduped('API key expired')
+        assert.equal(sent.length, 1, 'the same failure repeating every cron tick should only alert once')
+      } finally {
+        restore()
+      }
+    })
+  })
+
+  await t.test('a different failure text sends immediately, independent of any suppressed one', async () => {
+    await withClearAlertState(async () => {
+      const { sent, restore } = mockTelegram()
+      try {
+        await sendAdminAlertDeduped('API key expired')
+        await sendAdminAlertDeduped('Binance.US is down')
+        assert.equal(sent.length, 2)
+      } finally {
+        restore()
+      }
+    })
+  })
+
+  await t.test('re-sends the same text once the suppression window has passed', async () => {
+    await withClearAlertState(async () => {
+      await writeFile(ALERT_STATE_PATH, JSON.stringify({ text: 'API key expired', sentAt: Date.now() - 7 * 60 * 60 * 1000 }))
+      const { sent, restore } = mockTelegram()
+      try {
+        await sendAdminAlertDeduped('API key expired')
+        assert.equal(sent.length, 1, 'more than 6 hours have passed since the last send')
+      } finally {
+        restore()
+      }
+    })
+  })
+
+  await t.test('ALERT_SUPPRESS_HOURS overrides the default 6-hour suppression window', async () => {
+    await withClearAlertState(async () => {
+      // 2 hours ago — would still be suppressed under the default 6-hour window, but
+      // not under a 1-hour override.
+      await writeFile(ALERT_STATE_PATH, JSON.stringify({ text: 'API key expired', sentAt: Date.now() - 2 * 60 * 60 * 1000 }))
+      const saved = process.env.ALERT_SUPPRESS_HOURS
+      process.env.ALERT_SUPPRESS_HOURS = '1'
+      try {
+        // A fresh module instance — ALERT_SUPPRESS_MS is computed once at import time.
+        const fresh = await import(`../scripts/fetch-data.mjs?t=${Date.now()}`)
+        const { sent, restore } = mockTelegram()
+        try {
+          await fresh.sendAdminAlertDeduped('API key expired')
+          assert.equal(sent.length, 1, 'more than 1 hour (the override) has passed since the last send')
+        } finally {
+          restore()
+        }
+      } finally {
+        process.env.ALERT_SUPPRESS_HOURS = saved
+      }
+    })
   })
 })
 

@@ -135,16 +135,34 @@ export function evaluateSignals(records, symbolKey, currentPrice) {
   return { filled, closed }
 }
 
+// Caps each symbol's own history independently (oldest-first within each), rather than
+// capping the whole array combined — otherwise a busier symbol (e.g. XAUUSD once
+// Telegram made its H1 signals more visible) could crowd a quieter one's history out
+// of the shared 300-record budget entirely.
 export function trimRecords(records) {
-  return records.slice(-MAX_RECORDS)
+  const bySymbol = new Map()
+  for (const r of records) {
+    if (!bySymbol.has(r.symbolKey)) bySymbol.set(r.symbolKey, [])
+    bySymbol.get(r.symbolKey).push(r)
+  }
+
+  const trimmed = []
+  for (const list of bySymbol.values()) trimmed.push(...list.slice(-MAX_RECORDS))
+  return trimmed.sort((a, b) => a.openedAt - b.openedAt)
 }
 
-export function getHistory(records, symbolKey) {
-  return records.filter((r) => r.symbolKey === symbolKey).sort((a, b) => b.openedAt - a.openedAt)
+// `tf` is optional — omit it (or pass 'ALL') for every timeframe combined. Filtering by
+// timeframe matters here specifically because Telegram only ever posts H1 signals (see
+// TELEGRAM_TIMEFRAMES in fetch-data.mjs): the combined win rate can otherwise read
+// differently than what the channel's own H1-only track record would show.
+export function getHistory(records, symbolKey, tf) {
+  return records
+    .filter((r) => r.symbolKey === symbolKey && (tf == null || tf === 'ALL' || r.tf === tf))
+    .sort((a, b) => b.openedAt - a.openedAt)
 }
 
-export function getStats(records, symbolKey) {
-  const list = getHistory(records, symbolKey)
+export function getStats(records, symbolKey, tf) {
+  const list = getHistory(records, symbolKey, tf)
   const wins = list.filter((r) => r.status === 'win').length
   const losses = list.filter((r) => r.status === 'loss').length
   const running = list.filter((r) => r.status === 'running').length
