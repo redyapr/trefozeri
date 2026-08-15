@@ -32,7 +32,6 @@ const newsBannerEl = document.getElementById('news-banner')
 const contentEl = document.getElementById('content')
 const priceEl = document.getElementById('price-display')
 const lastUpdateEl = document.getElementById('last-update')
-const themeBtn = document.getElementById('theme-btn')
 const notifyBtn = document.getElementById('notify-btn')
 const historyBtn = document.getElementById('history-btn')
 const historyModal = document.getElementById('history-modal')
@@ -60,15 +59,11 @@ function disposeChart() {
   activeChart = null
 }
 
-const MOON_ICON =
-  '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>'
-const SUN_ICON =
-  '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>'
-
-function applyTheme(theme) {
-  document.documentElement.setAttribute('data-theme', theme)
-  themeBtn.innerHTML = theme === 'dark' ? SUN_ICON : MOON_ICON
-  themeBtn.title = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'
+// Every accent-driven color on the page (brand mark, icon buttons, prices,
+// confluence badge, ...) reads off CSS variables scoped to `body[data-symbol]` (see
+// style.css) — so switching symbol re-skins the whole UI, not just which data is shown.
+function applySymbolTheme(symbol) {
+  document.body.dataset.symbol = symbol.key.toLowerCase()
 }
 
 function renderSymbolTabs() {
@@ -76,10 +71,12 @@ function renderSymbolTabs() {
   for (const symbol of SYMBOLS) {
     const btn = document.createElement('button')
     btn.className = 'symbol-tab-btn' + (symbol.key === activeSymbol.key ? ' active' : '')
+    btn.dataset.sym = symbol.key.toLowerCase()
     btn.textContent = symbol.label
     btn.addEventListener('click', () => {
       if (symbol.key === activeSymbol.key) return
       activeSymbol = symbol
+      applySymbolTheme(activeSymbol)
       saveUiState({ symbolKey: activeSymbol.key })
       zonesByTimeframe = {}
       lastFetchedAt = {}
@@ -335,30 +332,35 @@ function shortCategory(category) {
   return category === 'Resistance' ? 'Resist.' : category
 }
 
+// The confluence badge is named/colored per the active symbol — "★ Golden Zone" for
+// XAUUSD, "◆ Diamond Zone" for BTCUSD (see style.css's body[data-symbol] accents) —
+// rather than always "Golden", since that name only really makes sense for gold itself.
+function confluenceBadgeHtml() {
+  const isXau = activeSymbol.key === 'XAUUSD'
+  const icon = isXau ? '★' : '◆'
+  const label = isXau ? 'Golden Zone' : 'Diamond Zone'
+  return `<span class="confluence-badge"><span class="confluence-badge-icon">${icon}</span> ${label}</span>`
+}
+
 function renderZoneCard(zone) {
   const card = document.createElement('div')
   card.className = `zone-card ${zone.type}`
   const flippedFrom = zone.type === 'support' ? 'resistance' : 'support'
   const brokenNote = zone.broken ? ` · flipped from ${flippedFrom} after one breakout` : ''
   const confluenceNote = zone.confluence.length ? ` · also on ${zone.confluence.join(', ')}` : ''
+  // Strong and Golden Zone are literally the same condition (see srDetector.js's
+  // strengthLabel) — there's no "strong but not confluent" state, so the confluence
+  // badge fully replaces a separate "Strong" badge instead of sitting next to one.
+  const badge = zone.isGolden ? confluenceBadgeHtml() : '<span class="strength-badge medium">Medium</span>'
   card.innerHTML = `
     <span class="zone-type">${shortCategory(zone.category)}</span>
     <div class="zone-range">
       <div class="zone-price">${formatPrice(zone.price)}</div>
       <div class="zone-meta">Distance: ${formatPrice(zone.distanceFromPrice)} · Formed ${timeAgo(zone.startTime)}${brokenNote}${confluenceNote}</div>
     </div>
-    <div class="zone-stats">
-      <span class="strength-badge ${zone.isGolden ? 'strong' : 'medium'}">${zone.isGolden ? '★ Golden Zone' : 'Medium'}</span>
-    </div>
+    <div class="zone-stats">${badge}</div>
   `
   return card
-}
-
-function renderGroupHeading(text, type) {
-  const heading = document.createElement('div')
-  heading.className = `group-heading ${type}`
-  heading.textContent = text
-  return heading
 }
 
 function renderContent() {
@@ -396,14 +398,12 @@ function renderContent() {
   if (resistances.length) {
     const column = document.createElement('div')
     column.className = 'zone-column'
-    column.appendChild(renderGroupHeading('Resistance', 'resistance'))
     resistances.forEach((zone) => column.appendChild(renderZoneCard(zone)))
     zonesGrid.appendChild(column)
   }
   if (supports.length) {
     const column = document.createElement('div')
     column.className = 'zone-column'
-    column.appendChild(renderGroupHeading('Support', 'support'))
     supports.forEach((zone) => column.appendChild(renderZoneCard(zone)))
     zonesGrid.appendChild(column)
   }
@@ -439,16 +439,21 @@ function renderSignalCard(signal) {
   card.className = `signal-card ${signal.direction}`
 
   const label = `${signal.direction === 'buy' ? 'BUY' : 'SELL'} ${signal.orderType}`
-  const zoneLabel = shortCategory(signal.category)
   const entryText = formatPrice(signal.entry)
+  // Strong and Golden Zone are literally the same condition (see srDetector.js's
+  // strengthLabel) — no separate "Strong" wording needed once the badge is shown.
+  const badge =
+    signal.strengthLabel === 'Strong' ? confluenceBadgeHtml() : '<span class="strength-badge medium">Medium</span>'
 
   const tpRows = signal.tp
     .map(
       (t, i) => `
       <div class="signal-tp-row">
-        <span>TP${i + 1}</span>
+        <span class="signal-tp-left">
+          <span>TP${i + 1}</span>
+          <span class="rr">(${formatPrice(t.rr)}R)</span>
+        </span>
         <span>${formatPrice(t.price)}</span>
-        <span class="rr">${formatPrice(t.rr)}R</span>
       </div>`
     )
     .join('')
@@ -459,10 +464,12 @@ function renderSignalCard(signal) {
 
   card.innerHTML = `
     <div class="signal-header">
-      <span class="signal-direction">${label}</span>
-      <div class="signal-header-right">
-        <span class="signal-zone-strength">${signal.strengthLabel} ${zoneLabel}</span>
+      <div class="signal-header-left">
         <button type="button" class="signal-copy-btn" title="Copy signal" aria-label="Copy signal">${COPY_ICON}</button>
+        <span class="signal-direction">${label}</span>
+      </div>
+      <div class="signal-header-right">
+        ${badge}
       </div>
     </div>
     <div class="signal-row">
@@ -567,14 +574,6 @@ async function refreshData() {
   }
 }
 
-themeBtn.addEventListener('click', () => {
-  const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'
-  applyTheme(next)
-  saveUiState({ theme: next })
-  // Chart colors are read from CSS vars at creation time, so it needs a rebuild to pick up the new theme.
-  renderContent()
-})
-
 // Custom install prompt: the browser's own default install UI is inconsistent (a tiny
 // address-bar icon on some browsers, nothing visible at all on others) and fires on
 // its own schedule — capturing the event instead lets the app show one obvious button
@@ -602,9 +601,9 @@ window.addEventListener('appinstalled', () => {
   deferredInstallPrompt = null
 })
 
+applySymbolTheme(activeSymbol)
 renderSymbolTabs()
 renderTabs()
-applyTheme(uiState.theme === 'dark' ? 'dark' : 'light')
 updateNotifyBtn()
 hydrateFromCache(activeSymbol)
 renderDashboard()

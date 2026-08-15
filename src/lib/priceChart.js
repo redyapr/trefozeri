@@ -71,7 +71,7 @@ class ZoneRectangle {
               // Label centered inside the zone's own bounds, not on the price axis —
               // it should read as "part of" the band it describes.
               const fontSize = Math.round(11 * hRatio)
-              ctx.font = `600 ${fontSize}px Inter, sans-serif`
+              ctx.font = `600 ${fontSize}px 'JetBrains Mono', monospace`
               ctx.textAlign = 'center'
               ctx.textBaseline = 'middle'
               const textWidth = ctx.measureText(label).width

@@ -1,34 +1,37 @@
 :root {
-  --bg: #f5f7fa;
-  --panel: #ffffff;
-  --border: #dbe2eb;
-  --border-soft: #e9edf2;
-  --text: #16233a;
-  --text-dim: #70808f;
-  --support: #279058;
-  --resistance: #c0392b;
-  --navy: #1b3a6b;
-  --navy-bright: #274d8a;
-  --shadow: 0 1px 2px rgba(16, 35, 63, 0.04), 0 4px 14px rgba(16, 35, 63, 0.06);
+  --bg: #000000;
+  --panel: #0a0a0a;
+  --border: #1a1a1a;
+  --border-soft: #141414;
+  --text: #d7ffe0;
+  --text-dim: #4d8a5c;
+  --support: #26a69a;
+  --resistance: #ef5350;
+  --cyan: #00f0ff;
+  --shadow: 0 0 0 1px rgba(38, 166, 154, 0.08), 0 0 24px rgba(0, 240, 255, 0.08);
+  /* The ambient card shadow carries a per-symbol tint (see body/[data-symbol]
+     below) — gold for XAUUSD, the theme's original green+cyan combo for BTCUSD. */
+  --card-shadow-xau: 0 0 0 1px rgba(255, 210, 63, 0.1), 0 0 24px rgba(255, 210, 63, 0.1);
+  --card-shadow-btc: var(--shadow);
+  --glow-cyan-text: 0 0 10px rgba(0, 240, 255, 0.5);
+  --glow-green-text: 0 0 8px rgba(38, 166, 154, 0.5);
+  --glow-red-text: 0 0 8px rgba(239, 83, 80, 0.5);
+  --glow-cyan-box: 0 0 14px rgba(0, 240, 255, 0.6);
+  --glow-green-box: 0 0 14px rgba(38, 166, 154, 0.6);
+  --glow-gold-text: 0 0 10px rgba(255, 210, 63, 0.55);
+  --glow-gold-box: 0 0 14px rgba(212, 175, 55, 0.55);
+  /* XAUUSD gets its own accent (gold, ties back to "Gold"); BTCUSD keeps the
+     theme's original cyan. Both feed --accent below, switched by data-symbol. */
+  --accent-xau: #ffd23f;
+  --accent-btc: var(--cyan);
+  /* The confluence badge ("Golden Zone" for XAUUSD, "Diamond Zone" for BTCUSD) is
+     its own filled pill — its base "medal" gold values are XAUUSD's; BTCUSD's own
+     rule below overrides them to the symbol's own cyan accent instead. */
+  --gold-badge: #d4af37;
+  --gold-badge-text: #1a1300;
 
-  --font-display: 'Poppins', 'Segoe UI', sans-serif;
-  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-}
-
-/* The logo itself isn't re-themed (it's a flat asset drawn for a light backdrop), so
-   it keeps sitting on a fixed white badge — only the surrounding chrome goes dark. */
-:root[data-theme='dark'] {
-  --bg: #0f1729;
-  --panel: #16203a;
-  --border: #2b3856;
-  --border-soft: #1e2942;
-  --text: #e7ecf5;
-  --text-dim: #8b98af;
-  --support: #3fb572;
-  --resistance: #e0574b;
-  --navy: #7196db;
-  --navy-bright: #97b3e8;
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 6px 20px rgba(0, 0, 0, 0.3);
+  --font: 'JetBrains Mono', monospace;
+  --grid-gap: 20px;
 }
 
 * {
@@ -44,11 +47,30 @@
 
 body {
   margin: 0;
-  font-family: var(--font-body);
-  background:
-    radial-gradient(ellipse 900px 420px at 50% -10%, rgba(27, 58, 107, 0.06), transparent 65%),
-    var(--bg);
+  font-family: var(--font);
+  background: var(--bg);
   color: var(--text);
+  /* Every accent use on the page — text, glow-text, glow-box, and card shadow alike
+     — reads off these variables, so switching symbol (see the click handler in
+     main.js) re-skins the whole UI (brand mark, icon buttons, prices, footer link,
+     confluence badge...) consistently, not just the price numbers. */
+  --accent: var(--accent-xau);
+  --accent-glow: var(--glow-gold-text);
+  --accent-glow-box: var(--glow-gold-box);
+  --card-shadow: var(--card-shadow-xau);
+  --badge-bg: var(--gold-badge);
+  --badge-text: var(--gold-badge-text);
+  --badge-glow: var(--glow-gold-box);
+}
+
+body[data-symbol='btcusd'] {
+  --accent: var(--accent-btc);
+  --accent-glow: var(--glow-cyan-text);
+  --accent-glow-box: var(--glow-cyan-box);
+  --card-shadow: var(--card-shadow-btc);
+  --badge-bg: var(--accent-btc);
+  --badge-text: #000;
+  --badge-glow: var(--glow-cyan-box);
 }
 
 #app {
@@ -72,14 +94,19 @@ body {
   display: flex;
   align-items: center;
   gap: 14px;
+  min-width: 0;
 }
 
+/* The logo asset itself isn't re-themed (it's a flat graphic drawn for a light
+   backdrop), so it keeps sitting on a fixed white badge regardless of theme — only
+   the badge's border/glow follows the active symbol's accent. */
 .brand-logo-badge {
   display: inline-flex;
   background: #ffffff;
+  border: 2px solid var(--accent);
   border-radius: 10px;
   padding: 6px;
-  box-shadow: var(--shadow);
+  box-shadow: var(--accent-glow-box);
 }
 
 .brand-logo {
@@ -93,20 +120,23 @@ body {
   flex-direction: column;
 }
 
-
 .brand-title {
-  font-family: var(--font-display);
-  font-weight: 600;
+  font-family: var(--font);
+  font-weight: 700;
   font-size: 1.5rem;
-  letter-spacing: 0.01em;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
   margin: 0;
-  color: var(--navy);
+  color: var(--accent);
+  text-shadow: var(--accent-glow);
+  white-space: nowrap;
 }
 
 .topbar-actions {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 14px;
+  flex-wrap: wrap;
 }
 
 .price-block {
@@ -124,11 +154,12 @@ body {
 }
 
 .price-display {
-  font-family: var(--font-display);
+  font-family: var(--font);
   font-size: 1.6rem;
-  font-weight: 600;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
-  color: var(--navy);
+  color: var(--accent);
+  text-shadow: var(--accent-glow);
 }
 
 .icon-btn {
@@ -137,19 +168,20 @@ body {
   justify-content: center;
   background: var(--panel);
   border: 1px solid var(--border);
-  color: var(--navy);
+  color: var(--accent);
   border-radius: 50%;
   width: 36px;
   height: 36px;
   padding: 0;
   cursor: pointer;
-  box-shadow: var(--shadow);
+  box-shadow: var(--card-shadow);
+  flex: 0 0 auto;
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 
 .icon-btn:hover {
-  border-color: var(--navy);
-  background: rgba(27, 58, 107, 0.06);
+  border-color: var(--accent);
+  background: var(--border-soft);
 }
 
 .icon-btn:active {
@@ -162,19 +194,21 @@ body {
 }
 
 .icon-btn svg {
+  display: block;
   transform-origin: 50% 50%;
 }
 
 .icon-btn.active {
-  color: #fff;
-  background: var(--navy);
-  border-color: var(--navy);
+  color: #000;
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: var(--accent-glow-box);
 }
 
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(15, 23, 41, 0.55);
+  background: rgba(0, 0, 0, 0.7);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -192,7 +226,7 @@ body {
   border-radius: 12px;
   border: 1px solid var(--border);
   background: var(--panel);
-  box-shadow: var(--shadow);
+  box-shadow: var(--card-shadow);
 }
 
 .modal-header {
@@ -205,10 +239,11 @@ body {
 
 .modal-header h2 {
   margin: 0;
-  font-family: var(--font-display);
+  font-family: var(--font);
   font-size: 1.05rem;
-  font-weight: 600;
-  color: var(--navy);
+  font-weight: 700;
+  color: var(--accent);
+  text-shadow: var(--accent-glow);
 }
 
 .modal-close {
@@ -243,19 +278,19 @@ body {
   background: var(--panel);
   color: var(--text-dim);
   cursor: pointer;
-  font-family: var(--font-body);
+  font-family: var(--font);
   font-size: 0.72rem;
   font-weight: 600;
 }
 
 .history-tf-btn:hover {
-  border-color: var(--navy);
+  border-color: var(--accent);
 }
 
 .history-tf-btn.active {
-  color: #fff;
-  background: var(--navy);
-  border-color: var(--navy);
+  color: #000;
+  background: var(--accent);
+  border-color: var(--accent);
 }
 
 .history-stats {
@@ -273,10 +308,10 @@ body {
 }
 
 .history-stat .num {
-  font-family: var(--font-display);
+  font-family: var(--font);
   font-size: 1.2rem;
-  font-weight: 600;
-  color: var(--navy);
+  font-weight: 700;
+  color: var(--accent);
 }
 
 .history-stat.win .num {
@@ -288,7 +323,7 @@ body {
 }
 
 .history-stat.running .num {
-  color: var(--navy-bright);
+  color: var(--accent);
 }
 
 .history-stat .lbl {
@@ -348,13 +383,13 @@ body {
 }
 
 .history-row-badge.pending {
-  color: var(--navy);
-  border: 1px solid var(--navy);
+  color: var(--accent);
+  border: 1px solid var(--accent);
 }
 
 .history-row-badge.running {
-  color: #fff;
-  background: var(--navy-bright);
+  color: #000;
+  background: var(--accent);
 }
 
 .history-empty {
@@ -382,16 +417,19 @@ body {
   background: none;
   color: var(--text-dim);
   cursor: pointer;
-  font-family: var(--font-body);
+  font-family: var(--font);
   font-size: 0.76rem;
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
+/* The timeframe tab's active indicator is a fixed green (a selection-state color),
+   not accent-driven — it stays the same regardless of which symbol is active. */
 .tab-btn.active {
-  color: var(--navy);
-  border-bottom-color: var(--navy);
+  color: var(--support);
+  border-bottom-color: var(--support);
+  text-shadow: var(--glow-green-text);
 }
 
 .symbol-tabs {
@@ -407,16 +445,27 @@ body {
   background: var(--panel);
   color: var(--text-dim);
   cursor: pointer;
-  font-family: var(--font-body);
+  font-family: var(--font);
   font-weight: 600;
   font-size: 0.66rem;
   letter-spacing: 0.02em;
 }
 
-.symbol-tab-btn.active {
-  color: #fff;
-  border-color: var(--support);
-  background: var(--support);
+/* Each symbol tab's own active color is its own accent — gold for XAUUSD, cyan for
+   BTCUSD — rather than one shared color, so the tab itself previews the accent
+   switch you get by selecting it. */
+.symbol-tab-btn[data-sym='xauusd'].active {
+  color: var(--gold-badge-text);
+  border-color: var(--gold-badge);
+  background: var(--gold-badge);
+  box-shadow: var(--glow-gold-box);
+}
+
+.symbol-tab-btn[data-sym='btcusd'].active {
+  color: #000;
+  border-color: var(--accent-btc);
+  background: var(--accent-btc);
+  box-shadow: var(--glow-cyan-box);
 }
 
 .news-banner {
@@ -425,9 +474,9 @@ body {
   gap: 10px;
   margin-top: 16px;
   padding: 10px 16px;
-  border: 1px solid rgba(192, 57, 43, 0.3);
+  border: 1px solid rgba(239, 83, 80, 0.35);
   border-radius: 6px;
-  background: rgba(192, 57, 43, 0.06);
+  background: rgba(239, 83, 80, 0.1);
   color: var(--text);
   font-size: 0.82rem;
 }
@@ -438,7 +487,7 @@ body {
 }
 
 .news-banner strong {
-  color: var(--navy);
+  color: var(--accent);
   font-weight: 600;
 }
 
@@ -473,23 +522,17 @@ body {
   overflow: hidden;
 }
 
-@media (max-width: 720px) {
-  .zone-chart {
-    height: 260px;
-  }
-}
-
 .signals-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 16px;
-  margin-top: 22px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--grid-gap);
+  margin-top: var(--grid-gap);
 }
 
 .zones-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 0 32px;
+  gap: var(--grid-gap);
   align-items: start;
 }
 
@@ -499,32 +542,8 @@ body {
   gap: 10px;
 }
 
-@media (max-width: 720px) {
-  .zones-grid {
-    grid-template-columns: 1fr;
-    gap: 4px;
-  }
-}
-
-.group-heading {
-  font-family: var(--font-display);
-  font-weight: 600;
-  font-size: 0.95rem;
-  letter-spacing: 0.02em;
-  padding: 0 2px 2px;
-  margin-top: 4px;
-}
-
-.group-heading.resistance {
-  color: var(--resistance);
-}
-
-.group-heading.support {
-  color: var(--support);
-}
-
 .empty-state {
-  font-family: var(--font-display);
+  font-family: var(--font);
   font-size: 1rem;
   color: var(--text-dim);
   text-align: center;
@@ -536,7 +555,7 @@ body {
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--panel);
-  box-shadow: var(--shadow);
+  box-shadow: var(--card-shadow);
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -544,11 +563,19 @@ body {
 
 .signal-header {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   justify-content: space-between;
+  gap: 10px;
   padding-bottom: 10px;
   margin-bottom: 8px;
   border-bottom: 1px solid var(--border-soft);
+  flex-wrap: wrap;
+}
+
+.signal-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .signal-header-right {
@@ -572,8 +599,8 @@ body {
 }
 
 .signal-copy-btn:hover {
-  border-color: var(--navy);
-  color: var(--navy);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .signal-copy-btn.copied {
@@ -582,26 +609,20 @@ body {
 }
 
 .signal-direction {
-  font-family: var(--font-display);
-  font-weight: 600;
+  font-family: var(--font);
+  font-weight: 700;
   font-size: 1.05rem;
-  letter-spacing: 0.01em;
+  letter-spacing: 0.02em;
 }
 
 .signal-card.buy .signal-direction {
   color: var(--support);
+  text-shadow: var(--glow-green-text);
 }
 
 .signal-card.sell .signal-direction {
   color: var(--resistance);
-}
-
-.signal-zone-strength {
-  font-size: 0.62rem;
-  font-weight: 600;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--navy);
+  text-shadow: var(--glow-red-text);
 }
 
 .signal-row {
@@ -626,15 +647,17 @@ body {
 }
 
 .signal-value {
-  font-family: var(--font-display);
+  font-family: var(--font);
   font-size: 1.05rem;
-  font-weight: 600;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
-  color: var(--navy);
+  color: var(--accent);
+  text-shadow: var(--accent-glow);
 }
 
 .signal-row.sl .signal-value {
   color: var(--resistance);
+  text-shadow: var(--glow-red-text);
 }
 
 .signal-tp {
@@ -651,9 +674,18 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 5px 0;
-  font-family: var(--font-display);
+  font-family: var(--font);
   font-size: 0.92rem;
   font-variant-numeric: tabular-nums;
+}
+
+/* Groups the TPn label and its RR tightly together on the left, so RR reads as
+   right after "TPn" instead of floating independently between it and the price
+   (which stays the sole item on the right, per justify-content: space-between). */
+.signal-tp-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .signal-confluence {
@@ -664,15 +696,13 @@ body {
   font-weight: 600;
   letter-spacing: 0.03em;
   text-transform: uppercase;
-  color: var(--support);
+  color: var(--accent);
 }
 
+/* Deliberately no color/font-weight here — inherits whatever .signal-tp-row (and,
+   above it, .signal-card) resolves to, rather than pinning it to a fixed accent. */
 .signal-tp-row .rr {
-  font-family: var(--font-body);
-  color: var(--support);
-  font-weight: 600;
   font-size: 0.68rem;
-  letter-spacing: 0.03em;
 }
 
 .zone-card {
@@ -683,14 +713,15 @@ body {
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--panel);
-  box-shadow: var(--shadow);
+  box-shadow: var(--card-shadow);
 }
 
 .zone-type {
-  font-family: var(--font-display);
-  font-weight: 600;
+  font-family: var(--font);
+  font-weight: 700;
   font-size: 0.8rem;
   letter-spacing: 0.01em;
+  text-transform: uppercase;
   width: 66px;
   flex: 0 0 auto;
 }
@@ -709,11 +740,12 @@ body {
 }
 
 .zone-price {
-  font-family: var(--font-display);
+  font-family: var(--font);
   font-size: 1.15rem;
-  font-weight: 600;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
-  color: var(--navy);
+  color: var(--accent);
+  text-shadow: var(--accent-glow);
 }
 
 .zone-meta {
@@ -736,21 +768,51 @@ body {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   padding: 2px 8px;
-  border-radius: 10px;
+  border-radius: 8px;
   border: 1px solid currentColor;
   background: none;
-}
-
-.strength-badge.strong {
-  color: var(--support);
+  white-space: nowrap;
 }
 
 .strength-badge.medium {
-  color: var(--navy);
+  color: var(--text-dim);
 }
 
 .strength-badge.weak {
   color: var(--resistance);
+}
+
+/* Explicit confluence badge — its own filled pill, distinct from the (plain,
+   outlined) strength badge above. There's no "strong but not confluent" state (see
+   srDetector.js's strengthLabel), so this fully replaces strength-badge.strong
+   rather than sitting alongside it. Named "Golden Zone" for XAUUSD and "Diamond
+   Zone" for BTCUSD (see main.js), colored to match whichever symbol is active via
+   --badge-bg/--badge-text/--badge-glow. */
+.confluence-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--badge-bg);
+  color: var(--badge-text);
+  box-shadow: var(--badge-glow);
+  white-space: nowrap;
+}
+
+/* The ★/◆ glyph sits low in its own em-box in most fonts (JetBrains Mono included)
+   — flex's align-items: center only centers the line box, not the glyph's visual
+   weight within it, so it still reads as "sunk" relative to the badge text without
+   this nudge. */
+.confluence-badge-icon {
+  font-size: 1.05rem;
+  line-height: 1;
+  position: relative;
+  top: -1.5px;
 }
 
 .touches {
@@ -792,7 +854,7 @@ body {
 }
 
 .app-footer a {
-  color: var(--navy-bright);
+  color: var(--accent);
   font-weight: 600;
   text-decoration: none;
 }
@@ -801,13 +863,71 @@ body {
   text-decoration: underline;
 }
 
+@media (max-width: 720px) {
+  #app {
+    padding: 18px 14px 36px;
+  }
+
+  .topbar {
+    gap: 12px;
+  }
+
+  .brand-title {
+    font-size: 1.25rem;
+  }
+
+  .price-display {
+    font-size: 1.4rem;
+  }
+
+  .zone-chart {
+    height: 260px;
+  }
+
+  .zones-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 480px) {
+  .topbar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .topbar-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .price-block {
+    align-items: flex-start;
+  }
+
+  .icon-btn {
+    width: 32px;
+    height: 32px;
+  }
+
   .brand-logo {
     height: 30px;
   }
 
   .brand-title {
     font-size: 1.15rem;
+  }
+
+  .signal-card,
+  .zone-card {
+    padding: 12px 14px;
+  }
+
+  .zone-card {
+    flex-wrap: wrap;
+  }
+
+  .zone-stats {
+    align-items: flex-start;
   }
 
   .zone-type {
