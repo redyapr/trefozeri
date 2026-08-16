@@ -30,8 +30,10 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
   committed by CI. View it via the chart-icon button; filter by timeframe. Capped at
   300 records per symbol.
 - **Telegram notifications** — public channel, H1 only. Posts new signals, fills, and
-  SL/TP results automatically. XAUUSD skips new signals while gold's market is closed;
-  BTCUSD only posts new signals on weekends. Optional — no-ops without
+  SL/TP results automatically. A still-pending signal's own message is edited in place
+  whenever its entry/SL/TP recalculate, so it never shows stale numbers — once filled,
+  it's a live position and stops changing. XAUUSD skips new signals while gold's market
+  is closed; BTCUSD only posts new signals on weekends. Optional — no-ops without
   `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`.
 - **Daily/weekly report** — same channel, also H1-only. Daily sends just after
   midnight WIB, recapping the day just ended (XAUUSD on weekdays, BTCUSD on weekends).

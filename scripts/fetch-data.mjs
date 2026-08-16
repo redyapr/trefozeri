@@ -242,6 +242,32 @@ export async function sendTelegramMessage(text, replyToMessageId, chatId = proce
   }
 }
 
+// Replaces an already-sent message's text in place — used to keep a still-pending
+// signal's post in sync when its entry/SL/TP recalculate (see recordSignals in
+// signalHistoryCore.js). Same best-effort contract as sendTelegramMessage: any failure
+// (message deleted, too old, etc.) is logged and swallowed, never thrown.
+export async function editTelegramMessage(text, messageId, chatId = process.env.TELEGRAM_CHAT_ID) {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token || !chatId || !messageId) return false
+
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/editMessageText`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, message_id: messageId, text, parse_mode: 'HTML' }),
+    })
+    const json = await res.json()
+    if (!json.ok) {
+      console.warn(`[telegram] editMessageText failed: ${json.description}`)
+      return false
+    }
+    return true
+  } catch (err) {
+    console.warn(`[telegram] editMessageText error: ${err.message}`)
+    return false
+  }
+}
+
 // Ops alert to the personal chat — never the public channel. Best-effort like
 // sendTelegramMessage: a failure here is logged, not thrown, so it can never mask or
 // replace the actual error/failure being reported.
@@ -356,6 +382,20 @@ export async function notifyNewSignals(symbolKey, added, signalByKey) {
 
     const messageId = await sendTelegramMessage(buildNewSignalMessage(symbolKey, group))
     if (messageId) for (const r of groupRecords) r.telegramMessageId = messageId
+  }
+}
+
+// Edits a still-pending signal's own message when its entry/SL/TP recalculate (see
+// `updated` from recordSignals) — keeps the public post honest about what the order
+// would currently look like, rather than freezing it at whatever the first tick saw.
+// A record with no telegramMessageId (never posted in the first place — e.g. a BTCUSD
+// signal that formed on a weekday) has nothing to edit; skipped silently.
+export async function notifyUpdatedSignals(symbolKey, updated, signalByKey) {
+  for (const record of updated) {
+    if (!record.telegramMessageId) continue
+    const signal = signalByKey.get(record.key)
+    if (!signal) continue
+    await editTelegramMessage(buildNewSignalMessage(symbolKey, [{ ...signal, tf: record.tf }]), record.telegramMessageId)
   }
 }
 
@@ -636,6 +676,7 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
   // themselves don't carry .confluence, only signals do.
   const signalByKey = new Map()
   const added = []
+  const updated = []
   for (const [tfKey, result] of Object.entries(zonesByTimeframe)) {
     // TIMEFRAMES is ordered finest-to-broadest (H1, H4, D1) — everything after this
     // timeframe's own index is "higher" and gets offered as extra TP candidates (see
@@ -647,7 +688,9 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
     // SL and an absurd R-multiple — never record those into the shared track record.
     const signals = isPriceStagnant(seriesByTf[tfKey]) ? [] : buildSignals(result.zones, currentPrice, higherTfZones)
     for (const s of signals) signalByKey.set(keyFor(symbolKey, tfKey, s), s)
-    added.push(...recordSignals(history, symbolKey, tfKey, signals, currentPrice))
+    const forTf = recordSignals(history, symbolKey, tfKey, signals, currentPrice)
+    added.push(...forTf.added)
+    updated.push(...forTf.updated)
   }
 
   const { filled, closed } = evaluateSignals(history, symbolKey, currentPrice)
@@ -674,6 +717,13 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
       // deliberately weekend-only (Sat/Sun), the two days gold's own channel is quiet.
       (symbolKey === 'BTCUSD' && !isWeekendUtc(currentDate))
     if (!skipNewSignals) await notifyNewSignals(symbolKey, added.filter(onlyH1), signalByKey)
+    // Not gated by skipNewSignals — this isn't opening a new signal, just correcting
+    // one already posted, same reasoning as fills/closes always posting regardless of
+    // the day.
+    // Excludes a record that also filled this same tick (evaluateSignals above already
+    // flipped its status to 'running') — that gets a FILLED reply instead, right below;
+    // editing the original right before replying FILLED to it would just be redundant.
+    await notifyUpdatedSignals(symbolKey, updated.filter(onlyH1).filter((r) => r.status === 'pending'), signalByKey)
     await notifyFilledSignals(filled.filter(onlyH1))
     await notifyClosedSignals(symbolKey, closed.filter(onlyH1))
   }

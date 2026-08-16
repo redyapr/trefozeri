@@ -35,20 +35,39 @@ test('keyFor', () => {
 test('recordSignals', async (t) => {
   await t.test('opens a fresh pending row for a brand-new signal', () => {
     const history = []
-    const added = recordSignals(history, 'XAUUSD', 'H1', [buySignal()])
+    const { added } = recordSignals(history, 'XAUUSD', 'H1', [buySignal()])
     assert.equal(added.length, 1)
     assert.equal(history.length, 1)
     assert.equal(history[0].status, 'pending')
     assert.equal(history[0].key, 'XAUUSD-H1-Support-buy')
   })
 
-  await t.test('does not duplicate an already-open signal on the next tick', () => {
+  await t.test('does not duplicate an already-open signal on the next tick, but syncs its entry/SL/TP to the recalculation', () => {
     const history = []
     recordSignals(history, 'XAUUSD', 'H1', [buySignal()])
-    const added = recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 101 })]) // slight recalculation drift
+    const { added, updated } = recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 101 })]) // slight recalculation drift
     assert.equal(added.length, 0, 'no new record should be added')
     assert.equal(history.length, 1)
-    assert.equal(history[0].entry, 100, 'the original open record keeps its own entry, unmodified')
+    assert.equal(history[0].entry, 101, 'still just an unfilled projection — synced to the freshest recalculation')
+    assert.equal(updated.length, 1, 'reported as updated so the caller can edit its Telegram post')
+    assert.equal(updated[0], history[0])
+  })
+
+  await t.test('does not report an update when nothing about the signal actually changed', () => {
+    const history = []
+    recordSignals(history, 'XAUUSD', 'H1', [buySignal()])
+    const { updated } = recordSignals(history, 'XAUUSD', 'H1', [buySignal()]) // identical signal, same tick shape
+    assert.equal(updated.length, 0)
+  })
+
+  await t.test('stops syncing once the record fills — a live position\'s risk stays fixed', () => {
+    const history = []
+    recordSignals(history, 'XAUUSD', 'H1', [buySignal()])
+    evaluateSignals(history, 'XAUUSD', 100) // fills it -> running
+    const { updated } = recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 101, sl: 90 })])
+    assert.equal(updated.length, 0, 'a running record is never among the updated ones')
+    assert.equal(history[0].entry, 100, 'its entry/SL stay exactly what they were at fill time')
+    assert.equal(history[0].sl, 95)
   })
 
   await t.test('drops a still-pending signal whose level got replaced by a materially different pivot', () => {
@@ -88,10 +107,11 @@ test('recordSignals', async (t) => {
     const history = []
     recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 100 })])
     // No `threshold` on this tick's signal — `s.threshold ?? Infinity` means *any*
-    // entry, however far the pivot recalculated, still counts as "the same" pivot.
+    // entry, however far the pivot recalculated, still counts as "the same" pivot (and,
+    // same as any other still-pending match, gets synced to it).
     recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 100000, threshold: undefined })])
     assert.equal(history.length, 1, 'still recognized as the same still-current signal, not dropped')
-    assert.equal(history[0].entry, 100, 'the original open record is untouched — only whether to drop it is affected')
+    assert.equal(history[0].entry, 100000, 'synced to the (however extreme) recalculation, same as any other pending match')
   })
 
   await t.test('does not drop a pending record whose own entry currentPrice already shows was reached, even if its level vanished', () => {

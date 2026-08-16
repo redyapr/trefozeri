@@ -622,6 +622,99 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
     }
   })
 
+  await t.test('a still-pending signal that recalculates (no fill) edits its own Telegram message', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const base = seriesWithLowPivot(4300)
+      const history = []
+      await updateSignalHistoryForSymbol(history, 'XAUUSD', { H1: base })
+      assert.equal(sent.length, 1, 'initial new-signal message')
+      const h1 = history.find((r) => r.tf === 'H1')
+      const originalMessageId = h1.telegramMessageId
+      const originalSl = h1.sl
+
+      // One extra wide-range candle shifts ATR (and so SL/TP) without moving price
+      // anywhere near the entry — still pending, not filled.
+      const recalculated = { H1: [...base, candle(base.length, 4303, 4320, 4290, 4304)] }
+      await updateSignalHistoryForSymbol(history, 'XAUUSD', recalculated)
+
+      assert.equal(sent.length, 2, 'an edit, not a brand-new message')
+      assert.equal(sent[1].message_id, originalMessageId, 'edits the same message the signal was first posted as')
+      assert.equal(sent[1].reply_to_message_id, undefined, 'an edit, not a reply')
+      assert.notEqual(h1.sl, originalSl, 'the record itself is synced too, not just the Telegram message')
+      assert.match(sent[1].text, /SL: /)
+      assert.equal(history.length, 1, 'still the same single record, not a duplicate')
+      assert.equal(h1.status, 'pending')
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('re-running identical data after a recalculation sends no further edit', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const base = seriesWithLowPivot(4300)
+      const history = []
+      await updateSignalHistoryForSymbol(history, 'XAUUSD', { H1: base })
+      const recalculated = { H1: [...base, candle(base.length, 4303, 4320, 4290, 4304)] }
+      await updateSignalHistoryForSymbol(history, 'XAUUSD', recalculated)
+      await updateSignalHistoryForSymbol(history, 'XAUUSD', recalculated) // identical again
+      assert.equal(sent.length, 2, 'no further edit once nothing actually changed')
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('a signal that both recalculates and fills in the same tick only gets a FILLED reply, not an edit too', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const base = seriesWithLowPivot(4300)
+      const history = []
+      await updateSignalHistoryForSymbol(history, 'XAUUSD', { H1: base })
+      const h1 = history.find((r) => r.tf === 'H1')
+
+      // A wide-range candle (shifts ATR) immediately followed by one dipping to the
+      // entry (fills it), both in the same call.
+      const filledAndRecalculated = {
+        H1: [
+          ...base,
+          candle(base.length, 4303, 4320, 4290, 4304),
+          candle(base.length + 1, h1.entry, h1.entry + 1, h1.entry - 1, h1.entry),
+        ],
+      }
+      await updateSignalHistoryForSymbol(history, 'XAUUSD', filledAndRecalculated)
+
+      assert.equal(sent.length, 2, 'new-signal + FILLED reply only — no separate edit')
+      assert.equal(sent[1].text, '🟡 ENTRY FILLED')
+      assert.equal(h1.status, 'running')
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('a record with no telegramMessageId (never posted) is synced but nothing is edited', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const base = seriesWithLowPivot(60000, 20)
+      const weekday = Date.UTC(2026, 7, 12, 12, 0, 0) // Wednesday — BTCUSD posts no new signal
+      const withTime = (series) => series.map((c, i) => ({ ...c, time: weekday - (series.length - i) * 3600000 }))
+      const history = []
+      await updateSignalHistoryForSymbol(history, 'BTCUSD', { H1: withTime(base) })
+      assert.equal(sent.length, 0)
+      const h1 = history.find((r) => r.tf === 'H1')
+      assert.equal(h1.telegramMessageId, undefined)
+      const originalSl = h1.sl
+
+      const recalculated = [...base, candle(base.length, 60060, 60400, 59800, 60080)]
+      await updateSignalHistoryForSymbol(history, 'BTCUSD', { H1: withTime(recalculated) })
+
+      assert.equal(sent.length, 0, 'still nothing to send — there was never a message to edit')
+      assert.notEqual(h1.sl, originalSl, 'the record is still synced regardless')
+    } finally {
+      restore()
+    }
+  })
+
   await t.test('full lifecycle: open -> fill -> TP hit, all three replies chained to the same message', async () => {
     const { sent, restore } = mockTelegram()
     try {

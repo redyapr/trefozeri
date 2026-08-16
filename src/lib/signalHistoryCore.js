@@ -29,11 +29,15 @@ export const keyFor = (symbolKey, tf, signal) => `${symbolKey}-${tf}-${signal.ca
 const isOpen = (r) => r.status === 'pending' || r.status === 'running'
 
 // Mutates `records`: drops stale unfilled orders whose level moved on without them,
-// then appends any newly-seen signal as a fresh 'pending' row. Returns just the
-// records that were newly appended this call (e.g. so a caller can notify about them
-// without re-notifying about ones that were already open). `currentPrice` is optional
-// (see the fill-in-progress guard below) — omitting it just skips that guard.
+// syncs a still-open pending order's entry/SL/TP to the freshest recalculation, then
+// appends any newly-seen signal as a fresh 'pending' row. Returns `{ added, updated }`
+// — the records newly appended, and the already-open pending ones whose numbers just
+// changed this call — so a caller can notify about each without re-notifying about
+// ones that didn't actually change. `currentPrice` is optional (see the
+// fill-in-progress guard below) — omitting it just skips that guard.
 export function recordSignals(records, symbolKey, tf, signals, currentPrice) {
+  const updated = []
+
   // A 'pending' (still unfilled) record whose key+price no longer matches any of this
   // tick's fresh signals had its level either fully invalidated or replaced by a
   // different pivot at a materially different price — either way the order it
@@ -43,7 +47,7 @@ export function recordSignals(records, symbolKey, tf, signals, currentPrice) {
   for (let i = records.length - 1; i >= 0; i--) {
     const r = records[i]
     if (r.symbolKey !== symbolKey || r.tf !== tf || r.status !== 'pending') continue
-    const stillCurrent = signals.some(
+    const match = signals.find(
       (s) => keyFor(symbolKey, tf, s) === r.key && Math.abs(s.entry - r.entry) <= (s.threshold ?? Infinity)
     )
     // A real production bug: a SELL sitting right at a resistance (or a BUY at a
@@ -58,7 +62,24 @@ export function recordSignals(records, symbolKey, tf, signals, currentPrice) {
     // survive the same tick — let evaluateSignals promote it normally afterward.
     const isBuy = r.direction === 'buy'
     const alreadyFilled = currentPrice != null && (isBuy ? currentPrice <= r.entry : currentPrice >= r.entry)
-    if (!stillCurrent && !alreadyFilled) records.splice(i, 1)
+    if (!match && !alreadyFilled) {
+      records.splice(i, 1)
+      continue
+    }
+    // Still just a projection of an order that hasn't triggered yet — not a locked-in
+    // position — so keep its entry/SL/TP synced to the latest recalculation instead of
+    // freezing it at whatever the first tick happened to see. Once it fills (status
+    // flips to 'running' via evaluateSignals), this loop's own `r.status !== 'pending'`
+    // guard above means it's never touched again: a live position's risk shouldn't
+    // silently move around underneath it.
+    if (match) {
+      const changed = r.entry !== match.entry || r.sl !== match.sl || JSON.stringify(r.tp) !== JSON.stringify(match.tp)
+      r.entry = match.entry
+      r.sl = match.sl
+      r.tp = match.tp
+      r.threshold = match.threshold
+      if (changed) updated.push(r)
+    }
   }
 
   const openKeys = new Set(records.filter(isOpen).map((r) => r.key))
@@ -83,7 +104,7 @@ export function recordSignals(records, symbolKey, tf, signals, currentPrice) {
     added.push(record)
   }
 
-  return added
+  return { added, updated }
 }
 
 // Advances every open record for this symbol: fills a 'pending' limit order once price
