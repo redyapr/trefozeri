@@ -35,12 +35,18 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
   SL/TP results automatically. A still-pending signal's own message is edited in place
   whenever its entry/SL/TP recalculate, so it never shows stale numbers — once filled,
   it's a live position and stops changing. XAUUSD skips new signals while gold's market
-  is closed; BTCUSD only posts new signals on weekends. Optional — no-ops without
-  `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`.
+  is closed; BTCUSD posts new signals every day (trades 24/7, no market-hours gate).
+  Optional — no-ops without `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`.
 - **Daily/weekly report** — same channel, also H1-only. Daily sends just after
-  midnight WIB, recapping the day just ended (XAUUSD on weekdays, BTCUSD on weekends).
-  Weekly sends every Monday, covering both symbols. De-duplicated via
-  `data/last-report.json`.
+  midnight WIB, recapping the day just ended for both symbols. Weekly sends every
+  Monday, also covering both symbols. De-duplicated via `data/last-report.json`.
+- **Weekly performance charts** — attached to the weekly report as HD images (rendered
+  with [@napi-rs/canvas](https://github.com/Brooooooklyn/canvas), sent via
+  `sendDocument` so Telegram never re-compresses them): daily pips gained per symbol
+  (horizontal bars, red = loss), TP1–TP3 success rate as descending pie charts
+  (cumulative — a TP2 hit also counts toward TP1), and a separate trade-log image
+  (paginated at 20 rows) listing every closed trade's date, side, pair, result, and
+  P/L. See `scripts/weeklyChart.mjs`.
 - **Market status** — a banner during gold's closed hours (Fri 22:00 UTC → Sun 22:00
   UTC); also gates new XAUUSD signals during that window.
 - **Install prompt** — a custom "add to home screen" button in the header, in place of
@@ -133,8 +139,13 @@ src/
     signalHistory.js      Browser-side: reads the shared signal-history.json
     marketHours.js        Gold's trading week + weekend detection
 scripts/
-  fetch-data.mjs  Fetches quote/calendar data, maintains the track record, sends
-                  Telegram notifications + reports, alerts on failures
+  fetch-data.mjs   Fetches quote/calendar data, maintains the track record, sends
+                   Telegram notifications + reports, alerts on failures
+  weeklyChart.mjs  Renders the weekly report's HD chart images (@napi-rs/canvas)
+assets/
+  fonts/  JetBrains Mono TTFs, bundled so chart-image text renders identically on
+          any machine (dev laptop or CI runner) instead of depending on whatever
+          fonts happen to be preinstalled
 test/
   *.test.mjs  node --test suite — see Local development above
 test-helpers/

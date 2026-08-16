@@ -21,6 +21,8 @@ const {
   fetchWithFallback,
   sendTelegramMessage,
   editTelegramMessage,
+  sendTelegramPhoto,
+  sendTelegramMediaGroupPhotos,
   sendAdminAlert,
   sendAdminAlertDeduped,
   getFailures,
@@ -94,15 +96,28 @@ function wibTime(year, month, day, hour = 0, minute = 0) {
 
 // Intercepts calls to api.telegram.org and records them instead of hitting the network.
 // Any other fetch() call (e.g. a real fallback snapshot fetch) is left to a caller-
-// supplied handler so each test controls exactly what "the network" does.
+// supplied handler so each test controls exactly what "the network" does. A JSON body
+// (sendMessage/editMessageText) is parsed as before; sendPhoto/sendMediaGroup send a
+// multipart FormData body instead — recorded as-is (fields readable via .get()/.getAll())
+// rather than attempting to JSON.parse it. sendMediaGroup's response also needs to be an
+// array of results (one per attachment), not a single object, to match Telegram's own
+// API shape and keep sendTelegramMediaGroupPhotos's message-id bookkeeping correct.
 function mockTelegram(otherHandler) {
   const sent = []
   const original = global.fetch
   global.fetch = async (url, opts) => {
     if (String(url).includes('api.telegram.org')) {
-      const body = JSON.parse(opts.body)
+      const isForm = opts.body instanceof FormData
+      const body = isForm ? opts.body : JSON.parse(opts.body)
       const messageId = sent.length + 1
       sent.push(body)
+      if (String(url).includes('sendMediaGroup')) {
+        const count = isForm ? JSON.parse(body.get('media')).length : 1
+        return {
+          ok: true,
+          json: async () => ({ ok: true, result: Array.from({ length: count }, (_, i) => ({ message_id: messageId + i })) }),
+        }
+      }
       return { ok: true, json: async () => ({ ok: true, result: { message_id: messageId } }) }
     }
     if (otherHandler) return otherHandler(url, opts)
@@ -485,6 +500,141 @@ test('editTelegramMessage', async (t) => {
   })
 })
 
+test('sendTelegramPhoto', async (t) => {
+  await t.test('no-ops (returns null, makes no request) when the token/chat id are missing', async () => {
+    const savedChat = process.env.TELEGRAM_CHAT_ID
+    delete process.env.TELEGRAM_CHAT_ID
+    const { sent, restore } = mockTelegram()
+    try {
+      const result = await sendTelegramPhoto(Buffer.from('fake png'), 'chart.png')
+      assert.equal(result, null)
+      assert.equal(sent.length, 0)
+    } finally {
+      process.env.TELEGRAM_CHAT_ID = savedChat
+      restore()
+    }
+  })
+
+  await t.test('posts the buffer as a photo, with the given filename and optional caption', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const buf = Buffer.from('fake png bytes')
+      const result = await sendTelegramPhoto(buf, 'weekly-performance.png', 'a caption')
+      assert.equal(result, 1)
+      const form = sent[0]
+      assert.equal(form.get('chat_id'), '-100public')
+      assert.equal(form.get('caption'), 'a caption')
+      const file = form.get('photo')
+      assert.equal(file.name, 'weekly-performance.png')
+      assert.equal(await file.text(), 'fake png bytes')
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('omits the caption field entirely when none is given', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      await sendTelegramPhoto(Buffer.from('x'), 'x.png')
+      assert.equal(sent[0].get('caption'), null)
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('returns null (swallowed) when Telegram rejects the upload', async () => {
+    const original = global.fetch
+    global.fetch = async () => ({ ok: true, json: async () => ({ ok: false, description: 'file too large' }) })
+    try {
+      assert.equal(await sendTelegramPhoto(Buffer.from('x'), 'x.png'), null)
+    } finally {
+      global.fetch = original
+    }
+  })
+})
+
+test('sendTelegramMediaGroupPhotos', async (t) => {
+  await t.test('no-ops (returns []) when the token/chat id are missing, or the item list is empty', async () => {
+    const savedChat = process.env.TELEGRAM_CHAT_ID
+    delete process.env.TELEGRAM_CHAT_ID
+    const { sent, restore } = mockTelegram()
+    try {
+      const result = await sendTelegramMediaGroupPhotos([{ buffer: Buffer.from('x'), filename: 'x.png' }])
+      assert.deepEqual(result, [])
+      assert.equal(sent.length, 0)
+    } finally {
+      process.env.TELEGRAM_CHAT_ID = savedChat
+      restore()
+    }
+
+    const { sent: sent2, restore: restore2 } = mockTelegram()
+    try {
+      assert.deepEqual(await sendTelegramMediaGroupPhotos([]), [])
+      assert.equal(sent2.length, 0)
+    } finally {
+      restore2()
+    }
+  })
+
+  await t.test('sends every item as one album, each attached file distinct and readable back', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const items = [
+        { buffer: Buffer.from('chart one'), filename: 'a.png', caption: 'first' },
+        { buffer: Buffer.from('chart two'), filename: 'b.png' },
+      ]
+      const messageIds = await sendTelegramMediaGroupPhotos(items)
+      assert.equal(messageIds.length, 2)
+      const form = sent[0]
+      const media = JSON.parse(form.get('media'))
+      assert.equal(media.length, 2)
+      assert.equal(media[0].type, 'photo')
+      assert.equal(media[0].caption, 'first')
+      assert.equal(media[1].caption, undefined)
+      // Each media entry's attach:// key must resolve to the actual field carrying that
+      // item's own bytes — a shared/colliding key would silently attach the wrong file.
+      const file0 = form.get(media[0].media.replace('attach://', ''))
+      const file1 = form.get(media[1].media.replace('attach://', ''))
+      assert.equal(await file0.text(), 'chart one')
+      assert.equal(await file1.text(), 'chart two')
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('chunks into batches of 10 (Telegram\'s own per-request cap)', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const items = Array.from({ length: 12 }, (_, i) => ({ buffer: Buffer.from(`f${i}`), filename: `f${i}.png` }))
+      const messageIds = await sendTelegramMediaGroupPhotos(items)
+      assert.equal(sent.length, 2) // 10 + 2, split across two sendMediaGroup requests
+      assert.equal(JSON.parse(sent[0].get('media')).length, 10)
+      assert.equal(JSON.parse(sent[1].get('media')).length, 2)
+      assert.equal(messageIds.length, 12)
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('a failed chunk is skipped, not thrown — other chunks still send', async () => {
+    const original = global.fetch
+    let call = 0
+    global.fetch = async (url) => {
+      if (!String(url).includes('sendMediaGroup')) throw new Error(`unexpected fetch: ${url}`)
+      call += 1
+      if (call === 1) return { ok: true, json: async () => ({ ok: false, description: 'nope' }) }
+      return { ok: true, json: async () => ({ ok: true, result: [{ message_id: 99 }] }) }
+    }
+    try {
+      const items = Array.from({ length: 11 }, (_, i) => ({ buffer: Buffer.from(`f${i}`), filename: `f${i}.png` }))
+      const messageIds = await sendTelegramMediaGroupPhotos(items)
+      assert.deepEqual(messageIds, [99]) // only the second chunk's result survives
+    } finally {
+      global.fetch = original
+    }
+  })
+})
+
 test('sendAdminAlert', async (t) => {
   await t.test('goes to TELEGRAM_PERSONAL_CHAT_ID, never the public channel', async () => {
     const { sent, restore } = mockTelegram()
@@ -740,7 +890,7 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
     }
   })
 
-  await t.test('BTCUSD sends no new-signal message on a weekday, even for H1 (see the dedicated weekend-gating tests below)', async () => {
+  await t.test('BTCUSD sends a new-signal message on a weekday too, for H1 (see the dedicated daily-gating tests below)', async () => {
     const { sent, restore } = mockTelegram()
     try {
       const base = seriesWithLowPivot(60000, 20)
@@ -748,7 +898,7 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
       const seriesByTf = { H1: base.map((c, i) => ({ ...c, time: weekday - (base.length - i) * 3600000 })) }
       const history = []
       await updateSignalHistoryForSymbol(history, 'BTCUSD', seriesByTf)
-      assert.equal(sent.length, 0)
+      assert.ok(sent.length > 0)
       assert.ok(history.length > 0, 'still tracked in the shared history')
     } finally {
       restore()
@@ -841,18 +991,18 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
   await t.test('a record with no telegramMessageId (never posted) is synced but nothing is edited', async () => {
     const { sent, restore } = mockTelegram()
     try {
-      const base = seriesWithLowPivot(60000, 20)
-      const weekday = Date.UTC(2026, 7, 12, 12, 0, 0) // Wednesday — BTCUSD posts no new signal
-      const withTime = (series) => series.map((c, i) => ({ ...c, time: weekday - (series.length - i) * 3600000 }))
+      const base = seriesWithLowPivot(4300)
+      const saturday = Date.UTC(2026, 7, 15, 12, 0, 0) // Saturday — gold's own market is closed, no new-signal post
+      const withTime = (series) => series.map((c, i) => ({ ...c, time: saturday - (series.length - i) * 3600000 }))
       const history = []
-      await updateSignalHistoryForSymbol(history, 'BTCUSD', { H1: withTime(base) })
+      await updateSignalHistoryForSymbol(history, 'XAUUSD', { H1: withTime(base) })
       assert.equal(sent.length, 0)
       const h1 = history.find((r) => r.tf === 'H1')
       assert.equal(h1.telegramMessageId, undefined)
       const originalSl = h1.sl
 
-      const recalculated = [...base, candle(base.length, 60060, 60400, 59800, 60080)]
-      await updateSignalHistoryForSymbol(history, 'BTCUSD', { H1: withTime(recalculated) })
+      const recalculated = [...base, candle(base.length, 4303, 4320, 4290, 4304)]
+      await updateSignalHistoryForSymbol(history, 'XAUUSD', { H1: withTime(recalculated) })
 
       assert.equal(sent.length, 0, 'still nothing to send — there was never a message to edit')
       assert.notEqual(h1.sl, originalSl, 'the record is still synced regardless')
@@ -985,7 +1135,7 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
     }
   })
 
-  await t.test('skips new-signal notifications for BTCUSD on a weekday (weekend-only, opposite of XAUUSD)', async () => {
+  await t.test('sends new-signal notifications for BTCUSD on a weekday too (no longer weekend-only)', async () => {
     const { sent, restore } = mockTelegram()
     try {
       const base = seriesWithLowPivot(60000, 20)
@@ -993,8 +1143,7 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
       const weekdaySeries = { H1: base.map((c, i) => ({ ...c, time: weekday - (base.length - i) * 3600000 })) }
       const history = []
       await updateSignalHistoryForSymbol(history, 'BTCUSD', weekdaySeries)
-      assert.equal(sent.length, 0, 'no new-signal message for BTCUSD on a weekday')
-      assert.ok(history.length > 0, 'still tracked in the shared history')
+      assert.ok(sent.length > 0, 'BTCUSD signals now post on weekdays too')
     } finally {
       restore()
     }
@@ -1014,7 +1163,7 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
     }
   })
 
-  await t.test('still notifies BTCUSD fills/closes on a weekday, even though new signals are weekend-only', async () => {
+  await t.test('still notifies BTCUSD fills/closes on a weekday', async () => {
     const { sent, restore } = mockTelegram()
     try {
       const base = seriesWithLowPivot(60000, 20)
@@ -1028,7 +1177,7 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
       const filledOnMonday = { H1: [...openSeries.H1, candle(monday, h1.entry, h1.entry + 1, h1.entry - 1, h1.entry)] }
       await updateSignalHistoryForSymbol(history, 'BTCUSD', filledOnMonday)
 
-      assert.equal(sent.length, 2, 'open (weekend) + fill (weekday) — fills are never gated by the weekend-only rule')
+      assert.equal(sent.length, 2, 'open (weekend) + fill (weekday)')
       assert.equal(sent[1].text, '🟡 ENTRY FILLED')
     } finally {
       restore()
@@ -1170,24 +1319,20 @@ function runningRecord(overrides) {
 }
 
 test('buildDailyReportMessage', async (t) => {
-  await t.test('a weekday (Mon-Fri) only includes an XAUUSD section', () => {
-    const dayStart = wibTime(2026, 8, 11, 0, 0) // Tuesday
-    const msg = buildDailyReportMessage([], dayStart, 2)
-    assert.match(msg, /XAUUSD/)
-    assert.doesNotMatch(msg, /BTCUSD/)
-  })
-
-  await t.test('a weekend day (Sat/Sun) only includes a BTCUSD section', () => {
-    const dayStart = wibTime(2026, 8, 15, 0, 0) // Saturday
-    const msg = buildDailyReportMessage([], dayStart, 6)
-    assert.match(msg, /BTCUSD/)
-    assert.doesNotMatch(msg, /XAUUSD/)
+  await t.test('always includes both XAUUSD and BTCUSD sections, regardless of weekday — BTCUSD posts every day now', () => {
+    const weekday = wibTime(2026, 8, 11, 0, 0) // Tuesday
+    const weekend = wibTime(2026, 8, 15, 0, 0) // Saturday
+    for (const dayStart of [weekday, weekend]) {
+      const msg = buildDailyReportMessage([], dayStart)
+      assert.match(msg, /XAUUSD/)
+      assert.match(msg, /BTCUSD/)
+    }
   })
 
   await t.test('lists running signals, and an empty-state when there are none', () => {
     const dayStart = wibTime(2026, 8, 11, 0, 0)
     const history = [runningRecord({ category: 'Resistance', direction: 'sell', entry: 4350 })]
-    const msg = buildDailyReportMessage(history, dayStart, 2)
+    const msg = buildDailyReportMessage(history, dayStart)
     assert.match(msg, /Running \(1\):/)
     assert.match(msg, /SELL Resistance @ 4350/)
     assert.match(msg, /No signals closed today\./)
@@ -1199,7 +1344,7 @@ test('buildDailyReportMessage', async (t) => {
       closedRecord({ status: 'win', entry: 4300, exitPrice: 4320, hitTpIndex: 0, closedAt: dayStart + 1000 }),
       closedRecord({ status: 'loss', entry: 4300, exitPrice: 4290, closedAt: dayStart + 2000 }),
     ]
-    const msg = buildDailyReportMessage(history, dayStart, 2)
+    const msg = buildDailyReportMessage(history, dayStart)
     assert.match(msg, /Closed today \(2\):/)
     assert.match(msg, /✅ BUY Support @ 4300 → TP1 HIT \+200 pips/)
     assert.match(msg, /❌ BUY Support @ 4300 → SL HIT -100 pips/)
@@ -1213,7 +1358,7 @@ test('buildDailyReportMessage', async (t) => {
       closedRecord({ closedAt: dayStart + DAY_MS }), // the exclusive end
       closedRecord({ tf: 'H4', closedAt: dayStart + 1000 }), // wrong timeframe, never posted to Telegram
     ]
-    const msg = buildDailyReportMessage(history, dayStart, 2)
+    const msg = buildDailyReportMessage(history, dayStart)
     assert.match(msg, /No signals closed today\./)
   })
 })
@@ -1278,7 +1423,7 @@ test('maybeSendDailyReport', async (t) => {
     }
   })
 
-  await t.test('sends inside the window, reporting on yesterday (WIB) — a weekday shows XAUUSD only', async () => {
+  await t.test('sends inside the window, reporting on yesterday (WIB) — always both symbols', async () => {
     const { sent, restore } = mockTelegram()
     try {
       const state = {}
@@ -1296,7 +1441,7 @@ test('maybeSendDailyReport', async (t) => {
       assert.equal(result, true)
       assert.equal(sent.length, 1)
       assert.match(sent[0].text, /XAUUSD/)
-      assert.doesNotMatch(sent[0].text, /BTCUSD/)
+      assert.match(sent[0].text, /BTCUSD/)
       assert.match(sent[0].text, /TP1 HIT \+200 pips/)
       assert.equal(state.lastDailyReportDate, '2026-08-11')
     } finally {
@@ -1304,14 +1449,14 @@ test('maybeSendDailyReport', async (t) => {
     }
   })
 
-  await t.test('a Monday report counts Sunday (yesterday) as a weekend day — shows BTCUSD, not XAUUSD', async () => {
+  await t.test('a Monday report (covering Sunday) still shows both symbols', async () => {
     const { sent, restore } = mockTelegram()
     try {
       const state = {}
       const result = await maybeSendDailyReport([], wibTime(2026, 8, 10, 0, 5), state) // Monday 00:05 WIB
       assert.equal(result, true)
       assert.match(sent[0].text, /BTCUSD/)
-      assert.doesNotMatch(sent[0].text, /XAUUSD/)
+      assert.match(sent[0].text, /XAUUSD/)
     } finally {
       restore()
     }
@@ -1363,6 +1508,32 @@ test('maybeSendWeeklyReport', async (t) => {
       assert.match(sent[0].text, /BTCUSD/)
       assert.match(sent[0].text, /\+1200/)
       assert.equal(state.lastWeeklyReportDate, '2026-08-10')
+
+      // The chart images ("nempel di laporan mingguan yang sudah ada") go out right
+      // after, as one album: the performance chart plus however many trade-log pages.
+      assert.equal(sent.length, 2)
+      const media = JSON.parse(sent[1].get('media'))
+      assert.equal(media.length, 2) // 1 performance chart + 1 trade-log page (only one trade this week)
+      assert.ok(media.every((m) => m.type === 'photo'))
+      const perfFile = sent[1].get(media[0].media.replace('attach://', ''))
+      assert.equal(perfFile.name, 'weekly-performance.png')
+      // A real PNG, not a placeholder — starts with the PNG magic bytes.
+      const perfBytes = Buffer.from(await perfFile.arrayBuffer())
+      assert.deepEqual(perfBytes.subarray(0, 8), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('still sends the chart album (an empty-week performance chart + trade log) even with no closed trades', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const state = {}
+      const result = await maybeSendWeeklyReport([], wibTime(2026, 8, 10, 0, 5), state)
+      assert.equal(result, true)
+      assert.equal(sent.length, 2)
+      const media = JSON.parse(sent[1].get('media'))
+      assert.equal(media.length, 2)
     } finally {
       restore()
     }

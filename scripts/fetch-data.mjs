@@ -30,7 +30,8 @@ import {
   formatMove,
   formatPrice,
 } from '../src/lib/signalHistoryCore.js'
-import { isGoldMarketClosed, isWeekendUtc } from '../src/lib/marketHours.js'
+import { isGoldMarketClosed } from '../src/lib/marketHours.js'
+import { computeWeeklyChartData, renderWeeklyPerformanceChart, renderWeeklyTradeLogCharts } from './weeklyChart.mjs'
 
 const OUT_DIR = path.join(process.cwd(), 'public', 'data')
 const HISTORY_PATH = path.join(process.cwd(), 'data', 'signal-history.json')
@@ -282,6 +283,69 @@ export async function editTelegramMessage(text, messageId, chatId = process.env.
   }
 }
 
+// Sends a PNG buffer as a Telegram *photo* — shows inline in-chat (tap to view
+// full-screen) rather than as a generic file attachment. Telegram does re-compress to
+// JPEG and downscale for its own preview sizes, but the 2x-scale "HD" render (see
+// weeklyChart.mjs) — mostly flat colors, lines and text rather than photographic detail
+// — holds up well under that compression, and this is the nicer in-chat experience.
+// Same best-effort contract as sendTelegramMessage: never throws, returns null on any
+// failure.
+export async function sendTelegramPhoto(buffer, filename, caption, chatId = process.env.TELEGRAM_CHAT_ID) {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token || !chatId) return null
+
+  try {
+    const form = new FormData()
+    form.append('chat_id', chatId)
+    if (caption) form.append('caption', caption)
+    form.append('photo', new Blob([buffer], { type: 'image/png' }), filename)
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, { method: 'POST', body: form })
+    const json = await res.json()
+    if (!json.ok) {
+      console.warn(`[telegram] sendPhoto failed: ${json.description}`)
+      return null
+    }
+    return json.result.message_id
+  } catch (err) {
+    console.warn(`[telegram] sendPhoto error: ${err.message}`)
+    return null
+  }
+}
+
+// Same reasoning as sendTelegramPhoto, but posts every item as one album (a single "N
+// images" notification instead of N separate ones) — chunked into batches of 10 since
+// that's Telegram's own per-request cap for sendMediaGroup. Returns the message ids
+// actually sent (fewer than `items.length` if a chunk's request fails).
+export async function sendTelegramMediaGroupPhotos(items, chatId = process.env.TELEGRAM_CHAT_ID) {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token || !chatId || !items.length) return []
+
+  const messageIds = []
+  for (let i = 0; i < items.length; i += 10) {
+    const chunk = items.slice(i, i + 10)
+    try {
+      const form = new FormData()
+      form.append('chat_id', chatId)
+      const media = chunk.map((item, idx) => {
+        const attachKey = `file${i}_${idx}`
+        form.append(attachKey, new Blob([item.buffer], { type: 'image/png' }), item.filename)
+        return { type: 'photo', media: `attach://${attachKey}`, ...(item.caption ? { caption: item.caption } : {}) }
+      })
+      form.append('media', JSON.stringify(media))
+      const res = await fetch(`https://api.telegram.org/bot${token}/sendMediaGroup`, { method: 'POST', body: form })
+      const json = await res.json()
+      if (!json.ok) {
+        console.warn(`[telegram] sendMediaGroup failed: ${json.description}`)
+        continue
+      }
+      messageIds.push(...json.result.map((m) => m.message_id))
+    } catch (err) {
+      console.warn(`[telegram] sendMediaGroup error: ${err.message}`)
+    }
+  }
+  return messageIds
+}
+
 // Ops alert to the personal chat — never the public channel. Best-effort like
 // sendTelegramMessage: a failure here is logged, not thrown, so it can never mask or
 // replace the actual error/failure being reported.
@@ -517,16 +581,6 @@ async function saveReportState(state) {
   await writeFile(REPORT_STATE_PATH, JSON.stringify(state))
 }
 
-// Weekday (Mon-Fri WIB) daily reports only cover XAUUSD; weekend (Sat/Sun WIB) only
-// BTCUSD — the same split as which symbol actually gets new signals posted on which
-// days (see the skipNewSignals gating in updateSignalHistoryForSymbol). Showing the
-// other symbol's section would just be permanent "No running signals" / "No signals
-// closed today" noise on days it's never even active. The weekly report isn't split
-// this way — it spans the whole week either way, so both symbols are always relevant.
-function dailyReportSymbols(weekday) {
-  return weekday === 0 || weekday === 6 ? ['BTCUSD'] : ['XAUUSD']
-}
-
 function directionLabel(record) {
   return record.direction === 'buy' ? 'BUY' : 'SELL'
 }
@@ -569,11 +623,13 @@ function buildSymbolDailySection(symbolKey, history, dayStartMs, dayEndMs) {
 
 // Builds the message for the WIB calendar day starting at dayStartMs (dayEndMs is
 // exclusive, always dayStartMs + 24h) — pure and independently testable from the
-// scheduling/dedup logic in maybeSendDailyReport below.
-export function buildDailyReportMessage(history, dayStartMs, weekday) {
+// scheduling/dedup logic in maybeSendDailyReport below. Always covers both symbols —
+// BTCUSD posts new signals every day now (see the skipNewSignals gating in
+// updateSignalHistoryForSymbol), not just weekends, so there's no quiet day left to
+// special-case out of this recap either.
+export function buildDailyReportMessage(history, dayStartMs) {
   const dayEndMs = dayStartMs + DAY_MS
-  const symbols = dailyReportSymbols(weekday)
-  const sections = symbols.map((symbolKey) => buildSymbolDailySection(symbolKey, history, dayStartMs, dayEndMs))
+  const sections = ['XAUUSD', 'BTCUSD'].map((symbolKey) => buildSymbolDailySection(symbolKey, history, dayStartMs, dayEndMs))
   return [`📊 <b>Daily Report : ${formatWibDate(dayStartMs)}</b>`, '', sections.join('\n\n')].join('\n')
 }
 
@@ -639,13 +695,41 @@ export async function maybeSendDailyReport(history, now, state) {
 
   const todayStartMs = wibMidnightUtcMs(wib.year, wib.month, wib.day)
   const yesterdayStartMs = todayStartMs - DAY_MS
-  // wib.weekday is *today's* weekday, but the report covers *yesterday* — shift back
-  // one day (mod 7) so a Monday-morning report about Sunday's trading correctly counts
-  // as a weekend day, not a weekday.
-  const yesterdayWeekday = (wib.weekday + 6) % 7
-  await sendTelegramMessage(buildDailyReportMessage(history, yesterdayStartMs, yesterdayWeekday))
+  await sendTelegramMessage(buildDailyReportMessage(history, yesterdayStartMs))
   state.lastDailyReportDate = todayKey
   return true
+}
+
+const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+// Builds the 7 day buckets (Monday..Sunday, WIB) the chart images are computed over,
+// and renders + sends them as one album attached to the weekly text report — the
+// "nempel di laporan mingguan yang sudah ada" ask from the design-preview discussion.
+// Best-effort like every other Telegram notification here: a rendering or send failure
+// is logged and swallowed, never allowed to fail the whole cron run (the text report
+// above has already gone out by the time this runs).
+async function sendWeeklyPerformanceCharts(history, weekStartMs) {
+  try {
+    const days = Array.from({ length: 7 }, (_, i) => {
+      const dayStartMs = weekStartMs + i * DAY_MS
+      const wib = wibParts(dayStartMs)
+      return { label: `${WEEKDAY_SHORT[wib.weekday]} ${wib.day}`, startMs: dayStartMs, endMs: dayStartMs + DAY_MS }
+    })
+    const weekEndMs = weekStartMs + 6 * DAY_MS
+    const rangeLabel = `${formatWibDayNum(weekStartMs)} – ${formatWibDateNoWeekday(weekEndMs)}`
+
+    const data = computeWeeklyChartData(history, days)
+    const performanceBuffer = renderWeeklyPerformanceChart(data, rangeLabel)
+    const tradeLogBuffers = renderWeeklyTradeLogCharts(data, rangeLabel)
+
+    const items = [
+      { buffer: performanceBuffer, filename: 'weekly-performance.png' },
+      ...tradeLogBuffers.map((buffer, i) => ({ buffer, filename: `weekly-trade-log-${i + 1}.png` })),
+    ]
+    await sendTelegramMediaGroupPhotos(items)
+  } catch (err) {
+    console.warn(`[fetch-data] weekly performance chart generation failed: ${err.message}`)
+  }
 }
 
 // Same trigger window as the daily report, but only on Monday (the day the report
@@ -660,6 +744,7 @@ export async function maybeSendWeeklyReport(history, now, state) {
   const todayStartMs = wibMidnightUtcMs(wib.year, wib.month, wib.day)
   const weekStartMs = todayStartMs - 7 * DAY_MS // last Monday 00:00 WIB
   await sendTelegramMessage(buildWeeklyReportMessage(history, weekStartMs))
+  await sendWeeklyPerformanceCharts(history, weekStartMs)
   state.lastWeeklyReportDate = todayKey
   return true
 }
@@ -741,10 +826,9 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
       // need its own check here either — `added` above is already empty for a stagnant
       // timeframe (see the isPriceStagnant gate on buildSignals), so there's nothing
       // for notifyNewSignals to send in that case regardless of this flag.
-      (symbolKey === 'XAUUSD' && isGoldMarketClosed(currentDate)) ||
-      // BTCUSD trades 24/7, so there's nothing to gate on market hours — instead it's
-      // deliberately weekend-only (Sat/Sun), the two days gold's own channel is quiet.
-      (symbolKey === 'BTCUSD' && !isWeekendUtc(currentDate))
+      symbolKey === 'XAUUSD' && isGoldMarketClosed(currentDate)
+      // BTCUSD trades 24/7 and now posts new signals every day, not just weekends —
+      // nothing else to gate on for this symbol.
     if (!skipNewSignals) await notifyNewSignals(symbolKey, added.filter(onlyH1), signalByKey)
     // Not gated by skipNewSignals — this isn't opening a new signal, just correcting
     // one already posted, same reasoning as fills/closes always posting regardless of
