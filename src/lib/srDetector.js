@@ -255,6 +255,12 @@ export function annotateGoldenZones(zonesByTimeframe) {
 // much reward before trusting a level as a target over the fixed R-multiple fallback.
 const MIN_ZONE_TP_RR = 0.5
 
+// Symmetric ceiling: a "TP" hundreds of R away isn't a realistic target to still be
+// showing — it mostly shows up because of higher-timeframe borrowing (see
+// buildSignals) surfacing a genuinely distant confluence level. Past this point it's
+// just noise on the signal card, not a level worth displaying or tracking as a target.
+const MAX_ZONE_TP_RR = 100
+
 // Prices display rounded to the nearest whole unit (see formatPrice in main.js). Two
 // targets closer together than that would still round to the *same shown number* even
 // after clearing the threshold-based dedup below (e.g. 4399.55 and 4400.44 are 0.89
@@ -269,7 +275,10 @@ function buildTakeProfits(entryPrice, sl, direction, candidateZones, mergeThresh
   const isBuy = direction === 'buy'
   const sortedZones = candidateZones
     .filter((z) => (isBuy ? z.mid > entryPrice : z.mid < entryPrice))
-    .filter((z) => Math.abs(z.mid - entryPrice) / risk >= MIN_ZONE_TP_RR)
+    .filter((z) => {
+      const rr = Math.abs(z.mid - entryPrice) / risk
+      return rr >= MIN_ZONE_TP_RR && rr < MAX_ZONE_TP_RR
+    })
     .sort((a, b) => (isBuy ? a.mid - b.mid : b.mid - a.mid))
 
   // Different zone categories (e.g. a fresh Resistance and an older SBR) can sit at

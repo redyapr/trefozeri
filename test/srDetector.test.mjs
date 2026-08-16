@@ -346,6 +346,50 @@ test('take-profit building and display-collision dedup', async (t) => {
     const signal = buySignalWith(zones)
     assert.equal(signal.tp.length, 5, 'every genuinely distinct zone becomes its own TP, not just the first 3')
   })
+
+  await t.test('excludes a target 100R or beyond, but keeps a genuinely closer one', () => {
+    // structuralSlDistance recalculates the actual SL from the zone's own ATR/wick
+    // rather than using the raw entry/sl passed to buySignalWith directly — read the
+    // real risk back off a baseline signal instead of assuming it matches those inputs.
+    const risk = Math.abs(buySignalWith([]).entry - buySignalWith([]).sl)
+    const entry = 4359
+    const tooFar = {
+      category: 'Resistance',
+      type: 'resistance',
+      price: entry + risk * 120, // 120R — well past the ceiling
+      mid: entry + risk * 120,
+      threshold: 0.88,
+      atr: 3,
+      structureAnchor: entry + risk * 120 + 3,
+      distanceFromPrice: 40,
+      isGolden: false,
+      confluence: [],
+    }
+    const closer = { ...tooFar, category: 'SBR', price: entry + risk * 10, mid: entry + risk * 10 } // 10R
+    const signal = buySignalWith([tooFar, closer])
+    assert.equal(signal.tp.length, 1, 'the 120R target is dropped, only the 10R one surfaces')
+    assert.ok(Math.abs(signal.tp[0].rr - 10) < 1e-6)
+  })
+
+  await t.test('falls back to fixed R-multiples when every qualifying zone is 100R or beyond', () => {
+    const risk = Math.abs(buySignalWith([]).entry - buySignalWith([]).sl)
+    const entry = 4359
+    const tooFar = {
+      category: 'Resistance',
+      type: 'resistance',
+      price: entry + risk * 150,
+      mid: entry + risk * 150,
+      threshold: 0.88,
+      atr: 3,
+      structureAnchor: entry + risk * 150 + 3,
+      distanceFromPrice: 40,
+      isGolden: false,
+      confluence: [],
+    }
+    const signal = buySignalWith([tooFar])
+    assert.equal(signal.tp.length, 3)
+    signal.tp.forEach((t, i) => assert.ok(Math.abs(t.rr - [1.5, 2.5, 3.5][i]) < 1e-6))
+  })
 })
 
 test('buildSignals: cross-timeframe TP borrowing (higher timeframes only)', async (t) => {

@@ -18,9 +18,11 @@ they happen.
   signal can target H4/D1 structure; H4/D1 never borrow down from H1) — a real level
   holds regardless of which timeframe drew it, and a higher timeframe's structure is
   more likely to actually hold than a lower one's noise. All qualifying targets surface
-  (no fixed cap); near-duplicate targets are merged using the *signal's own* timeframe
-  scale, not a borrowed target's. Falls back to fixed 1.5R/2.5R/3.5R targets only when
-  no structural level qualifies at all.
+  (no fixed cap), as long as they're between 0.5R and 100R — closer than 0.5R isn't a
+  meaningful reward, and 100R+ (which mostly only shows up via higher-timeframe
+  borrowing) isn't a realistic target worth displaying. Near-duplicate targets are
+  merged using the *signal's own* timeframe scale, not a borrowed target's. Falls back
+  to fixed 1.5R/2.5R/3.5R targets only when no structural level qualifies at all.
 - **Timeframes**: H1, H4, D1 only (see `TIMEFRAMES` in `src/lib/twelveData.js`) — this
   pivot-based logic isn't meant for sub-hourly noise.
 - **Chart**: [lightweight-charts](https://github.com/tradingview/lightweight-charts)
