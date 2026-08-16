@@ -68,7 +68,10 @@ class ZoneRectangle {
             if (y1 == null && y2 == null) return
 
             const startX = chart.timeScale().timeToCoordinate(Math.floor(this._zone.startTime / 1000))
-            const label = this._zone.isGolden ? `★ ${this._zone.category}` : this._zone.category
+            // Timeframe first — with H1/H4/D1 now combined on one chart (see main.js),
+            // "Support" alone no longer says which one this band came from.
+            const tfPrefix = this._zone.tf ? `${this._zone.tf} ` : ''
+            const label = this._zone.isGolden ? `${tfPrefix}★ ${this._zone.category}` : `${tfPrefix}${this._zone.category}`
 
             target.useBitmapCoordinateSpace((scope) => {
               const { context: ctx, horizontalPixelRatio: hRatio, verticalPixelRatio: vRatio, mediaSize } = scope

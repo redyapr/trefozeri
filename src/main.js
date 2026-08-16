@@ -464,11 +464,15 @@ function renderContent() {
     contentEl.querySelectorAll('.zones-grid, .signals-grid').forEach((el) => el.remove())
   }
 
-  // Nearest-to-price first — the levels most likely to matter for the next move show
-  // up top, across all three timeframes together.
-  const byDistance = (a, b) => a.distanceFromPrice - b.distanceFromPrice
-  const resistances = allZones.filter((z) => z.type === 'resistance').sort(byDistance)
-  const supports = allZones.filter((z) => z.type === 'support').sort(byDistance)
+  // Finest timeframe first (H1, then H4, then D1), nearest-to-price within each — H1
+  // is what's actually tradeable (see refreshData below), so its levels lead; H4/D1
+  // are grouped together underneath for context rather than interleaved by distance.
+  const byTfThenDistance = (a, b) => {
+    const tfOrder = TIMEFRAMES.findIndex((tf) => tf.key === a.tf) - TIMEFRAMES.findIndex((tf) => tf.key === b.tf)
+    return tfOrder || a.distanceFromPrice - b.distanceFromPrice
+  }
+  const resistances = allZones.filter((z) => z.type === 'resistance').sort(byTfThenDistance)
+  const supports = allZones.filter((z) => z.type === 'support').sort(byTfThenDistance)
 
   const zonesGrid = document.createElement('div')
   zonesGrid.className = 'zones-grid'
