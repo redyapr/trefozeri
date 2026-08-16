@@ -7,7 +7,7 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
 
 **Telegram:** https://t.me/trefozeri — signals, fills, and results pushed live.
 
-## Features
+## <img src="https://readme-typing-svg.demolab.com?lines=Features" alt="Typing Features" />
 
 - **Levels** — `srDetector.js` detects pivots per timeframe and tracks each through 3
   states: Support/Resistance → broken-once SBR/RBS → invalidated. Cross-timeframe
@@ -58,7 +58,7 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
 - **Install prompt** — a custom "add to home screen" button in the header, in place of
   the browser's own inconsistent UI.
 
-## Local development
+## <img src="https://readme-typing-svg.demolab.com?lines=Local+development" alt="Typing Local Development" />
 
 ```bash
 npm install
@@ -87,7 +87,7 @@ reverting the JSON file cannot un-send a real message, so don't set
 throughout) plus the DOM-coupled browser modules (`notifications.js`, `uiState.js`)
 via `jsdom` — see `test-helpers/setupDom.mjs`.
 
-## Data & deployment
+## <img src="https://readme-typing-svg.demolab.com?lines=Data+and+deployment" alt="Typing Data and deployment" />
 
 GitHub Pages only serves static files, so `scripts/fetch-data.mjs` fetches Twelve
 Data / Binance.US / the calendar feed once per run and writes static JSON into
@@ -128,7 +128,7 @@ One-time setup for a fork or new deploy target:
 stays at `/`), and also builds `id/index.html` — a static Indonesian-language SEO
 landing page at `/id/`, cross-linked with the root page via `hreflang`.
 
-## Project structure
+## <img src="https://readme-typing-svg.demolab.com?lines=Project+structure" alt="Typing Project structure" />
 
 ```
 index.html  English dashboard entry point (loads src/main.js)
