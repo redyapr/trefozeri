@@ -71,6 +71,15 @@ they happen.
   straight through the stop) only posts the close, not a separate fill message first.
   Optional — no-ops if `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` aren't set (see
   [Data & deployment](#data--deployment)).
+- **Daily/weekly Telegram report** — also H1-only, same public channel. Sent WIB
+  (UTC+7): daily just after midnight (00:00–00:14 WIB, recapping the day that just
+  ended — the existing 15-minute cron already lands exactly on that boundary, so no
+  separate schedule was needed), weekly the same window every Monday (recapping the
+  Mon–Sun week that just finished). The daily report only covers the symbol that's
+  actually active that day — XAUUSD on weekdays, BTCUSD on weekends (see
+  `dailyReportSymbols` in `scripts/fetch-data.mjs`) — the weekly report always covers
+  both. De-duplicated against `data/last-report.json` (git-tracked, same reasoning as
+  `last-alert.json` below) so a delayed/re-run cron tick can't double-send.
 - **Market status**: `src/lib/marketHours.js` knows gold's ~23/5 trading week (closed
   Friday 22:00 UTC → Sunday 22:00 UTC) — the dashboard shows a banner during that
   window (XAUUSD tab only), and the cron job uses it to skip opening brand-new signals
@@ -228,6 +237,7 @@ test-helpers/
 data/
   signal-history.json     Git-tracked shared signal track record — committed by CI
   last-alert.json         Git-tracked admin-alert de-dup state — committed by CI
+  last-report.json        Git-tracked daily/weekly Telegram report de-dup state — committed by CI
 .github/workflows/
   deploy.yml              Test → cron fetch → persist track record → build → deploy
 .github/

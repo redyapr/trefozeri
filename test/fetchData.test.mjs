@@ -27,6 +27,10 @@ const {
   toTwelveDataDatetime,
   parseUtc,
   toCandles,
+  buildDailyReportMessage,
+  buildWeeklyReportMessage,
+  maybeSendDailyReport,
+  maybeSendWeeklyReport,
   main,
 } = await import('../scripts/fetch-data.mjs')
 
@@ -62,6 +66,29 @@ async function withBackedUpHistoryFile(fn) {
     if (backup == null) await rm(REAL_HISTORY_PATH, { force: true })
     else await writeFile(REAL_HISTORY_PATH, backup)
   }
+}
+
+// maybeSendDailyReport/maybeSendWeeklyReport persist to this real file too (same
+// reasoning as ALERT_STATE_PATH — no injectable path) — back it up/restore it around
+// any test that could touch it.
+const REPORT_STATE_PATH = path.join(process.cwd(), 'data', 'last-report.json')
+async function withClearReportState(fn) {
+  const backup = await readFile(REPORT_STATE_PATH, 'utf8').catch(() => null)
+  await rm(REPORT_STATE_PATH, { force: true })
+  try {
+    await fn()
+  } finally {
+    if (backup == null) await rm(REPORT_STATE_PATH, { force: true })
+    else await writeFile(REPORT_STATE_PATH, backup)
+  }
+}
+
+// "hour:minute WIB on this date" -> the UTC ms it corresponds to (WIB is a fixed +7h
+// offset, no DST) — lets test fixtures read as the wall-clock moment they represent
+// instead of hand-computed epoch numbers.
+const WIB_OFFSET_MS = 7 * 60 * 60 * 1000
+function wibTime(year, month, day, hour = 0, minute = 0) {
+  return Date.UTC(year, month - 1, day, hour, minute) - WIB_OFFSET_MS
 }
 
 // Intercepts calls to api.telegram.org and records them instead of hitting the network.
@@ -198,7 +225,7 @@ test('buildCloseMessage', async (t) => {
 
   await t.test('BTCUSD (no pip convention) shows a raw $ move', () => {
     const record = { direction: 'buy', status: 'win', hitTpIndex: 0, entry: 65000, exitPrice: 66200 }
-    assert.equal(buildCloseMessage('BTCUSD', record), '✅ TP1 HIT +1200.00')
+    assert.equal(buildCloseMessage('BTCUSD', record), '✅ TP1 HIT +1200')
   })
 })
 
@@ -817,6 +844,257 @@ test('toCandles', async (t) => {
   })
 })
 
+const DAY_MS = 24 * 60 * 60 * 1000
+
+function closedRecord(overrides) {
+  return {
+    key: 'k',
+    symbolKey: 'XAUUSD',
+    tf: 'H1',
+    category: 'Support',
+    direction: 'buy',
+    entry: 4300,
+    sl: 4290,
+    tp: [{ price: 4320, rr: 2 }],
+    openedAt: 0,
+    filledAt: 0,
+    status: 'win',
+    exitPrice: 4320,
+    hitTpIndex: 0,
+    closedAt: 0,
+    ...overrides,
+  }
+}
+
+function runningRecord(overrides) {
+  return {
+    key: 'k',
+    symbolKey: 'XAUUSD',
+    tf: 'H1',
+    category: 'Support',
+    direction: 'buy',
+    entry: 4300,
+    sl: 4290,
+    tp: [{ price: 4320, rr: 2 }],
+    openedAt: 0,
+    filledAt: 0,
+    status: 'running',
+    ...overrides,
+  }
+}
+
+test('buildDailyReportMessage', async (t) => {
+  await t.test('a weekday (Mon-Fri) only includes an XAUUSD section', () => {
+    const dayStart = wibTime(2026, 8, 11, 0, 0) // Tuesday
+    const msg = buildDailyReportMessage([], dayStart, 2)
+    assert.match(msg, /XAUUSD/)
+    assert.doesNotMatch(msg, /BTCUSD/)
+  })
+
+  await t.test('a weekend day (Sat/Sun) only includes a BTCUSD section', () => {
+    const dayStart = wibTime(2026, 8, 15, 0, 0) // Saturday
+    const msg = buildDailyReportMessage([], dayStart, 6)
+    assert.match(msg, /BTCUSD/)
+    assert.doesNotMatch(msg, /XAUUSD/)
+  })
+
+  await t.test('lists running signals, and an empty-state when there are none', () => {
+    const dayStart = wibTime(2026, 8, 11, 0, 0)
+    const history = [runningRecord({ category: 'Resistance', direction: 'sell', entry: 4350 })]
+    const msg = buildDailyReportMessage(history, dayStart, 2)
+    assert.match(msg, /Running \(1\):/)
+    assert.match(msg, /SELL Resistance @ 4350/)
+    assert.match(msg, /No signals closed today\./)
+  })
+
+  await t.test('lists closed trades with win\\/loss lines, win rate, and net', () => {
+    const dayStart = wibTime(2026, 8, 11, 0, 0)
+    const history = [
+      closedRecord({ status: 'win', entry: 4300, exitPrice: 4320, hitTpIndex: 0, closedAt: dayStart + 1000 }),
+      closedRecord({ status: 'loss', entry: 4300, exitPrice: 4290, closedAt: dayStart + 2000 }),
+    ]
+    const msg = buildDailyReportMessage(history, dayStart, 2)
+    assert.match(msg, /Closed today \(2\):/)
+    assert.match(msg, /✅ BUY Support @ 4300 → TP1 HIT \+200 pips/)
+    assert.match(msg, /❌ BUY Support @ 4300 → SL HIT -100 pips/)
+    assert.match(msg, /Win rate today: 50% \(1W \/ 1L\) · Net: \+100 pips/)
+  })
+
+  await t.test('excludes records outside the day window and from other timeframes', () => {
+    const dayStart = wibTime(2026, 8, 11, 0, 0)
+    const history = [
+      closedRecord({ closedAt: dayStart - 1 }), // just before the window
+      closedRecord({ closedAt: dayStart + DAY_MS }), // the exclusive end
+      closedRecord({ tf: 'H4', closedAt: dayStart + 1000 }), // wrong timeframe, never posted to Telegram
+    ]
+    const msg = buildDailyReportMessage(history, dayStart, 2)
+    assert.match(msg, /No signals closed today\./)
+  })
+})
+
+test('buildWeeklyReportMessage', async (t) => {
+  await t.test('always includes both XAUUSD and BTCUSD sections, regardless of weekday', () => {
+    const weekStart = wibTime(2026, 8, 10, 0, 0) // Monday
+    const msg = buildWeeklyReportMessage([], weekStart)
+    assert.match(msg, /XAUUSD/)
+    assert.match(msg, /BTCUSD/)
+  })
+
+  await t.test('shows "No closed trades" for a quiet day, and totals the days that had activity', () => {
+    const weekStart = wibTime(2026, 8, 10, 0, 0) // Monday 10 Aug
+    const history = [
+      closedRecord({ status: 'win', entry: 4300, exitPrice: 4320, hitTpIndex: 0, closedAt: weekStart + 1000 }),
+      closedRecord({ status: 'loss', entry: 4300, exitPrice: 4290, closedAt: weekStart + DAY_MS + 1000 }),
+    ]
+    const msg = buildWeeklyReportMessage(history, weekStart)
+    assert.match(msg, /Mon 10 Aug: \+200 pips \(1W \/ 0L\)/)
+    assert.match(msg, /Tue 11 Aug: -100 pips \(0W \/ 1L\)/)
+    assert.match(msg, /Wed 12 Aug: No closed trades/)
+    assert.match(msg, /Total: \+100 pips · Win rate: 50% \(1W \/ 1L\)/)
+  })
+
+  await t.test('shows "No trades closed this week" when nothing closed all week', () => {
+    const weekStart = wibTime(2026, 8, 10, 0, 0)
+    const msg = buildWeeklyReportMessage([], weekStart)
+    assert.match(msg, /No trades closed this week\./)
+  })
+
+  await t.test('the header range covers the correct 7-day span', () => {
+    const weekStart = wibTime(2026, 8, 10, 0, 0)
+    const msg = buildWeeklyReportMessage([], weekStart)
+    assert.match(msg, /10 – 16 Aug 2026/)
+  })
+})
+
+test('maybeSendDailyReport', async (t) => {
+  await t.test('does nothing outside the 00:00-00:59 WIB hour', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const state = {}
+      const result = await maybeSendDailyReport([], wibTime(2026, 8, 11, 12, 0), state)
+      assert.equal(result, false)
+      assert.equal(sent.length, 0)
+      assert.equal(state.lastDailyReportDate, undefined)
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('still sends on a late tick within the same hour (tolerates cron jitter/delay)', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const state = {}
+      const result = await maybeSendDailyReport([], wibTime(2026, 8, 11, 0, 45), state)
+      assert.equal(result, true)
+      assert.equal(sent.length, 1)
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('sends inside the window, reporting on yesterday (WIB) — a weekday shows XAUUSD only', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const state = {}
+      const history = [
+        closedRecord({
+          status: 'win',
+          entry: 4300,
+          exitPrice: 4320,
+          hitTpIndex: 0,
+          closedAt: wibTime(2026, 8, 10, 14, 0), // Monday afternoon WIB
+        }),
+      ]
+      // Tuesday 00:05 WIB -> reports on Monday (yesterday), a weekday
+      const result = await maybeSendDailyReport(history, wibTime(2026, 8, 11, 0, 5), state)
+      assert.equal(result, true)
+      assert.equal(sent.length, 1)
+      assert.match(sent[0].text, /XAUUSD/)
+      assert.doesNotMatch(sent[0].text, /BTCUSD/)
+      assert.match(sent[0].text, /TP1 HIT \+200 pips/)
+      assert.equal(state.lastDailyReportDate, '2026-08-11')
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('a Monday report counts Sunday (yesterday) as a weekend day — shows BTCUSD, not XAUUSD', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const state = {}
+      const result = await maybeSendDailyReport([], wibTime(2026, 8, 10, 0, 5), state) // Monday 00:05 WIB
+      assert.equal(result, true)
+      assert.match(sent[0].text, /BTCUSD/)
+      assert.doesNotMatch(sent[0].text, /XAUUSD/)
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('does not send twice for the same WIB day, even if called again inside the window', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const state = { lastDailyReportDate: '2026-08-11' }
+      const result = await maybeSendDailyReport([], wibTime(2026, 8, 11, 0, 10), state)
+      assert.equal(result, false)
+      assert.equal(sent.length, 0)
+    } finally {
+      restore()
+    }
+  })
+})
+
+test('maybeSendWeeklyReport', async (t) => {
+  await t.test('does nothing on a non-Monday, even inside the daily window', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const state = {}
+      const result = await maybeSendWeeklyReport([], wibTime(2026, 8, 11, 0, 5), state) // Tuesday
+      assert.equal(result, false)
+      assert.equal(sent.length, 0)
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('sends on Monday inside the window, covering the just-finished Mon-Sun week', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const state = {}
+      const history = [
+        closedRecord({
+          symbolKey: 'BTCUSD',
+          status: 'win',
+          entry: 63000,
+          exitPrice: 64200,
+          hitTpIndex: 0,
+          closedAt: wibTime(2026, 8, 8, 10, 0), // the Saturday of the week just finished
+        }),
+      ]
+      const result = await maybeSendWeeklyReport(history, wibTime(2026, 8, 10, 0, 5), state) // Monday 00:05 WIB
+      assert.equal(result, true)
+      assert.match(sent[0].text, /Weekly Report/)
+      assert.match(sent[0].text, /BTCUSD/)
+      assert.match(sent[0].text, /\+1200/)
+      assert.equal(state.lastWeeklyReportDate, '2026-08-10')
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('does not send twice for the same Monday', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const state = { lastWeeklyReportDate: '2026-08-10' }
+      const result = await maybeSendWeeklyReport([], wibTime(2026, 8, 10, 0, 10), state)
+      assert.equal(result, false)
+      assert.equal(sent.length, 0)
+    } finally {
+      restore()
+    }
+  })
+})
+
 test('main()', async (t) => {
   const goldValues = (base) =>
     Array.from({ length: 20 }, (_, i) => ({
@@ -862,17 +1140,19 @@ test('main()', async (t) => {
     resetFailures()
     await withBackedUpHistoryFile(async () => {
       await withClearAlertState(async () => {
-        const restoreFetch = mockAllSources()
-        const savedKey = process.env.TWELVE_DATA_API_KEY
-        process.env.TWELVE_DATA_API_KEY = 'test-key'
-        try {
-          await assert.doesNotReject(() => main())
-          const written = JSON.parse(await readFile(REAL_HISTORY_PATH, 'utf8'))
-          assert.ok(Array.isArray(written), 'signal-history.json must still be a JSON array afterward')
-        } finally {
-          restoreFetch()
-          process.env.TWELVE_DATA_API_KEY = savedKey
-        }
+        await withClearReportState(async () => {
+          const restoreFetch = mockAllSources()
+          const savedKey = process.env.TWELVE_DATA_API_KEY
+          process.env.TWELVE_DATA_API_KEY = 'test-key'
+          try {
+            await assert.doesNotReject(() => main())
+            const written = JSON.parse(await readFile(REAL_HISTORY_PATH, 'utf8'))
+            assert.ok(Array.isArray(written), 'signal-history.json must still be a JSON array afterward')
+          } finally {
+            restoreFetch()
+            process.env.TWELVE_DATA_API_KEY = savedKey
+          }
+        })
       })
     })
   })

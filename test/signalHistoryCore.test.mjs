@@ -6,7 +6,10 @@ import {
   evaluateSignals,
   trimRecords,
   getHistory,
+  getClosedBetween,
   getStats,
+  favorableMove,
+  formatAmount,
   formatMove,
   formatPrice,
   PIP_SIZES,
@@ -304,6 +307,45 @@ test('getHistory / getStats', async (t) => {
   })
 })
 
+test('getClosedBetween', async (t) => {
+  await t.test('only returns win/loss records with closedAt inside [start, end)', () => {
+    const history = [
+      { symbolKey: 'XAUUSD', tf: 'H1', status: 'win', closedAt: 100 },
+      { symbolKey: 'XAUUSD', tf: 'H1', status: 'loss', closedAt: 150 },
+      { symbolKey: 'XAUUSD', tf: 'H1', status: 'win', closedAt: 200 }, // outside the end (exclusive)
+      { symbolKey: 'XAUUSD', tf: 'H1', status: 'running', closedAt: undefined },
+      { symbolKey: 'XAUUSD', tf: 'H1', status: 'pending', closedAt: undefined },
+    ]
+    const result = getClosedBetween(history, 'XAUUSD', 'H1', 100, 200)
+    assert.equal(result.length, 2)
+    assert.deepEqual(
+      result.map((r) => r.closedAt),
+      [100, 150]
+    )
+  })
+
+  await t.test('sorts oldest-first, unlike getHistory', () => {
+    const history = [
+      { symbolKey: 'XAUUSD', tf: 'H1', status: 'win', closedAt: 300 },
+      { symbolKey: 'XAUUSD', tf: 'H1', status: 'loss', closedAt: 100 },
+    ]
+    const result = getClosedBetween(history, 'XAUUSD', 'H1', 0, 1000)
+    assert.deepEqual(
+      result.map((r) => r.closedAt),
+      [100, 300]
+    )
+  })
+
+  await t.test('filters by symbol and tf like getHistory', () => {
+    const history = [
+      { symbolKey: 'XAUUSD', tf: 'H1', status: 'win', closedAt: 100 },
+      { symbolKey: 'BTCUSD', tf: 'H1', status: 'win', closedAt: 100 },
+      { symbolKey: 'XAUUSD', tf: 'H4', status: 'win', closedAt: 100 },
+    ]
+    assert.equal(getClosedBetween(history, 'XAUUSD', 'H1', 0, 1000).length, 1)
+  })
+})
+
 test('formatMove', async (t) => {
   await t.test('a buy win is reported as positive pips', () => {
     assert.equal(formatMove(PIP_SIZES.XAUUSD, 4381, 4387.75, true), '+68 pips')
@@ -322,8 +364,41 @@ test('formatMove', async (t) => {
   })
 
   await t.test('a symbol with no pip convention (e.g. crypto) shows the raw $ move instead', () => {
-    assert.equal(formatMove(PIP_SIZES.BTCUSD, 65000, 66200, true), '+1200.00')
+    assert.equal(formatMove(PIP_SIZES.BTCUSD, 65000, 66200, true), '+1200')
     assert.equal(PIP_SIZES.BTCUSD, null)
+  })
+
+  await t.test('a $ move keeps meaningful cents rather than always trimming to a whole number', () => {
+    assert.equal(formatMove(PIP_SIZES.BTCUSD, 65000, 66200.5, true), '+1200.5')
+    assert.equal(formatMove(PIP_SIZES.BTCUSD, 65000, 66200.25, true), '+1200.25')
+  })
+})
+
+test('favorableMove / formatAmount', async (t) => {
+  await t.test('favorableMove returns a raw pip count, not display text', () => {
+    assert.equal(favorableMove(PIP_SIZES.XAUUSD, 4381, 4387.75, true), 68)
+  })
+
+  await t.test('favorableMove returns a raw, cents-rounded $ amount for a no-pip symbol', () => {
+    assert.equal(favorableMove(PIP_SIZES.BTCUSD, 65000, 66200, true), 1200)
+  })
+
+  await t.test('favorableMove values sum cleanly — the daily/weekly report totals across many records this way', () => {
+    const total = [
+      favorableMove(PIP_SIZES.XAUUSD, 4381, 4387.75, true),
+      favorableMove(PIP_SIZES.XAUUSD, 4400, 4403.5, false),
+    ].reduce((a, b) => a + b, 0)
+    assert.equal(total, 68 - 35)
+  })
+
+  await t.test('formatAmount formats a pip total the same way formatMove formats a single pip move', () => {
+    assert.equal(formatAmount(PIP_SIZES.XAUUSD, 33), '+33 pips')
+    assert.equal(formatAmount(PIP_SIZES.XAUUSD, -12), '-12 pips')
+  })
+
+  await t.test('formatAmount formats a $ total the same way formatMove formats a single $ move', () => {
+    assert.equal(formatAmount(PIP_SIZES.BTCUSD, 1200), '+1200')
+    assert.equal(formatAmount(PIP_SIZES.BTCUSD, -1200.5), '-1200.5')
   })
 })
 

@@ -17,12 +17,25 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { detectLevels, buildSignals, annotateGoldenZones } from '../src/lib/srDetector.js'
-import { recordSignals, evaluateSignals, trimRecords, keyFor, PIP_SIZES, formatMove, formatPrice } from '../src/lib/signalHistoryCore.js'
+import {
+  recordSignals,
+  evaluateSignals,
+  trimRecords,
+  keyFor,
+  getHistory,
+  getClosedBetween,
+  PIP_SIZES,
+  favorableMove,
+  formatAmount,
+  formatMove,
+  formatPrice,
+} from '../src/lib/signalHistoryCore.js'
 import { isGoldMarketClosed, isWeekendUtc } from '../src/lib/marketHours.js'
 
 const OUT_DIR = path.join(process.cwd(), 'public', 'data')
 const HISTORY_PATH = path.join(process.cwd(), 'data', 'signal-history.json')
 const ALERT_STATE_PATH = path.join(process.cwd(), 'data', 'last-alert.json')
+const REPORT_STATE_PATH = path.join(process.cwd(), 'data', 'last-report.json')
 // A persistent cause (an expired API key, say) would otherwise re-alert every single
 // 15-minute cron tick forever — suppress a repeat of the exact same alert text until
 // this long has passed since it was last actually sent. Overridable (hours, not ms)
@@ -358,6 +371,235 @@ export async function notifyClosedSignals(symbolKey, closed) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Daily / weekly Telegram report
+// ---------------------------------------------------------------------------
+// Recaps the H1 track record (the only timeframe Telegram ever sees, see
+// TELEGRAM_TIMEFRAMES) to the same public channel as the signals themselves. Framed in
+// WIB (UTC+7) since that's the audience's own clock — WIB never observes DST, so a flat
+// +7h shift is exact and needs no timezone database.
+const REPORT_TF = 'H1'
+const WIB_OFFSET_MS = 7 * 60 * 60 * 1000
+const DAY_MS = 24 * 60 * 60 * 1000
+
+// The "borrow UTC field getters to read another fixed-offset timezone" trick: shifting
+// the instant by the offset first, then reading its UTC fields, yields that other
+// zone's local calendar fields without needing Intl/a tz database.
+function wibParts(ms) {
+  const shifted = new Date(ms + WIB_OFFSET_MS)
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth(), // 0-indexed
+    day: shifted.getUTCDate(),
+    hour: shifted.getUTCHours(),
+    minute: shifted.getUTCMinutes(),
+    weekday: shifted.getUTCDay(), // 0 = Sunday ... 6 = Saturday
+  }
+}
+
+// The UTC instant corresponding to 00:00 WIB on the given WIB calendar date.
+function wibMidnightUtcMs(year, month, day) {
+  return Date.UTC(year, month, day) - WIB_OFFSET_MS
+}
+
+function wibDateKey({ year, month, day }) {
+  return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
+
+function formatWibDate(ms) {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Jakarta',
+    weekday: 'long',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  }).format(ms)
+}
+
+function formatWibDayShort(ms) {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Jakarta',
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+  }).format(ms)
+}
+
+// Just "10" — the range header's start date only needs the day number (the month/year
+// come from its end date, e.g. "10 – 16 Aug 2026").
+function formatWibDayNum(ms) {
+  return new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jakarta', day: 'numeric' }).format(ms)
+}
+
+function formatWibDateNoWeekday(ms) {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Jakarta',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  }).format(ms)
+}
+
+async function loadReportState() {
+  try {
+    return JSON.parse(await readFile(REPORT_STATE_PATH, 'utf8'))
+  } catch {
+    return {} // first run ever, or the file's missing/corrupt
+  }
+}
+
+async function saveReportState(state) {
+  await mkdir(path.dirname(REPORT_STATE_PATH), { recursive: true })
+  await writeFile(REPORT_STATE_PATH, JSON.stringify(state))
+}
+
+// Weekday (Mon-Fri WIB) daily reports only cover XAUUSD; weekend (Sat/Sun WIB) only
+// BTCUSD — the same split as which symbol actually gets new signals posted on which
+// days (see the skipNewSignals gating in updateSignalHistoryForSymbol). Showing the
+// other symbol's section would just be permanent "No running signals" / "No signals
+// closed today" noise on days it's never even active. The weekly report isn't split
+// this way — it spans the whole week either way, so both symbols are always relevant.
+function dailyReportSymbols(weekday) {
+  return weekday === 0 || weekday === 6 ? ['BTCUSD'] : ['XAUUSD']
+}
+
+function directionLabel(record) {
+  return record.direction === 'buy' ? 'BUY' : 'SELL'
+}
+
+// One line per closed trade: outcome, what it was, and its result — a standalone
+// rollup message has no earlier "signal opened" message to inherit that context from
+// the way a live SL/TP-hit reply does (see buildCloseMessage).
+function reportExitLine(symbolKey, record) {
+  const label = record.status === 'win' ? `TP${(record.hitTpIndex ?? 0) + 1} HIT` : 'SL HIT'
+  const move = formatMove(PIP_SIZES[symbolKey], record.entry, record.exitPrice, record.direction === 'buy')
+  return `${record.status === 'win' ? '✅' : '❌'} ${directionLabel(record)} ${record.category} @ ${formatPrice(record.entry)} → ${label} ${move}`
+}
+
+function buildSymbolDailySection(symbolKey, history, dayStartMs, dayEndMs) {
+  const running = getHistory(history, symbolKey, REPORT_TF).filter((r) => r.status === 'running')
+  const closedList = getClosedBetween(history, symbolKey, REPORT_TF, dayStartMs, dayEndMs)
+
+  const lines = [`<b>${symbolKey}</b>`, `Running (${running.length}):`]
+  if (running.length) {
+    for (const r of running) lines.push(`• ${directionLabel(r)} ${r.category} @ ${formatPrice(r.entry)}`)
+  } else {
+    lines.push('No running signals.')
+  }
+
+  lines.push('', `Closed today (${closedList.length}):`)
+  if (closedList.length) {
+    for (const r of closedList) lines.push(reportExitLine(symbolKey, r))
+    const wins = closedList.filter((r) => r.status === 'win').length
+    const losses = closedList.length - wins
+    const pipSize = PIP_SIZES[symbolKey]
+    const net = closedList.reduce((sum, r) => sum + favorableMove(pipSize, r.entry, r.exitPrice, r.direction === 'buy'), 0)
+    const winRate = Math.round((wins / closedList.length) * 100)
+    lines.push('', `Win rate today: ${winRate}% (${wins}W / ${losses}L) · Net: ${formatAmount(pipSize, net)}`)
+  } else {
+    lines.push('No signals closed today.')
+  }
+
+  return lines.join('\n')
+}
+
+// Builds the message for the WIB calendar day starting at dayStartMs (dayEndMs is
+// exclusive, always dayStartMs + 24h) — pure and independently testable from the
+// scheduling/dedup logic in maybeSendDailyReport below.
+export function buildDailyReportMessage(history, dayStartMs, weekday) {
+  const dayEndMs = dayStartMs + DAY_MS
+  const symbols = dailyReportSymbols(weekday)
+  const sections = symbols.map((symbolKey) => buildSymbolDailySection(symbolKey, history, dayStartMs, dayEndMs))
+  return [`📊 <b>Daily Report : ${formatWibDate(dayStartMs)}</b>`, '', sections.join('\n\n')].join('\n')
+}
+
+function buildSymbolWeeklySection(symbolKey, history, weekStartMs) {
+  const pipSize = PIP_SIZES[symbolKey]
+  const lines = [`<b>${symbolKey}</b>`]
+  let totalNet = 0
+  let totalWins = 0
+  let totalLosses = 0
+
+  for (let i = 0; i < 7; i++) {
+    const dayStartMs = weekStartMs + i * DAY_MS
+    const dayEndMs = dayStartMs + DAY_MS
+    const closedList = getClosedBetween(history, symbolKey, REPORT_TF, dayStartMs, dayEndMs)
+    const dayLabel = formatWibDayShort(dayStartMs)
+
+    if (!closedList.length) {
+      lines.push(`${dayLabel}: No closed trades`)
+      continue
+    }
+    const wins = closedList.filter((r) => r.status === 'win').length
+    const losses = closedList.length - wins
+    const net = closedList.reduce((sum, r) => sum + favorableMove(pipSize, r.entry, r.exitPrice, r.direction === 'buy'), 0)
+    totalNet += net
+    totalWins += wins
+    totalLosses += losses
+    lines.push(`${dayLabel}: ${formatAmount(pipSize, net)} (${wins}W / ${losses}L)`)
+  }
+
+  const totalClosed = totalWins + totalLosses
+  lines.push('')
+  lines.push(
+    totalClosed
+      ? `Total: ${formatAmount(pipSize, totalNet)} · Win rate: ${Math.round((totalWins / totalClosed) * 100)}% (${totalWins}W / ${totalLosses}L)`
+      : 'No trades closed this week.'
+  )
+  return lines.join('\n')
+}
+
+// weekStartMs is the Monday 00:00 WIB that starts the week being recapped (the report
+// itself is sent the *following* Monday, at 00:01 WIB — see maybeSendWeeklyReport).
+export function buildWeeklyReportMessage(history, weekStartMs) {
+  const weekEndMs = weekStartMs + 6 * DAY_MS // last day of the week, not the exclusive end
+  const rangeLabel = `${formatWibDayNum(weekStartMs)} – ${formatWibDateNoWeekday(weekEndMs)}`
+  const sections = ['XAUUSD', 'BTCUSD'].map((symbolKey) => buildSymbolWeeklySection(symbolKey, history, weekStartMs))
+  return [`📅 <b>Weekly Report : ${rangeLabel}</b>`, '', sections.join('\n\n')].join('\n')
+}
+
+// Fires on the first cron tick that lands in the 00:00-00:59 WIB hour each day (the
+// existing 15-minute cron already ticks 4 times inside that hour — :00, :15, :30,
+// :45 — so no separate GitHub Actions schedule is needed). Reports on the WIB calendar
+// day that just ended. The whole-hour window (rather than just the :00 tick) tolerates
+// GitHub Actions' own scheduling jitter/delay: if the :00 tick itself runs late or gets
+// skipped, a later tick in the same hour still catches it. lastDailyReportDate is what
+// actually prevents a double-send once one tick in the window succeeds — not the
+// window's width.
+export async function maybeSendDailyReport(history, now, state) {
+  const wib = wibParts(now)
+  if (wib.hour !== 0) return false
+
+  const todayKey = wibDateKey(wib)
+  if (state.lastDailyReportDate === todayKey) return false
+
+  const todayStartMs = wibMidnightUtcMs(wib.year, wib.month, wib.day)
+  const yesterdayStartMs = todayStartMs - DAY_MS
+  // wib.weekday is *today's* weekday, but the report covers *yesterday* — shift back
+  // one day (mod 7) so a Monday-morning report about Sunday's trading correctly counts
+  // as a weekend day, not a weekday.
+  const yesterdayWeekday = (wib.weekday + 6) % 7
+  await sendTelegramMessage(buildDailyReportMessage(history, yesterdayStartMs, yesterdayWeekday))
+  state.lastDailyReportDate = todayKey
+  return true
+}
+
+// Same trigger window as the daily report, but only on Monday (the day the report
+// covering the just-finished Mon-Sun week goes out).
+export async function maybeSendWeeklyReport(history, now, state) {
+  const wib = wibParts(now)
+  if (wib.hour !== 0 || wib.weekday !== 1) return false
+
+  const todayKey = wibDateKey(wib)
+  if (state.lastWeeklyReportDate === todayKey) return false
+
+  const todayStartMs = wibMidnightUtcMs(wib.year, wib.month, wib.day)
+  const weekStartMs = todayStartMs - 7 * DAY_MS // last Monday 00:00 WIB
+  await sendTelegramMessage(buildWeeklyReportMessage(history, weekStartMs))
+  state.lastWeeklyReportDate = todayKey
+  return true
+}
+
 async function loadSignalHistory() {
   try {
     const json = JSON.parse(await readFile(HISTORY_PATH, 'utf8'))
@@ -465,6 +707,15 @@ export async function main() {
   await mkdir(path.dirname(HISTORY_PATH), { recursive: true })
   await writeFile(HISTORY_PATH, JSON.stringify(trimmed))
   await writeJson('signal-history.json', trimmed)
+
+  // Best-effort like every other Telegram notification here — a failure sending either
+  // report should never fail the whole run. State is only persisted (and so only
+  // committed back to the repo) if something actually sent, same reasoning as the
+  // alert-state file below.
+  const reportState = await loadReportState()
+  const dailySent = await maybeSendDailyReport(trimmed, Date.now(), reportState)
+  const weeklySent = await maybeSendWeeklyReport(trimmed, Date.now(), reportState)
+  if (dailySent || weeklySent) await saveReportState(reportState)
 
   const calendar = await fetchWithFallback('calendar', fetchCalendar, 'calendar.json')
   if (calendar) await writeJson('calendar.json', calendar)

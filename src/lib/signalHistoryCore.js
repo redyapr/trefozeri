@@ -174,6 +174,15 @@ export function getHistory(records, symbolKey, tf) {
     .sort((a, b) => b.openedAt - a.openedAt)
 }
 
+// Records closed (win or loss) within [startMs, endMs) — the daily/weekly Telegram
+// report's building block (see scripts/fetch-data.mjs), sorted oldest-first within the
+// window since a report reads naturally in the order things happened.
+export function getClosedBetween(records, symbolKey, tf, startMs, endMs) {
+  return getHistory(records, symbolKey, tf)
+    .filter((r) => (r.status === 'win' || r.status === 'loss') && r.closedAt >= startMs && r.closedAt < endMs)
+    .sort((a, b) => a.closedAt - b.closedAt)
+}
+
 export function getStats(records, symbolKey, tf) {
   const list = getHistory(records, symbolKey, tf)
   const wins = list.filter((r) => r.status === 'win').length
@@ -201,17 +210,30 @@ export const PIP_SIZES = { XAUUSD: 0.1, BTCUSD: null }
 
 // How far price moved from entry to exit, in the trade's favor being positive — e.g. a
 // sell's exit price is *below* entry on a win, so this flips the raw sign rather than
-// just reporting exitPrice - entry verbatim. Shared by the dashboard's track-record
-// modal and the cron script's Telegram notifications so both report the same number.
-export function formatMove(pipSize, entry, exitPrice, isBuy) {
+// just reporting exitPrice - entry verbatim. Returns a plain number (pip count if
+// pipSize is set, otherwise a $ amount rounded to cents) rather than display text — the
+// daily/weekly Telegram report (scripts/fetch-data.mjs) sums this raw across many
+// records before formatting the aggregate, which formatAmount below then handles
+// identically for a single trade's move or a summed total.
+export function favorableMove(pipSize, entry, exitPrice, isBuy) {
   const raw = exitPrice - entry
   const favorable = isBuy ? raw : -raw
-  const sign = favorable >= 0 ? '+' : ''
-  if (pipSize) {
-    const pips = Math.round(favorable / pipSize)
-    return `${sign}${pips} pips`
-  }
-  return `${sign}${favorable.toFixed(2)}`
+  return pipSize ? Math.round(favorable / pipSize) : Number(favorable.toFixed(2))
+}
+
+// Rounds to cents but drops a trailing ".00"/trailing zero the same way formatPrice
+// does (850 instead of 850.00, 850.5 instead of 850.50) — Number(...toFixed(2)) (done
+// in favorableMove already, for a $ amount) strips it via normal number-to-string
+// conversion; pip counts are already whole numbers, nothing to strip.
+export function formatAmount(pipSize, amount) {
+  const sign = amount >= 0 ? '+' : ''
+  return pipSize ? `${sign}${amount} pips` : `${sign}${amount}`
+}
+
+// Shared by the dashboard's track-record modal and the cron script's Telegram
+// notifications so both report the same number for a single trade's result.
+export function formatMove(pipSize, entry, exitPrice, isBuy) {
+  return formatAmount(pipSize, favorableMove(pipSize, entry, exitPrice, isBuy))
 }
 
 // The one shared price display format — rounds to 1 decimal, but drops it entirely

@@ -62,16 +62,17 @@ jobs:
           # change; defaults to this repo's own deployment when unset.
           SITE_URL: ${{ vars.SITE_URL }}
 
-      # data/signal-history.json and data/last-alert.json are the state that has to
-      # survive across otherwise-stateless CI runs (see scripts/fetch-data.mjs) —
-      # everything else here is regenerated fresh every time. Only commits when
-      # something actually changed (a new signal opened/hit its SL-TP, or an admin
-      # alert fired), so this doesn't spam a commit every 15 minutes. Pushing with the
-      # default GITHUB_TOKEN is safe from a trigger-loop standpoint: GitHub doesn't
-      # fire `on: push` for commits made with that token.
+      # data/signal-history.json, data/last-alert.json and data/last-report.json are the
+      # state that has to survive across otherwise-stateless CI runs (see
+      # scripts/fetch-data.mjs) — everything else here is regenerated fresh every time.
+      # Only commits when something actually changed (a new signal opened/hit its
+      # SL-TP, an admin alert fired, or the daily/weekly report sent), so this doesn't
+      # spam a commit every 15 minutes. Pushing with the default GITHUB_TOKEN is safe
+      # from a trigger-loop standpoint: GitHub doesn't fire `on: push` for commits made
+      # with that token.
       - name: Persist shared signal track record
         run: |
-          git add data/signal-history.json data/last-alert.json
+          git add data/signal-history.json data/last-alert.json data/last-report.json
           if git diff --cached --quiet; then
             echo "No signal track record changes to commit"
           else
