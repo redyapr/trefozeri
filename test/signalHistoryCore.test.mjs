@@ -80,6 +80,41 @@ test('recordSignals', async (t) => {
     assert.equal(history.length, 1)
     assert.equal(history[0].category, 'RBS')
   })
+
+  await t.test('does not drop a pending record whose own entry currentPrice already shows was reached, even if its level vanished', () => {
+    // Reproduces a real production bug: a SELL entry sits right at a resistance level,
+    // so price reaching that entry (rallying up to it) and price breaking that same
+    // resistance (which flips its category next tick, e.g. to RBS) are, right at the
+    // fill point, often the very same candle — without this guard the pending record
+    // would be dropped here before evaluateSignals ever got a chance to mark it filled.
+    const history = []
+    recordSignals(history, 'XAUUSD', 'H1', [
+      { category: 'Resistance', direction: 'sell', entry: 100, sl: 105, tp: [], threshold: 2 },
+    ])
+    // This tick's fresh signals no longer include a Resistance near 100 at all (the
+    // level broke) — normally this would drop the pending record.
+    recordSignals(history, 'XAUUSD', 'H1', [], 100) // currentPrice has reached the sell's entry
+    assert.equal(history.length, 1, 'kept alive since currentPrice shows it already reached its entry')
+    assert.equal(history[0].status, 'pending', 'still pending — promoting it is evaluateSignals\' job, not recordSignals\'')
+  })
+
+  await t.test('still drops a pending record whose level vanished AND currentPrice has not reached its entry', () => {
+    const history = []
+    recordSignals(history, 'XAUUSD', 'H1', [
+      { category: 'Resistance', direction: 'sell', entry: 100, sl: 105, tp: [], threshold: 2 },
+    ])
+    recordSignals(history, 'XAUUSD', 'H1', [], 90) // level gone, price nowhere near the entry
+    assert.deepEqual(history, [])
+  })
+
+  await t.test('the currentPrice guard is opt-in — omitting it behaves exactly as before (drops on any level change)', () => {
+    const history = []
+    recordSignals(history, 'XAUUSD', 'H1', [
+      { category: 'Resistance', direction: 'sell', entry: 100, sl: 105, tp: [], threshold: 2 },
+    ])
+    recordSignals(history, 'XAUUSD', 'H1', []) // no currentPrice passed at all
+    assert.deepEqual(history, [])
+  })
 })
 
 test('evaluateSignals', async (t) => {

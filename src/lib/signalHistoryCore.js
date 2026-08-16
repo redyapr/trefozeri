@@ -31,8 +31,9 @@ const isOpen = (r) => r.status === 'pending' || r.status === 'running'
 // Mutates `records`: drops stale unfilled orders whose level moved on without them,
 // then appends any newly-seen signal as a fresh 'pending' row. Returns just the
 // records that were newly appended this call (e.g. so a caller can notify about them
-// without re-notifying about ones that were already open).
-export function recordSignals(records, symbolKey, tf, signals) {
+// without re-notifying about ones that were already open). `currentPrice` is optional
+// (see the fill-in-progress guard below) — omitting it just skips that guard.
+export function recordSignals(records, symbolKey, tf, signals, currentPrice) {
   // A 'pending' (still unfilled) record whose key+price no longer matches any of this
   // tick's fresh signals had its level either fully invalidated or replaced by a
   // different pivot at a materially different price — either way the order it
@@ -45,7 +46,19 @@ export function recordSignals(records, symbolKey, tf, signals) {
     const stillCurrent = signals.some(
       (s) => keyFor(symbolKey, tf, s) === r.key && Math.abs(s.entry - r.entry) <= (s.threshold ?? Infinity)
     )
-    if (!stillCurrent) records.splice(i, 1)
+    // A real production bug: a SELL sitting right at a resistance (or a BUY at a
+    // support) can have its own fill and its own level's breakout be the very same
+    // candle — price reaching the entry is often exactly what breaks the level, which
+    // flips it to a different category next tick (Resistance -> RBS) and so no longer
+    // matches `r.key` above. Without this guard the record would be dropped here,
+    // before the caller's later evaluateSignals(...) call ever got a chance to mark it
+    // filled — a signal that plainly did fill, silently vanishing with no
+    // running/Telegram-fill ever recorded for it. So: don't drop a pending record that
+    // currentPrice already shows has reached its own entry, even if its level didn't
+    // survive the same tick — let evaluateSignals promote it normally afterward.
+    const isBuy = r.direction === 'buy'
+    const alreadyFilled = currentPrice != null && (isBuy ? currentPrice <= r.entry : currentPrice >= r.entry)
+    if (!stillCurrent && !alreadyFilled) records.splice(i, 1)
   }
 
   const openKeys = new Set(records.filter(isOpen).map((r) => r.key))

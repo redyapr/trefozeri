@@ -509,10 +509,12 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
     }
   })
 
-  await t.test('BTCUSD never sends to Telegram, even for H1', async () => {
+  await t.test('BTCUSD sends no new-signal message on a weekday, even for H1 (see the dedicated weekend-gating tests below)', async () => {
     const { sent, restore } = mockTelegram()
     try {
-      const seriesByTf = { H1: seriesWithLowPivot(60000) }
+      const base = seriesWithLowPivot(60000)
+      const weekday = Date.UTC(2026, 7, 12, 12, 0, 0) // Wednesday
+      const seriesByTf = { H1: base.map((c, i) => ({ ...c, time: weekday - (base.length - i) * 3600000 })) }
       const history = []
       await updateSignalHistoryForSymbol(history, 'BTCUSD', seriesByTf)
       assert.equal(sent.length, 0)
@@ -611,6 +613,49 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
 
       assert.equal(sent.length, 2, 'open + fill — fills are never suppressed by market-closed, only new signals')
       assert.equal(sent[1].text, '🟡 ENTRY FILLED')
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('a pending SELL that fills exactly as its own resistance breaks is promoted, not silently dropped', async () => {
+    // Reproduces a real production bug: a SELL entry sits right at a resistance level,
+    // so price reaching that entry (rallying up to it) and price breaking that same
+    // resistance (closing above it) are, for a level right at the fill point, often
+    // the very same candle. recordSignals used to drop a still-`pending` record
+    // whenever its level no longer matched any of the tick's fresh signals (the broken
+    // resistance flips to a different category, RBS) — before evaluateSignals ever got
+    // a chance to mark the fill, silently vanishing a signal that, from the price
+    // action, plainly did fill. recordSignals now takes currentPrice and skips that
+    // drop for a pending record whose own entry currentPrice already shows was reached
+    // (see its own comment) — evaluateSignals then promotes it normally afterward.
+    const { restore } = mockTelegram()
+    try {
+      const base = seriesWithHighPivot(4300) // forms a Resistance pivot
+      const weekday = Date.UTC(2026, 7, 12, 12, 0, 0) // Wednesday — market open
+      const openSeries = { H1: base.map((c, i) => ({ ...c, time: weekday - (base.length - i) * 3600000 })) }
+      const history = []
+      await updateSignalHistoryForSymbol(history, 'XAUUSD', openSeries)
+
+      const pending = history.find((r) => r.tf === 'H1' && r.direction === 'sell')
+      assert.ok(pending, 'expected a pending SELL off the resistance pivot')
+
+      // Next tick: a strong close well above the resistance both breaks it (flips it
+      // to RBS in detectLevels' state machine, a different category/key entirely) and
+      // reaches the sell entry itself (breaking a resistance means closing above it).
+      const breakoutTime = weekday + openSeries.H1.length * 3600000
+      const breakoutClose = pending.entry + 20
+      const breakoutSeries = {
+        H1: [
+          ...openSeries.H1,
+          candle(breakoutTime, breakoutClose - 2, breakoutClose + 3, breakoutClose - 3, breakoutClose),
+        ],
+      }
+      await updateSignalHistoryForSymbol(history, 'XAUUSD', breakoutSeries)
+
+      const record = history.find((r) => r.key === pending.key)
+      assert.ok(record, 'the original record must still exist — not silently dropped')
+      assert.notEqual(record.status, 'pending', 'must have been evaluated (running, or fell straight through to a close), not left behind')
     } finally {
       restore()
     }

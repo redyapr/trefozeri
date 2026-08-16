@@ -389,7 +389,7 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
     const higherTfZones = TIMEFRAMES.slice(tfIndex + 1).flatMap((tf) => zonesByTimeframe[tf.key]?.zones ?? [])
     const signals = buildSignals(result.zones, currentPrice, higherTfZones)
     for (const s of signals) signalByKey.set(keyFor(symbolKey, tfKey, s), s)
-    added.push(...recordSignals(history, symbolKey, tfKey, signals))
+    added.push(...recordSignals(history, symbolKey, tfKey, signals, currentPrice))
   }
 
   const { filled, closed } = evaluateSignals(history, symbolKey, currentPrice)
