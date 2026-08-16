@@ -226,6 +226,10 @@ export async function sendTelegramMessage(text, replyToMessageId, chatId = proce
         chat_id: chatId,
         text,
         parse_mode: 'HTML',
+        // The signal message's title links to the dashboard (see buildNewSignalMessage)
+        // — without this, Telegram would attach a big preview card under every one of
+        // them, dwarfing the actual <pre> content. Harmless when there's no link at all.
+        link_preview_options: { is_disabled: true },
         // allow_sending_without_reply: the original message could in principle have
         // been deleted from the chat since — fall back to a plain message rather than
         // failing the notification outright.
@@ -256,7 +260,13 @@ export async function editTelegramMessage(text, messageId, chatId = process.env.
     const res = await fetch(`https://api.telegram.org/bot${token}/editMessageText`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, message_id: messageId, text, parse_mode: 'HTML' }),
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        text,
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+      }),
     })
     const json = await res.json()
     if (!json.ok) {
@@ -323,7 +333,9 @@ export async function sendAdminAlertDeduped(text, dedupKey = text) {
 // in the same column — only readable as a fixed-width block, hence the <pre> wrapper
 // below (Telegram's normal proportional font would make manual padding meaningless).
 function alignRows(rows) {
-  const labelWidth = Math.max(...rows.map(([label]) => label.length))
+  // +1 so there's always at least one space before the ":", even for the widest label
+  // (which would otherwise butt right up against it with zero padding).
+  const labelWidth = Math.max(...rows.map(([label]) => label.length)) + 1
   return rows.map(([label, value]) => `${label.padEnd(labelWidth)}: ${value}`).join('\n')
 }
 

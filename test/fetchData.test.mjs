@@ -20,6 +20,7 @@ const {
   withRetry,
   fetchWithFallback,
   sendTelegramMessage,
+  editTelegramMessage,
   sendAdminAlert,
   sendAdminAlertDeduped,
   getFailures,
@@ -185,26 +186,27 @@ test('buildNewSignalMessage', async (t) => {
       strengthLabel: 'Medium',
     }
     const msg = buildNewSignalMessage('XAUUSD', [signal])
-    // Longest label here is "Price" (5 chars) — every other label pads out to match.
-    assert.match(msg, /Zone : Support \(Medium\)/)
-    assert.match(msg, /Price: 4301/)
-    assert.match(msg, /SL   : 4296\.5/)
-    assert.match(msg, /TP1  : 4307\.8 \(1\.5R\)/)
-    assert.match(msg, /TP2  : 4312\.3 \(2\.5R\)/)
+    // Longest label here is "Price" (5 chars) — every label pads to 6 (+1) so there's
+    // always at least one space before the ":", even for the widest one.
+    assert.match(msg, /Zone  : Support \(Medium\)/)
+    assert.match(msg, /Price : 4301/)
+    assert.match(msg, /SL    : 4296\.5/)
+    assert.match(msg, /TP1   : 4307\.8 \(1\.5R\)/)
+    assert.match(msg, /TP2   : 4312\.3 \(2\.5R\)/)
   })
 
   await t.test('flags a Golden Zone (Strong) confluence level in the title and zone line', () => {
     const strong = { tf: 'H1', direction: 'buy', category: 'Support', entry: 4301, sl: 4296.5, tp: [], strengthLabel: 'Strong' }
     const msg = buildNewSignalMessage('XAUUSD', [strong])
     assert.match(msg, /⭐ Golden Zone/)
-    assert.match(msg, /Zone : Support \(Strong\)/)
+    assert.match(msg, /Zone  : Support \(Strong\)/)
   })
 
   await t.test('a non-golden level shows Medium and no star', () => {
     const medium = { tf: 'H1', direction: 'buy', category: 'Support', entry: 4301, sl: 4296.5, tp: [], strengthLabel: 'Medium' }
     const msg = buildNewSignalMessage('XAUUSD', [medium])
     assert.doesNotMatch(msg, /⭐/)
-    assert.match(msg, /Zone : Support \(Medium\)/)
+    assert.match(msg, /Zone  : Support \(Medium\)/)
   })
 
   await t.test('prices drop a trailing .0, TPs are numbered in order', () => {
@@ -221,17 +223,17 @@ test('buildNewSignalMessage', async (t) => {
       strengthLabel: 'Medium',
     }
     const msg = buildNewSignalMessage('XAUUSD', [signal])
-    assert.match(msg, /Price: 4301\n/)
-    assert.match(msg, /SL   : 4296\.5/)
-    assert.match(msg, /TP1  : 4307\.8 \(1\.5R\)/)
-    assert.match(msg, /TP2  : 4312\.3 \(2\.5R\)/)
+    assert.match(msg, /Price : 4301\n/)
+    assert.match(msg, /SL    : 4296\.5/)
+    assert.match(msg, /TP1   : 4307\.8 \(1\.5R\)/)
+    assert.match(msg, /TP2   : 4312\.3 \(2\.5R\)/)
   })
 
   await t.test('a multi-member group uses the earliest timeframe (TF_ORDER) as primary', () => {
     const h4 = { tf: 'H4', direction: 'buy', category: 'Support', entry: 999, sl: 990, tp: [], strengthLabel: 'Medium' }
     const h1 = { tf: 'H1', direction: 'buy', category: 'Support', entry: 4301, sl: 4296.5, tp: [], strengthLabel: 'Medium' }
     const msg = buildNewSignalMessage('XAUUSD', [h4, h1]) // passed out of order on purpose
-    assert.match(msg, /Price: 4301/, 'H1 (earlier in TF_ORDER) should be used, not H4')
+    assert.match(msg, /Price : 4301/, 'H1 (earlier in TF_ORDER) should be used, not H4')
   })
 })
 
@@ -417,6 +419,54 @@ test('sendTelegramMessage', async (t) => {
       assert.equal(sent[0].chat_id, 'some-other-chat')
     } finally {
       restore()
+    }
+  })
+
+  await t.test('always disables link previews — a signal message\'s title link would otherwise attach a big preview card', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      await sendTelegramMessage('hello')
+      assert.deepEqual(sent[0].link_preview_options, { is_disabled: true })
+    } finally {
+      restore()
+    }
+  })
+})
+
+test('editTelegramMessage', async (t) => {
+  await t.test('no-ops (returns false, makes no request) when the token/chat id/messageId are missing', async () => {
+    const savedToken = process.env.TELEGRAM_BOT_TOKEN
+    delete process.env.TELEGRAM_BOT_TOKEN
+    const { sent, restore } = mockTelegram()
+    try {
+      assert.equal(await editTelegramMessage('hello', 1), false)
+      assert.equal(sent.length, 0)
+    } finally {
+      process.env.TELEGRAM_BOT_TOKEN = savedToken
+      restore()
+    }
+  })
+
+  await t.test('sends the message_id + text, with link previews disabled, and returns true on success', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const result = await editTelegramMessage('updated text', 123)
+      assert.equal(result, true)
+      assert.equal(sent[0].message_id, 123)
+      assert.equal(sent[0].text, 'updated text')
+      assert.deepEqual(sent[0].link_preview_options, { is_disabled: true })
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('returns false (swallowed) when Telegram rejects the edit, e.g. the message was deleted', async () => {
+    const original = global.fetch
+    global.fetch = async () => ({ ok: true, json: async () => ({ ok: false, description: 'message to edit not found' }) })
+    try {
+      assert.equal(await editTelegramMessage('hello', 999), false)
+    } finally {
+      global.fetch = original
     }
   })
 })
