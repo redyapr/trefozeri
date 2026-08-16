@@ -390,7 +390,7 @@ test('SL sizing edge cases (via buildSignals -> buildSignalForZone -> structural
     const zone = zoneWith({ atr: 3, structureAnchor: 4295.8 }) // basically no wick beyond the level
     const [signal] = buildSignals([zone], 4300)
     const distance = Math.abs(signal.entry - signal.sl)
-    assert.ok(distance >= 3 * 0.3 - 1e-9, `SL distance ${distance} should be floored near 0.3x ATR`)
+    assert.ok(distance >= 3 * 0.5 - 1e-9, `SL distance ${distance} should be floored near 0.5x ATR`)
   })
 })
 

@@ -39,7 +39,11 @@ const ZONE_HALF_WIDTH_RATIO = 0.15
 // fixed volatility distance that ignores what the candles actually did at the level.
 // Still floored and capped by ATR so a razor-thin wick or a freak spike can't push the
 // SL to either extreme.
-const SL_ATR_FLOOR_MULT = 0.3 // never tighter than this even if the wick sat right on the level
+// 0.3 (the original value) meant a floored SL could be tighter than a single H1
+// candle's own average range (ATR) — plain noise, not a real invalidation, could then
+// plausibly sweep it. 0.5 still allows a genuinely tight structural wick to produce a
+// tight SL, just no longer tighter than half an average candle's worth of room.
+const SL_ATR_FLOOR_MULT = 0.5 // never tighter than this even if the wick sat right on the level
 const SL_ATR_CAP_MULT = 1.5 // never wider than this even if the wick spiked hard
 const SL_STRUCTURE_BUFFER_RATIO = 0.15 // extra room beyond the wick itself, as a fraction of ATR
 
