@@ -16,7 +16,7 @@
 // stateless CI runs and every visitor to the site fetches the same file.
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { detectLevels, buildSignals, annotateGoldenZones } from '../src/lib/srDetector.js'
+import { detectLevels, buildSignals, annotateGoldenZones, isPriceStagnant } from '../src/lib/srDetector.js'
 import {
   recordSignals,
   evaluateSignals,
@@ -642,7 +642,10 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
     // buildSignals in srDetector.js). Kept in sync with the same logic in main.js.
     const tfIndex = TIMEFRAMES.findIndex((tf) => tf.key === tfKey)
     const higherTfZones = TIMEFRAMES.slice(tfIndex + 1).flatMap((tf) => zonesByTimeframe[tf.key]?.zones ?? [])
-    const signals = buildSignals(result.zones, currentPrice, higherTfZones)
+    // Same reasoning as main.js: a stagnant timeframe's ATR is computed from
+    // near-frozen candles, so any signal built from it has a fabricated (razor-thin)
+    // SL and an absurd R-multiple — never record those into the shared track record.
+    const signals = isPriceStagnant(seriesByTf[tfKey]) ? [] : buildSignals(result.zones, currentPrice, higherTfZones)
     for (const s of signals) signalByKey.set(keyFor(symbolKey, tfKey, s), s)
     added.push(...recordSignals(history, symbolKey, tfKey, signals, currentPrice))
   }
@@ -661,7 +664,11 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
     const currentDate = currentTime != null ? new Date(currentTime) : new Date()
     const skipNewSignals =
       // XAUUSD: don't open new signals off stale weekend candles while gold's own
-      // market is actually closed (Fri 22:00 UTC -> Sun 22:00 UTC).
+      // market is actually closed (Fri 22:00 UTC -> Sun 22:00 UTC). A holiday closure
+      // on an otherwise normal weekday isn't covered by this calendar rule, but doesn't
+      // need its own check here either — `added` above is already empty for a stagnant
+      // timeframe (see the isPriceStagnant gate on buildSignals), so there's nothing
+      // for notifyNewSignals to send in that case regardless of this flag.
       (symbolKey === 'XAUUSD' && isGoldMarketClosed(currentDate)) ||
       // BTCUSD trades 24/7, so there's nothing to gate on market hours — instead it's
       // deliberately weekend-only (Sat/Sun), the two days gold's own channel is quiet.

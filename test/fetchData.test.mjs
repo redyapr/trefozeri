@@ -797,6 +797,48 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
   })
 })
 
+// Regression test for a real production bug: a real, older Support pivot survived a
+// frozen (closed-market) tail (see srDetector.test.mjs), but the signal built from it
+// still sized its SL off the *current* ATR — computed from that same frozen tail — so
+// even a genuinely real level got a razor-thin SL and an absurd ~30R "reward". Neither
+// the dashboard nor the shared track record should ever record a signal like that.
+test('updateSignalHistoryForSymbol: never records/notifies a signal built on stagnant (frozen-tail) data', async (t) => {
+  function frozenCandles(base, count, startTime) {
+    const candles = []
+    for (let i = 0; i < count; i++) {
+      const jitter = (i % 2 === 0 ? 1 : -1) * 0.05
+      candles.push(candle(startTime + i, base, base + 0.2, base - 0.2, base + jitter))
+    }
+    return candles
+  }
+
+  await t.test('a real pivot behind a long frozen tail still produces no signals (SL sizing off frozen-tail ATR would be nonsense)', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const real = seriesWithLowPivot(4300) // a genuine Support pivot at 4301
+      const tail = frozenCandles(4303, 30, real.length) // near-frozen, as a closed market would return
+      const history = []
+      await updateSignalHistoryForSymbol(history, 'XAUUSD', { H1: [...real, ...tail] })
+      assert.equal(sent.length, 0, 'no new-signal Telegram post')
+      assert.equal(history.length, 0, 'no pending/running record added to the shared track record')
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('once price is moving again (no frozen tail), the same real pivot does produce a signal', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const history = []
+      await updateSignalHistoryForSymbol(history, 'XAUUSD', { H1: seriesWithLowPivot(4300) })
+      assert.equal(sent.length, 1)
+      assert.equal(history.length, 1)
+    } finally {
+      restore()
+    }
+  })
+})
+
 test('toTwelveDataDatetime / parseUtc round-trip', async (t) => {
   await t.test('toTwelveDataDatetime formats a UTC epoch as "YYYY-MM-DD HH:mm:ss"', () => {
     const ms = Date.UTC(2026, 7, 15, 9, 5, 3) // 2026-08-15 09:05:03 UTC

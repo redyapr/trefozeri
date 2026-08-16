@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { detectLevels, annotateGoldenZones, buildSignals } from '../src/lib/srDetector.js'
+import { detectLevels, annotateGoldenZones, buildSignals, isPriceStagnant } from '../src/lib/srDetector.js'
 
 function candle(t, o, h, l, c) {
   return { time: t, open: o, high: h, low: l, close: c }
@@ -130,18 +130,18 @@ test('detectLevels: pivot state machine', async (t) => {
 // ~0.86 for this price range) produced a "Support" and a "Resistance" pivot barely 0.13
 // apart — visually overlapping on the chart — because findBodyPivots accepted a
 // candidate as a pivot even when it beat its neighbors by a razor-thin margin.
-test('detectLevels: does not fabricate zones from near-frozen (closed-market) data', async (t) => {
-  // Mirrors the real weekend XAUUSD feed: open pinned, close jittering by ~0.1 total —
-  // an order of magnitude below any sane breakout threshold for this price range.
-  function frozenCandles(base, count, startTime = 0) {
-    const candles = []
-    for (let i = 0; i < count; i++) {
-      const jitter = (i % 2 === 0 ? 1 : -1) * 0.05
-      candles.push(candle(startTime + i, base, base + 0.2, base - 0.2, base + jitter))
-    }
-    return candles
+// Mirrors the real weekend XAUUSD feed: open pinned, close jittering by ~0.1 total —
+// an order of magnitude below any sane breakout threshold for this price range.
+function frozenCandles(base, count, startTime = 0) {
+  const candles = []
+  for (let i = 0; i < count; i++) {
+    const jitter = (i % 2 === 0 ? 1 : -1) * 0.05
+    candles.push(candle(startTime + i, base, base + 0.2, base - 0.2, base + jitter))
   }
+  return candles
+}
 
+test('detectLevels: does not fabricate zones from near-frozen (closed-market) data', async (t) => {
   await t.test('a fully frozen series never fabricates a Support/Resistance pair out of noise', () => {
     const candles = frozenCandles(4375, 40)
     const zones = detectLevels(candles, candles.at(-1).close)
@@ -166,6 +166,34 @@ test('detectLevels: does not fabricate zones from near-frozen (closed-market) da
     const resistance = zones.find((z) => z.category === 'Resistance')
     assert.ok(resistance, 'the earlier real pivot should still be found')
     assert.equal(resistance.price, base - 1, 'must not be a spurious pivot manufactured from the frozen tail\'s jitter')
+  })
+})
+
+// Root-cause detector shared by the market-status banner (main.js) and the cron's
+// new-signal gating (fetch-data.mjs) — reads "is price actually moving" directly from
+// the data, independent of any calendar rule, so a holiday closure on an otherwise
+// normal weekday is caught the same way the regular weekend closure is.
+test('isPriceStagnant', async (t) => {
+  await t.test('a frozen series (near-zero movement) is flagged stagnant', () => {
+    assert.equal(isPriceStagnant(frozenCandles(4375, 20)), true)
+  })
+
+  await t.test('a normally-moving series is not flagged stagnant', () => {
+    assert.equal(isPriceStagnant(seriesWithLowPivot(4300)), false)
+  })
+
+  await t.test('fewer candles than the lookback is never flagged (not enough data to judge)', () => {
+    assert.equal(isPriceStagnant(frozenCandles(4375, 5), 12), false)
+  })
+
+  await t.test('only the trailing `lookback` candles matter — real movement further back does not mask a stagnant tail', () => {
+    const real = seriesWithLowPivot(4375)
+    const tail = frozenCandles(4378, 20, real.length)
+    assert.equal(isPriceStagnant([...real, ...tail], 12), true)
+  })
+
+  await t.test('the lookback is configurable', () => {
+    assert.equal(isPriceStagnant(frozenCandles(4375, 6), 6), true)
   })
 })
 

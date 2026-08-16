@@ -66,6 +66,37 @@ function bodyLow(c) {
   return Math.min(c.open, c.close)
 }
 
+// How many trailing candles to look at when deciding "has price actually moved
+// lately" — 12 H1 candles (~12 hours) is long enough that a normal quiet stretch of
+// real trading doesn't false-positive, but short enough to flag a closed/illiquid
+// market within half a day rather than a full multi-day gap.
+const STAGNANT_LOOKBACK = 12
+// Same price-scaled floor convention as breakoutThreshold's own floor (see
+// detectLevels) — self-calibrates per instrument rather than a fixed pip value.
+const STAGNANT_PRICE_RATIO = 0.0002
+
+// Detects "price genuinely isn't moving" directly from the data, independent of any
+// calendar rule — isGoldMarketClosed (marketHours.js) only knows the *regular* weekend
+// closure, so an exchange holiday on an otherwise normal weekday (which still returns
+// near-frozen candles from the data provider) would otherwise go completely
+// undetected. Used both for the dashboard's market-status banner and to gate opening
+// new Telegram signals off data this stale, the same way isGoldMarketClosed already
+// does for the regular weekend closure.
+export function isPriceStagnant(candles, lookback = STAGNANT_LOOKBACK) {
+  if (!candles || candles.length < lookback) return false
+  const recent = candles.slice(-lookback)
+  const currentPrice = recent[recent.length - 1].close
+  let maxBody = -Infinity
+  let minBody = Infinity
+  for (const c of recent) {
+    const hi = bodyHigh(c)
+    const lo = bodyLow(c)
+    if (hi > maxBody) maxBody = hi
+    if (lo < minBody) minBody = lo
+  }
+  return maxBody - minBody < currentPrice * STAGNANT_PRICE_RATIO
+}
+
 // Swing detection on the candle *body*, not the wick, so one long shadow can't fake a level.
 // minAmplitude requires a candidate to stand out from *every* bar in its left/right
 // window by at least this much, not just be marginally more extreme — without it, a

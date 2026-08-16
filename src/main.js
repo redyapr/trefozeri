@@ -1,6 +1,6 @@
 import './style.css'
 import { TIMEFRAMES, SYMBOLS, fetchAllTimeframes } from './lib/twelveData.js'
-import { detectLevels, buildSignals, annotateGoldenZones } from './lib/srDetector.js'
+import { detectLevels, buildSignals, annotateGoldenZones, isPriceStagnant } from './lib/srDetector.js'
 import { fetchNewsCalendar, findUpcomingHighImpact } from './lib/newsCalendar.js'
 import { loadUiState, saveUiState } from './lib/uiState.js'
 import { renderZoneChart } from './lib/priceChart.js'
@@ -103,24 +103,44 @@ function renderSymbolTabs() {
 }
 
 function renderMarketStatusBanner() {
-  if (activeSymbol.key !== 'XAUUSD' || !isGoldMarketClosed()) {
+  if (activeSymbol.key !== 'XAUUSD') {
     marketStatusBannerEl.hidden = true
     return
   }
-  marketStatusBannerEl.hidden = false
-  // No explicit timeZone — toLocaleString reads the browser's own local zone, so
-  // this shows whenever the market actually reopens for the visitor, not a fixed
-  // "22:00 UTC" they'd have to convert themselves.
-  const reopenText = nextGoldReopenUtc().toLocaleString(undefined, {
-    weekday: 'long',
-    hour: '2-digit',
-    minute: '2-digit',
-    timeZoneName: 'short',
-  })
-  marketStatusBannerEl.innerHTML = `
-    <span class="market-status-banner-icon">🌙</span>
-    <span>Gold market is closed for the weekend (reopens ${reopenText}) — prices and signals may be stale.</span>
-  `
+
+  if (isGoldMarketClosed()) {
+    marketStatusBannerEl.hidden = false
+    // No explicit timeZone — toLocaleString reads the browser's own local zone, so
+    // this shows whenever the market actually reopens for the visitor, not a fixed
+    // "22:00 UTC" they'd have to convert themselves.
+    const reopenText = nextGoldReopenUtc().toLocaleString(undefined, {
+      weekday: 'long',
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZoneName: 'short',
+    })
+    marketStatusBannerEl.innerHTML = `
+      <span class="market-status-banner-icon">🌙</span>
+      <span>Gold market is closed for the weekend (reopens ${reopenText}) — prices and signals may be stale.</span>
+    `
+    return
+  }
+
+  // isGoldMarketClosed only knows the regular Fri 22:00 -> Sun 22:00 UTC weekend
+  // closure — it has no idea about an exchange holiday on an otherwise normal weekday.
+  // isPriceStagnant catches that directly from the data instead: near-zero movement
+  // over the last several H1 candles reads the same as "market's not really open"
+  // regardless of which day it happens to be.
+  if (isPriceStagnant(zonesByTimeframe.H1?.series)) {
+    marketStatusBannerEl.hidden = false
+    marketStatusBannerEl.innerHTML = `
+      <span class="market-status-banner-icon">🌙</span>
+      <span>Gold price looks stagnant (likely a market holiday) — prices and signals may be stale.</span>
+    `
+    return
+  }
+
+  marketStatusBannerEl.hidden = true
 }
 
 function renderDashboard() {
@@ -650,7 +670,12 @@ async function refreshData() {
       // buildSignals). H1 can borrow H4/D1 structure; D1 has nothing above it to borrow.
       const tfIndex = TIMEFRAMES.findIndex((tf) => tf.key === tfKey)
       const higherTfZones = TIMEFRAMES.slice(tfIndex + 1).flatMap((tf) => zonesByTimeframe[tf.key]?.zones ?? [])
-      result.signals = buildSignals(result.zones, currentPrice, higherTfZones)
+      // A stagnant timeframe (see isPriceStagnant) sizes its SL off an ATR computed
+      // from near-frozen candles — even a genuinely old, real level ends up with a
+      // razor-thin SL and an absurd R-multiple (e.g. 30R) that isn't a real trade idea.
+      // Zones still render (the chart/zone cards stay informative), just no actionable
+      // BUY/SELL LIMIT cards until price is actually moving again.
+      result.signals = isPriceStagnant(result.series) ? [] : buildSignals(result.zones, currentPrice, higherTfZones)
     }
     checkZonesAndSignals(symbol.key, symbol.label, zonesByTimeframe, currentPrice)
 
