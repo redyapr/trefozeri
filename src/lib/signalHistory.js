@@ -4,7 +4,13 @@
 // file, so everyone sees the same track record instead of each browser building up
 // its own private one. There is no client-side write path anymore: recording and
 // evaluating signals only ever happens in the cron job.
-import { getHistory as coreGetHistory, getStats as coreGetStats } from './signalHistoryCore.js'
+import {
+  getHistory as coreGetHistory,
+  getStats as coreGetStats,
+  getBreakdown as coreGetBreakdown,
+  buildHistoryCsv as coreBuildHistoryCsv,
+  getEquityCurve as coreGetEquityCurve,
+} from './signalHistoryCore.js'
 
 // import.meta.env is undefined outside a Vite build (e.g. this module loaded directly
 // under plain Node, as the test suite does) — without the fallback, merely importing
@@ -41,4 +47,16 @@ export function getHistory(symbolKey, tf) {
 
 export function getStats(symbolKey, tf) {
   return coreGetStats(records, symbolKey, tf)
+}
+
+export function getBreakdown(symbolKey, tf) {
+  return coreGetBreakdown(records, symbolKey, tf)
+}
+
+export function buildHistoryCsv(symbolKey) {
+  return coreBuildHistoryCsv(records, symbolKey)
+}
+
+export function getEquityCurve(symbolKey, tf) {
+  return coreGetEquityCurve(records, symbolKey, tf)
 }

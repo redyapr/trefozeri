@@ -1,4 +1,4 @@
-import { createChart, CandlestickSeries, ColorType, CrosshairMode } from 'lightweight-charts'
+import { createChart, CandlestickSeries, BaselineSeries, ColorType, CrosshairMode } from 'lightweight-charts'
 
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
@@ -163,5 +163,58 @@ export function renderZoneChart(container, candles, zones) {
   zones.forEach((zone) => series.attachPrimitive(new ZoneRectangle(zone, zoneColors(zone))))
   chart.timeScale().fitContent()
 
+  return chart
+}
+
+// Renders the track record's equity-curve trend (cumulative pips/$ over time, see
+// getEquityCurve in signalHistoryCore.js) — the one visual-trend view alongside the
+// modal's static win/loss/win-rate numbers. A BaselineSeries (not a plain line) so a
+// drawdown below zero is immediately visually distinct (red) from being ahead (green),
+// not just readable from the sign of the number. Deliberately static — this is a small
+// glanceable overview inside a modal, not an instrument meant to be zoomed/panned/
+// inspected like the main price chart, so scroll/scale/crosshair interaction is all
+// switched off. Same `.remove()`-before-redraw lifecycle as renderZoneChart above — the
+// caller owns disposing the previous instance.
+export function renderEquityChart(container, points) {
+  const chart = createChart(container, {
+    autoSize: true,
+    layout: {
+      background: { type: ColorType.Solid, color: cssVar('--panel') },
+      textColor: cssVar('--text-dim'),
+    },
+    grid: {
+      vertLines: { color: cssVar('--border-soft') },
+      horzLines: { color: cssVar('--border-soft') },
+    },
+    rightPriceScale: { borderColor: cssVar('--border') },
+    timeScale: { borderColor: cssVar('--border'), timeVisible: true },
+    crosshair: { mode: CrosshairMode.Hidden },
+    handleScroll: false,
+    handleScale: false,
+  })
+
+  const support = cssVar('--support')
+  const resistance = cssVar('--resistance')
+  const series = chart.addSeries(BaselineSeries, {
+    baseValue: { type: 'price', price: 0 },
+    topLineColor: support,
+    topFillColor1: hexToRgba(support, 0.28),
+    topFillColor2: hexToRgba(support, 0.05),
+    bottomLineColor: resistance,
+    bottomFillColor1: hexToRgba(resistance, 0.05),
+    bottomFillColor2: hexToRgba(resistance, 0.28),
+    lineWidth: 2,
+  })
+
+  // lightweight-charts requires strictly ascending, unique `time` values — two trades
+  // that closed within the same second (seconds-resolution, same as the candle chart's
+  // own Math.floor(c.time / 1000) above) would otherwise collide. Deduping to the last
+  // value for that second is the right choice here regardless: it's still the accurate
+  // cumulative total as of that moment.
+  const bySecond = new Map()
+  for (const p of points) bySecond.set(Math.floor(p.time / 1000), p.value)
+  series.setData([...bySecond.entries()].sort(([a], [b]) => a - b).map(([time, value]) => ({ time, value })))
+
+  chart.timeScale().fitContent()
   return chart
 }

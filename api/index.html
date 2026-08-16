@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#000000" />
+    <link rel="icon" href="/favicon.png" type="image/png" />
+    <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+    <title>TREFOZERI | Public Data API</title>
+    <meta
+      name="description"
+      content="TREFOZERI's underlying data is public static JSON: live XAUUSD/BTCUSD OHLC candles, the shared signal track record, and the news calendar — free to fetch, no API key or rate limit."
+    />
+    <meta name="author" content="TREFOZERI" />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://redyapr.github.io/trefozeri/api/" />
+
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-logo-badge">
+            <img src="/trefozeri-logo.png" alt="TREFOZERI" class="brand-logo" />
+          </span>
+          <div class="brand-text">
+            <span class="brand-title">TREFOZERI</span>
+          </div>
+        </div>
+      </header>
+
+      <main class="landing api-page">
+        <h1 class="landing-title">Public Data API</h1>
+        <p class="landing-lede">
+          Every number on the dashboard — price candles, S/R zones' source data, the signal track record, the news
+          calendar — comes from plain static JSON files this site already publishes to serve itself. There's no
+          separate "API" to opt into: what the dashboard fetches, you can fetch too.
+        </p>
+
+        <div class="api-facts">
+          <div class="api-fact"><strong>Auth</strong><span>None — no API key, no login</span></div>
+          <div class="api-fact"><strong>Rate limit</strong><span>None enforced, but cache client-side — see below</span></div>
+          <div class="api-fact"><strong>Format</strong><span>JSON, served with open CORS (static GitHub Pages hosting)</span></div>
+          <div class="api-fact"><strong>Update cadence</strong><span>~every 15 minutes, via a GitHub Actions cron</span></div>
+        </div>
+
+        <section class="api-section">
+          <h2>Base URL</h2>
+          <pre class="api-code">https://redyapr.github.io/trefozeri/data/</pre>
+          <p>Every endpoint below is a path under this base — e.g. <code>{base}/signal-history.json</code>.</p>
+        </section>
+
+        <section class="api-section">
+          <h2>GET /signal-history.json</h2>
+          <p>
+            The full shared signal track record — every BUY/SELL LIMIT signal ever recorded for XAUUSD and BTCUSD
+            (H1 only), from <code>pending</code> through to its outcome. This is the single source of truth behind
+            the dashboard's own "Signal Track Record" modal, its CSV export, and the daily/weekly Telegram reports —
+            nothing is filtered out before it reaches you.
+          </p>
+          <pre class="api-code">[
+  {
+    "key": "XAUUSD-H1-Support-buy",
+    "symbolKey": "XAUUSD",
+    "tf": "H1",
+    "category": "Support",       // "Support" | "Resistance" | "SBR" | "RBS"
+    "strengthLabel": "Strong",   // "Strong" (Golden/Diamond Zone) | "Medium" — omitted on older records
+    "direction": "buy",          // "buy" | "sell"
+    "entry": 4301.2,
+    "sl": 4295.8,
+    "tp": [ { "price": 4310.5, "rr": 1.7 }, ... ],
+    "openedAt": 1755300000000,   // epoch ms, when this row was first recorded
+    "filledAt": 1755301800000,   // present once status has passed "pending"
+    "status": "win",             // "pending" | "running" | "win" | "loss"
+    "closedAt": 1755309000000,   // present once status is "win"/"loss"
+    "exitPrice": 4310.6,
+    "hitTpIndex": 0               // which tp[] entry was reached, on a win
+  },
+  ...
+]</pre>
+          <p>
+            A row's life: <code>pending</code> (limit order placed, not yet reached) →
+            <code>running</code> (price reached <code>entry</code>) →
+            <code>win</code>/<code>loss</code> (price reached a <code>tp[]</code> level or <code>sl</code>). A
+            <code>pending</code> row can also simply disappear if its underlying level was invalidated before ever
+            filling — it was never a real trade. See <code>src/lib/signalHistoryCore.js</code> in the
+            <a href="https://github.com/redyapr/trefozeri" target="_blank" rel="noopener noreferrer">source repo</a>
+            for the exact state machine.
+          </p>
+        </section>
+
+        <section class="api-section">
+          <h2>GET /quote/{SYMBOL}-{TF}.json</h2>
+          <p>
+            OHLC candles behind the dashboard's own chart and zone detection.
+            <code>SYMBOL</code> is <code>XAUUSD</code> or <code>BTCUSD</code>; <code>TF</code> is <code>H1</code>,
+            <code>H4</code>, or <code>D1</code> — e.g. <code>/quote/XAUUSD-H1.json</code>.
+          </p>
+          <pre class="api-code">{
+  "status": "ok",
+  "values": [
+    { "datetime": "2026-08-15 19:50:41", "open": 4300, "high": 4301, "low": 4299, "close": 4300.5 },
+    ...
+  ]
+}</pre>
+          <p>
+            <code>datetime</code> is UTC, <code>"YYYY-MM-DD HH:mm:ss"</code> (no offset — always treat it as UTC, not
+            local time). Gold comes from Twelve Data; Bitcoin from Binance.US, reshaped into the same schema so both
+            symbols are consumable identically.
+          </p>
+        </section>
+
+        <section class="api-section">
+          <h2>GET /calendar.json</h2>
+          <p>
+            The upstream ForexFactory-style economic calendar feed, passed through mostly as-is. The dashboard's own
+            news banner only ever reads <code>country</code>, <code>impact</code>, <code>date</code>, and
+            <code>title</code> — filtered client-side to high-impact USD events — but every field the upstream feed
+            provides is present.
+          </p>
+          <pre class="api-code">[
+  { "title": "Non-Farm Payrolls", "country": "USD", "date": "2026-08-15T12:30:00-04:00", "impact": "High", ... },
+  ...
+]</pre>
+        </section>
+
+        <section class="api-section">
+          <h2>Usage notes</h2>
+          <ul class="landing-features">
+            <li>
+              <strong>Cache it.</strong> These files only actually change roughly every 15 minutes — polling more
+              often than that just re-fetches the same bytes. Match your own refresh interval to that cadence
+              (the dashboard itself does exactly this).
+            </li>
+            <li>
+              <strong>No SLA.</strong> This is a hobby project's own static export, not a maintained public API —
+              treat an occasional stale or missing file as expected, not a bug to report against uptime.
+            </li>
+            <li>
+              <strong>Free to use.</strong> Attribution (a link back to
+              <a href="https://redyapr.github.io/trefozeri/" target="_blank" rel="noopener noreferrer">the dashboard</a>)
+              is appreciated but not required.
+            </li>
+          </ul>
+        </section>
+
+        <a class="landing-cta" href="../">← Back to the dashboard</a>
+      </main>
+
+      <footer class="app-footer">
+        <p>
+          TREFOZERI's Support &amp; Resistance dashboard tracks <strong>XAUUSD (Gold)</strong> and
+          <strong>BTCUSD (Bitcoin)</strong>. Its underlying data is public — see above.
+        </p>
+      </footer>
+    </div>
+  </body>
+</html>

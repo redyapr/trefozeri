@@ -93,6 +93,13 @@ export function recordSignals(records, symbolKey, tf, signals, currentPrice) {
       symbolKey,
       tf,
       category: signal.category,
+      // 'Strong' (Golden/Diamond Zone) or 'Medium' — captured at signal-creation time
+      // (see annotateGoldenZones/buildSignals in srDetector.js) so the per-strength
+      // breakdown below can compare reliability without re-deriving it later, after the
+      // zone that produced it may no longer even exist. Records from before this field
+      // existed simply have it undefined — getBreakdown excludes those from the
+      // strength breakdown rather than guessing.
+      strengthLabel: signal.strengthLabel,
       direction: signal.direction,
       entry: signal.entry,
       sl: signal.sl,
@@ -219,6 +226,103 @@ export function getStats(records, symbolKey, tf) {
     pending,
     winRate: closed ? Math.round((wins / closed) * 100) : null,
   }
+}
+
+// Cumulative P&L over time, one point per closed (win/loss) trade, oldest first — the
+// data behind the track record modal's equity-curve chart (the one visual trend view;
+// getStats above is just a static snapshot). `value` is in pips for a symbol with a pip
+// convention (XAUUSD), a raw $ amount otherwise (BTCUSD) — same convention as
+// favorableMove/formatMove elsewhere in this file.
+export function getEquityCurve(records, symbolKey, tf) {
+  const pipSize = PIP_SIZES[symbolKey]
+  const list = getHistory(records, symbolKey, tf)
+    .filter((r) => r.status === 'win' || r.status === 'loss')
+    .sort((a, b) => a.closedAt - b.closedAt)
+  let cumulative = 0
+  return list.map((r) => {
+    cumulative += favorableMove(pipSize, r.entry, r.exitPrice, r.direction === 'buy')
+    return { time: r.closedAt, value: cumulative }
+  })
+}
+
+// Shared grouping helper for getBreakdown below — buckets closed records by whatever
+// `keyFn` returns, skipping a record entirely if it returns null/undefined (a group we
+// have no real label for, rather than lumping those into a misleading "Unknown" entry).
+function groupWinRate(list, keyFn) {
+  const groups = new Map()
+  for (const r of list) {
+    const key = keyFn(r)
+    if (key == null) continue
+    if (!groups.has(key)) groups.set(key, { key, wins: 0, losses: 0 })
+    const g = groups.get(key)
+    if (r.status === 'win') g.wins += 1
+    else g.losses += 1
+  }
+  return [...groups.values()]
+    .map((g) => ({ ...g, total: g.wins + g.losses, winRate: Math.round((g.wins / (g.wins + g.losses)) * 100) }))
+    .sort((a, b) => b.total - a.total)
+}
+
+// Win-rate breakdown by zone category (Support/Resistance/SBR/RBS) and by zone strength
+// (Strong = Golden/Diamond Zone, Medium = everything else) — surfaces which *kind* of
+// setup is actually reliable, rather than only ever seeing one aggregate win rate (see
+// getStats). Only closed (win/loss) records count; pending/running have no result yet.
+export function getBreakdown(records, symbolKey, tf) {
+  const list = getHistory(records, symbolKey, tf).filter((r) => r.status === 'win' || r.status === 'loss')
+  return {
+    byCategory: groupWinRate(list, (r) => r.category),
+    // strengthLabel is only present on records opened after that field was added (see
+    // recordSignals) — older records are silently excluded here, not miscounted.
+    byStrength: groupWinRate(list, (r) => r.strengthLabel ?? null),
+  }
+}
+
+// A field containing a comma, quote, or newline must be quoted (with internal quotes
+// doubled) per the CSV convention — none of our own fields are ever expected to
+// actually contain one, but escaping unconditionally is one line and never wrong.
+function csvField(value) {
+  const str = String(value ?? '')
+  return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str
+}
+
+// Builds a CSV export of one symbol's track record for offline analysis (Excel/Sheets)
+// — every non-pending record (pending/unfilled orders aren't "trades" yet, same filter
+// the history modal itself uses), most-recent-first. Pure string building — the actual
+// download (Blob + object URL) is a browser concern, left to the caller (main.js).
+export function buildHistoryCsv(records, symbolKey) {
+  const pipSize = PIP_SIZES[symbolKey]
+  const list = getHistory(records, symbolKey).filter((r) => r.status !== 'pending')
+  const header = [
+    'Opened',
+    'Filled',
+    'Closed',
+    'Timeframe',
+    'Category',
+    'Strength',
+    'Direction',
+    'Entry',
+    'SL',
+    'TP',
+    'Status',
+    'Exit Price',
+    'Result',
+  ]
+  const rows = list.map((r) => [
+    new Date(r.openedAt).toISOString(),
+    r.filledAt ? new Date(r.filledAt).toISOString() : '',
+    r.closedAt ? new Date(r.closedAt).toISOString() : '',
+    r.tf,
+    r.category,
+    r.strengthLabel ?? '',
+    r.direction === 'buy' ? 'BUY' : 'SELL',
+    formatPrice(r.entry),
+    formatPrice(r.sl),
+    r.tp.map((t) => formatPrice(t.price)).join(';'),
+    r.status,
+    r.exitPrice != null ? formatPrice(r.exitPrice) : '',
+    r.exitPrice != null ? formatMove(pipSize, r.entry, r.exitPrice, r.direction === 'buy') : '',
+  ])
+  return [header, ...rows].map((row) => row.map(csvField).join(',')).join('\n')
 }
 
 // 0.1 is the common gold-CFD broker convention (4400.00 -> 4400.10 = 1 pip) — adjust if

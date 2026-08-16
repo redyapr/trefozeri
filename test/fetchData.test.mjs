@@ -8,6 +8,12 @@ import path from 'node:path'
 process.env.TELEGRAM_BOT_TOKEN = 'fake-token'
 process.env.TELEGRAM_CHAT_ID = '-100public'
 process.env.TELEGRAM_PERSONAL_CHAT_ID = '999personal'
+// Every send in this suite is already a fake token against a mocked fetch (see
+// mockTelegram below) — no real network call is possible either way — so opting the
+// whole suite into telegramSendsAllowed() is safe. Individual tests for that gate
+// itself (see 'telegramSendsAllowed' below) unset this locally to exercise the
+// no-op-by-default path.
+process.env.ALLOW_TELEGRAM_SEND = 'true'
 
 const {
   buildNewSignalMessage,
@@ -23,6 +29,7 @@ const {
   editTelegramMessage,
   sendTelegramPhoto,
   sendTelegramMediaGroupPhotos,
+  telegramSendsAllowed,
   sendAdminAlert,
   sendAdminAlertDeduped,
   getFailures,
@@ -399,7 +406,59 @@ test('fetchWithFallback', async (t) => {
   })
 })
 
+test('telegramSendsAllowed', async (t) => {
+  // Every test here saves/restores both env vars around itself — the rest of this
+  // whole suite depends on ALLOW_TELEGRAM_SEND='true' (set at the top of this file)
+  // to actually exercise its mocked sends at all.
+  function withEnv(ci, allow, fn) {
+    const savedCi = process.env.CI
+    const savedAllow = process.env.ALLOW_TELEGRAM_SEND
+    if (ci == null) delete process.env.CI
+    else process.env.CI = ci
+    if (allow == null) delete process.env.ALLOW_TELEGRAM_SEND
+    else process.env.ALLOW_TELEGRAM_SEND = allow
+    try {
+      return fn()
+    } finally {
+      if (savedCi == null) delete process.env.CI
+      else process.env.CI = savedCi
+      if (savedAllow == null) delete process.env.ALLOW_TELEGRAM_SEND
+      else process.env.ALLOW_TELEGRAM_SEND = savedAllow
+    }
+  }
+
+  await t.test('false by default — neither CI nor ALLOW_TELEGRAM_SEND set (the safe default for a plain local run)', () => {
+    withEnv(null, null, () => assert.equal(telegramSendsAllowed(), false))
+  })
+
+  await t.test('true in CI — GitHub Actions sets CI=true on every job automatically, no workflow change needed', () => {
+    withEnv('true', null, () => assert.equal(telegramSendsAllowed(), true))
+  })
+
+  await t.test('true when explicitly opted into locally via ALLOW_TELEGRAM_SEND=true', () => {
+    withEnv(null, 'true', () => assert.equal(telegramSendsAllowed(), true))
+  })
+
+  await t.test('some other truthy-looking CI value (not the exact string "true") does not accidentally allow it', () => {
+    withEnv('1', null, () => assert.equal(telegramSendsAllowed(), false))
+  })
+})
+
 test('sendTelegramMessage', async (t) => {
+  await t.test('no-ops (returns null, makes no request) when ALLOW_TELEGRAM_SEND/CI is not set, even with a valid token/chat id', async () => {
+    const savedAllow = process.env.ALLOW_TELEGRAM_SEND
+    delete process.env.ALLOW_TELEGRAM_SEND
+    const { sent, restore } = mockTelegram()
+    try {
+      const result = await sendTelegramMessage('hello')
+      assert.equal(result, null)
+      assert.equal(sent.length, 0)
+    } finally {
+      process.env.ALLOW_TELEGRAM_SEND = savedAllow
+      restore()
+    }
+  })
+
   await t.test('no-ops (returns null, makes no request) when the token/chat id are missing', async () => {
     const savedToken = process.env.TELEGRAM_BOT_TOKEN
     delete process.env.TELEGRAM_BOT_TOKEN
@@ -463,6 +522,19 @@ test('sendTelegramMessage', async (t) => {
 })
 
 test('editTelegramMessage', async (t) => {
+  await t.test('no-ops (returns false, makes no request) when ALLOW_TELEGRAM_SEND/CI is not set', async () => {
+    const savedAllow = process.env.ALLOW_TELEGRAM_SEND
+    delete process.env.ALLOW_TELEGRAM_SEND
+    const { sent, restore } = mockTelegram()
+    try {
+      assert.equal(await editTelegramMessage('hello', 1), false)
+      assert.equal(sent.length, 0)
+    } finally {
+      process.env.ALLOW_TELEGRAM_SEND = savedAllow
+      restore()
+    }
+  })
+
   await t.test('no-ops (returns false, makes no request) when the token/chat id/messageId are missing', async () => {
     const savedToken = process.env.TELEGRAM_BOT_TOKEN
     delete process.env.TELEGRAM_BOT_TOKEN
@@ -501,6 +573,20 @@ test('editTelegramMessage', async (t) => {
 })
 
 test('sendTelegramPhoto', async (t) => {
+  await t.test('no-ops (returns null, makes no request) when ALLOW_TELEGRAM_SEND/CI is not set', async () => {
+    const savedAllow = process.env.ALLOW_TELEGRAM_SEND
+    delete process.env.ALLOW_TELEGRAM_SEND
+    const { sent, restore } = mockTelegram()
+    try {
+      const result = await sendTelegramPhoto(Buffer.from('fake png'), 'chart.png')
+      assert.equal(result, null)
+      assert.equal(sent.length, 0)
+    } finally {
+      process.env.ALLOW_TELEGRAM_SEND = savedAllow
+      restore()
+    }
+  })
+
   await t.test('no-ops (returns null, makes no request) when the token/chat id are missing', async () => {
     const savedChat = process.env.TELEGRAM_CHAT_ID
     delete process.env.TELEGRAM_CHAT_ID
@@ -554,6 +640,20 @@ test('sendTelegramPhoto', async (t) => {
 })
 
 test('sendTelegramMediaGroupPhotos', async (t) => {
+  await t.test('no-ops (returns []) when ALLOW_TELEGRAM_SEND/CI is not set', async () => {
+    const savedAllow = process.env.ALLOW_TELEGRAM_SEND
+    delete process.env.ALLOW_TELEGRAM_SEND
+    const { sent, restore } = mockTelegram()
+    try {
+      const result = await sendTelegramMediaGroupPhotos([{ buffer: Buffer.from('x'), filename: 'x.png' }])
+      assert.deepEqual(result, [])
+      assert.equal(sent.length, 0)
+    } finally {
+      process.env.ALLOW_TELEGRAM_SEND = savedAllow
+      restore()
+    }
+  })
+
   await t.test('no-ops (returns []) when the token/chat id are missing, or the item list is empty', async () => {
     const savedChat = process.env.TELEGRAM_CHAT_ID
     delete process.env.TELEGRAM_CHAT_ID
@@ -1319,26 +1419,30 @@ function runningRecord(overrides) {
 }
 
 test('buildDailyReportMessage', async (t) => {
-  await t.test('always includes both XAUUSD and BTCUSD sections, regardless of weekday — BTCUSD posts every day now', () => {
-    const weekday = wibTime(2026, 8, 11, 0, 0) // Tuesday
-    const weekend = wibTime(2026, 8, 15, 0, 0) // Saturday
-    for (const dayStart of [weekday, weekend]) {
-      const msg = buildDailyReportMessage([], dayStart)
-      assert.match(msg, /XAUUSD/)
-      assert.match(msg, /BTCUSD/)
-    }
+  await t.test('returns null when neither symbol has any activity that day — no "nothing happened" spam', () => {
+    const dayStart = wibTime(2026, 8, 11, 0, 0) // Tuesday
+    assert.equal(buildDailyReportMessage([], dayStart), null)
   })
 
-  await t.test('lists running signals, and an empty-state when there are none', () => {
+  await t.test('includes only the symbol that actually had activity, omitting the other entirely', () => {
+    const dayStart = wibTime(2026, 8, 11, 0, 0)
+    const history = [runningRecord({ symbolKey: 'XAUUSD', category: 'Resistance', direction: 'sell', entry: 4350 })]
+    const msg = buildDailyReportMessage(history, dayStart)
+    assert.match(msg, /XAUUSD/)
+    assert.doesNotMatch(msg, /BTCUSD/)
+  })
+
+  await t.test('lists running signals, with no "Closed today" section at all when nothing closed', () => {
     const dayStart = wibTime(2026, 8, 11, 0, 0)
     const history = [runningRecord({ category: 'Resistance', direction: 'sell', entry: 4350 })]
     const msg = buildDailyReportMessage(history, dayStart)
     assert.match(msg, /Running \(1\):/)
     assert.match(msg, /SELL Resistance @ 4350/)
-    assert.match(msg, /No signals closed today\./)
+    assert.doesNotMatch(msg, /Closed today/)
+    assert.doesNotMatch(msg, /No signals closed today/)
   })
 
-  await t.test('lists closed trades with win\\/loss lines, win rate, and net', () => {
+  await t.test('lists closed trades with win\\/loss lines, win rate, and net, with no "Running" block at all when nothing is running', () => {
     const dayStart = wibTime(2026, 8, 11, 0, 0)
     const history = [
       closedRecord({ status: 'win', entry: 4300, exitPrice: 4320, hitTpIndex: 0, closedAt: dayStart + 1000 }),
@@ -1349,29 +1453,46 @@ test('buildDailyReportMessage', async (t) => {
     assert.match(msg, /✅ BUY Support @ 4300 → TP1 HIT \+200 pips/)
     assert.match(msg, /❌ BUY Support @ 4300 → SL HIT -100 pips/)
     assert.match(msg, /Win rate today: 50% \(1W \/ 1L\) · Net: \+100 pips/)
+    assert.doesNotMatch(msg, /Running/)
+    assert.doesNotMatch(msg, /No running signals/)
   })
 
-  await t.test('excludes records outside the day window and from other timeframes', () => {
+  await t.test('shows both blocks, correctly separated, when both running and closed are non-empty', () => {
+    const dayStart = wibTime(2026, 8, 11, 0, 0)
+    const history = [
+      runningRecord({ category: 'Resistance', direction: 'sell', entry: 4350 }),
+      closedRecord({ status: 'win', entry: 4300, exitPrice: 4320, hitTpIndex: 0, closedAt: dayStart + 1000 }),
+    ]
+    const msg = buildDailyReportMessage(history, dayStart)
+    assert.match(msg, /Running \(1\):\n• SELL Resistance @ 4350\n\nClosed today \(1\):/)
+  })
+
+  await t.test('excludes records outside the day window and from other timeframes — treated the same as no activity', () => {
     const dayStart = wibTime(2026, 8, 11, 0, 0)
     const history = [
       closedRecord({ closedAt: dayStart - 1 }), // just before the window
       closedRecord({ closedAt: dayStart + DAY_MS }), // the exclusive end
       closedRecord({ tf: 'H4', closedAt: dayStart + 1000 }), // wrong timeframe, never posted to Telegram
     ]
-    const msg = buildDailyReportMessage(history, dayStart)
-    assert.match(msg, /No signals closed today\./)
+    assert.equal(buildDailyReportMessage(history, dayStart), null)
   })
 })
 
 test('buildWeeklyReportMessage', async (t) => {
-  await t.test('always includes both XAUUSD and BTCUSD sections, regardless of weekday', () => {
+  await t.test('returns null when neither symbol closed anything all week — no "nothing happened" spam', () => {
     const weekStart = wibTime(2026, 8, 10, 0, 0) // Monday
-    const msg = buildWeeklyReportMessage([], weekStart)
-    assert.match(msg, /XAUUSD/)
-    assert.match(msg, /BTCUSD/)
+    assert.equal(buildWeeklyReportMessage([], weekStart), null)
   })
 
-  await t.test('shows "No closed trades" for a quiet day, and totals the days that had activity', () => {
+  await t.test('includes only the symbol that actually closed something, omitting the other entirely', () => {
+    const weekStart = wibTime(2026, 8, 10, 0, 0)
+    const history = [closedRecord({ symbolKey: 'XAUUSD', status: 'win', entry: 4300, exitPrice: 4320, closedAt: weekStart + 1000 })]
+    const msg = buildWeeklyReportMessage(history, weekStart)
+    assert.match(msg, /XAUUSD/)
+    assert.doesNotMatch(msg, /BTCUSD/)
+  })
+
+  await t.test('omits quiet days entirely (no placeholder line), and totals the days that had activity', () => {
     const weekStart = wibTime(2026, 8, 10, 0, 0) // Monday 10 Aug
     const history = [
       closedRecord({ status: 'win', entry: 4300, exitPrice: 4320, hitTpIndex: 0, closedAt: weekStart + 1000 }),
@@ -1380,19 +1501,15 @@ test('buildWeeklyReportMessage', async (t) => {
     const msg = buildWeeklyReportMessage(history, weekStart)
     assert.match(msg, /Mon 10 Aug: \+200 pips \(1W \/ 0L\)/)
     assert.match(msg, /Tue 11 Aug: -100 pips \(0W \/ 1L\)/)
-    assert.match(msg, /Wed 12 Aug: No closed trades/)
+    assert.doesNotMatch(msg, /Wed 12 Aug/)
+    assert.doesNotMatch(msg, /No closed trades/)
     assert.match(msg, /Total: \+100 pips · Win rate: 50% \(1W \/ 1L\)/)
-  })
-
-  await t.test('shows "No trades closed this week" when nothing closed all week', () => {
-    const weekStart = wibTime(2026, 8, 10, 0, 0)
-    const msg = buildWeeklyReportMessage([], weekStart)
-    assert.match(msg, /No trades closed this week\./)
   })
 
   await t.test('the header range covers the correct 7-day span', () => {
     const weekStart = wibTime(2026, 8, 10, 0, 0)
-    const msg = buildWeeklyReportMessage([], weekStart)
+    const history = [closedRecord({ status: 'win', entry: 4300, exitPrice: 4320, closedAt: weekStart + 1000 })]
+    const msg = buildWeeklyReportMessage(history, weekStart)
     assert.match(msg, /10 – 16 Aug 2026/)
   })
 })
@@ -1415,7 +1532,8 @@ test('maybeSendDailyReport', async (t) => {
     const { sent, restore } = mockTelegram()
     try {
       const state = {}
-      const result = await maybeSendDailyReport([], wibTime(2026, 8, 11, 0, 45), state)
+      const history = [closedRecord({ status: 'win', entry: 4300, exitPrice: 4320, closedAt: wibTime(2026, 8, 10, 14, 0) })]
+      const result = await maybeSendDailyReport(history, wibTime(2026, 8, 11, 0, 45), state)
       assert.equal(result, true)
       assert.equal(sent.length, 1)
     } finally {
@@ -1423,7 +1541,7 @@ test('maybeSendDailyReport', async (t) => {
     }
   })
 
-  await t.test('sends inside the window, reporting on yesterday (WIB) — always both symbols', async () => {
+  await t.test('sends inside the window, reporting on yesterday (WIB) — only the symbol that had activity', async () => {
     const { sent, restore } = mockTelegram()
     try {
       const state = {}
@@ -1441,7 +1559,7 @@ test('maybeSendDailyReport', async (t) => {
       assert.equal(result, true)
       assert.equal(sent.length, 1)
       assert.match(sent[0].text, /XAUUSD/)
-      assert.match(sent[0].text, /BTCUSD/)
+      assert.doesNotMatch(sent[0].text, /BTCUSD/)
       assert.match(sent[0].text, /TP1 HIT \+200 pips/)
       assert.equal(state.lastDailyReportDate, '2026-08-11')
     } finally {
@@ -1449,14 +1567,14 @@ test('maybeSendDailyReport', async (t) => {
     }
   })
 
-  await t.test('a Monday report (covering Sunday) still shows both symbols', async () => {
+  await t.test('nothing happened yesterday — state still advances (no re-check this hour), but no message is sent', async () => {
     const { sent, restore } = mockTelegram()
     try {
       const state = {}
       const result = await maybeSendDailyReport([], wibTime(2026, 8, 10, 0, 5), state) // Monday 00:05 WIB
-      assert.equal(result, true)
-      assert.match(sent[0].text, /BTCUSD/)
-      assert.match(sent[0].text, /XAUUSD/)
+      assert.equal(result, true, 'state changed even though nothing was sent')
+      assert.equal(sent.length, 0)
+      assert.equal(state.lastDailyReportDate, '2026-08-10')
     } finally {
       restore()
     }
@@ -1488,7 +1606,7 @@ test('maybeSendWeeklyReport', async (t) => {
     }
   })
 
-  await t.test('sends on Monday inside the window, covering the just-finished Mon-Sun week', async () => {
+  await t.test('sends on Monday inside the window as ONE message: report text as the caption on the chart album', async () => {
     const { sent, restore } = mockTelegram()
     try {
       const state = {}
@@ -1504,18 +1622,21 @@ test('maybeSendWeeklyReport', async (t) => {
       ]
       const result = await maybeSendWeeklyReport(history, wibTime(2026, 8, 10, 0, 5), state) // Monday 00:05 WIB
       assert.equal(result, true)
-      assert.match(sent[0].text, /Weekly Report/)
-      assert.match(sent[0].text, /BTCUSD/)
-      assert.match(sent[0].text, /\+1200/)
       assert.equal(state.lastWeeklyReportDate, '2026-08-10')
 
-      // The chart images ("nempel di laporan mingguan yang sudah ada") go out right
-      // after, as one album: the performance chart plus however many trade-log pages.
-      assert.equal(sent.length, 2)
-      const media = JSON.parse(sent[1].get('media'))
+      // ONE Telegram call, not a separate text message followed by a separate album —
+      // the report text is the caption on the first (performance chart) image.
+      assert.equal(sent.length, 1)
+      const media = JSON.parse(sent[0].get('media'))
       assert.equal(media.length, 2) // 1 performance chart + 1 trade-log page (only one trade this week)
       assert.ok(media.every((m) => m.type === 'photo'))
-      const perfFile = sent[1].get(media[0].media.replace('attach://', ''))
+      assert.match(media[0].caption, /Weekly Report/)
+      assert.match(media[0].caption, /BTCUSD/)
+      assert.match(media[0].caption, /\+1200/)
+      assert.equal(media[0].parse_mode, 'HTML')
+      assert.equal(media[1].caption, undefined, 'only the first item carries the caption')
+
+      const perfFile = sent[0].get(media[0].media.replace('attach://', ''))
       assert.equal(perfFile.name, 'weekly-performance.png')
       // A real PNG, not a placeholder — starts with the PNG magic bytes.
       const perfBytes = Buffer.from(await perfFile.arrayBuffer())
@@ -1525,15 +1646,14 @@ test('maybeSendWeeklyReport', async (t) => {
     }
   })
 
-  await t.test('still sends the chart album (an empty-week performance chart + trade log) even with no closed trades', async () => {
+  await t.test('sends nothing at all (no text, no charts) when nothing closed all week', async () => {
     const { sent, restore } = mockTelegram()
     try {
       const state = {}
       const result = await maybeSendWeeklyReport([], wibTime(2026, 8, 10, 0, 5), state)
-      assert.equal(result, true)
-      assert.equal(sent.length, 2)
-      const media = JSON.parse(sent[1].get('media'))
-      assert.equal(media.length, 2)
+      assert.equal(result, true, 'state still advances so this Monday is not re-checked all hour')
+      assert.equal(sent.length, 0)
+      assert.equal(state.lastWeeklyReportDate, '2026-08-10')
     } finally {
       restore()
     }

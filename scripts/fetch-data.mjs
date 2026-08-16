@@ -210,6 +210,21 @@ export function toCandles(values) {
   }))
 }
 
+// Real sends are opt-IN, not opt-out: allowed in CI (GitHub Actions sets CI=true on
+// every job automatically — no workflow change needed) or when a developer explicitly
+// sets ALLOW_TELEGRAM_SEND=true locally. `npm run fetch:data` has no dry-run mode of its
+// own and .env carries the real bot token/chat id, so a plain local run — e.g. while
+// verifying an unrelated UI change — silently posts to the real public channel as a
+// side effect of whatever real market data it happens to fetch that moment. That's
+// exactly what produced a confusing pair of stray messages in the channel during this
+// project's own development (see the incident discussed around 2026-08-16/17) —
+// reverting data/signal-history.json afterward undoes the local record of it, but
+// can't un-send a message already posted. Forgetting to set anything now safely no-ops
+// instead of risking that again.
+export function telegramSendsAllowed() {
+  return process.env.CI === 'true' || process.env.ALLOW_TELEGRAM_SEND === 'true'
+}
+
 // Posts one message to `chatId` (defaults to the public signals channel), optionally
 // as a reply to an earlier message (used to thread a SL/TP result under the signal
 // that opened it). Returns the sent message's id (so it can later be replied to), or
@@ -217,7 +232,7 @@ export function toCandles(values) {
 // cron run.
 export async function sendTelegramMessage(text, replyToMessageId, chatId = process.env.TELEGRAM_CHAT_ID) {
   const token = process.env.TELEGRAM_BOT_TOKEN
-  if (!token || !chatId) return null
+  if (!token || !chatId || !telegramSendsAllowed()) return null
 
   try {
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -257,7 +272,7 @@ export async function sendTelegramMessage(text, replyToMessageId, chatId = proce
 // (message deleted, too old, etc.) is logged and swallowed, never thrown.
 export async function editTelegramMessage(text, messageId, chatId = process.env.TELEGRAM_CHAT_ID) {
   const token = process.env.TELEGRAM_BOT_TOKEN
-  if (!token || !chatId || !messageId) return false
+  if (!token || !chatId || !messageId || !telegramSendsAllowed()) return false
 
   try {
     const res = await fetch(`https://api.telegram.org/bot${token}/editMessageText`, {
@@ -292,7 +307,7 @@ export async function editTelegramMessage(text, messageId, chatId = process.env.
 // failure.
 export async function sendTelegramPhoto(buffer, filename, caption, chatId = process.env.TELEGRAM_CHAT_ID) {
   const token = process.env.TELEGRAM_BOT_TOKEN
-  if (!token || !chatId) return null
+  if (!token || !chatId || !telegramSendsAllowed()) return null
 
   try {
     const form = new FormData()
@@ -318,7 +333,7 @@ export async function sendTelegramPhoto(buffer, filename, caption, chatId = proc
 // actually sent (fewer than `items.length` if a chunk's request fails).
 export async function sendTelegramMediaGroupPhotos(items, chatId = process.env.TELEGRAM_CHAT_ID) {
   const token = process.env.TELEGRAM_BOT_TOKEN
-  if (!token || !chatId || !items.length) return []
+  if (!token || !chatId || !items.length || !telegramSendsAllowed()) return []
 
   const messageIds = []
   for (let i = 0; i < items.length; i += 10) {
@@ -329,7 +344,15 @@ export async function sendTelegramMediaGroupPhotos(items, chatId = process.env.T
       const media = chunk.map((item, idx) => {
         const attachKey = `file${i}_${idx}`
         form.append(attachKey, new Blob([item.buffer], { type: 'image/png' }), item.filename)
-        return { type: 'photo', media: `attach://${attachKey}`, ...(item.caption ? { caption: item.caption } : {}) }
+        // parse_mode only matters when there's a caption to render — the weekly
+        // report's own HTML (<b>...</b>) is passed as one item's caption (see
+        // sendWeeklyReport) so it needs the same HTML parsing sendTelegramMessage uses,
+        // or the tags would show up literally instead of rendering.
+        return {
+          type: 'photo',
+          media: `attach://${attachKey}`,
+          ...(item.caption ? { caption: item.caption, parse_mode: 'HTML' } : {}),
+        }
       })
       form.append('media', JSON.stringify(media))
       const res = await fetch(`https://api.telegram.org/bot${token}/sendMediaGroup`, { method: 'POST', body: form })
@@ -594,19 +617,26 @@ function reportExitLine(symbolKey, record) {
   return `${record.status === 'win' ? '✅' : '❌'} ${directionLabel(record)} ${record.category} @ ${formatPrice(record.entry)} → ${label} ${move}`
 }
 
+// Returns null (rather than an empty-looking section) when this symbol had neither a
+// running signal nor a closed trade that day — nothing to report, so it's omitted from
+// the message entirely instead of padding it out with "No running signals."/"No
+// signals closed today." noise. Same reasoning applies to each block individually: a
+// symbol with closes but nothing currently running skips the "Running" block entirely
+// rather than printing "Running (0): No running signals."
 function buildSymbolDailySection(symbolKey, history, dayStartMs, dayEndMs) {
   const running = getHistory(history, symbolKey, REPORT_TF).filter((r) => r.status === 'running')
   const closedList = getClosedBetween(history, symbolKey, REPORT_TF, dayStartMs, dayEndMs)
+  if (!running.length && !closedList.length) return null
 
-  const lines = [`<b>${symbolKey}</b>`, `Running (${running.length}):`]
+  const lines = [`<b>${symbolKey}</b>`]
   if (running.length) {
+    lines.push(`Running (${running.length}):`)
     for (const r of running) lines.push(`• ${directionLabel(r)} ${r.category} @ ${formatPrice(r.entry)}`)
-  } else {
-    lines.push('No running signals.')
   }
 
-  lines.push('', `Closed today (${closedList.length}):`)
   if (closedList.length) {
+    if (lines.length > 1) lines.push('') // blank separator only if the Running block precedes this
+    lines.push(`Closed today (${closedList.length}):`)
     for (const r of closedList) lines.push(reportExitLine(symbolKey, r))
     const wins = closedList.filter((r) => r.status === 'win').length
     const losses = closedList.length - wins
@@ -614,8 +644,6 @@ function buildSymbolDailySection(symbolKey, history, dayStartMs, dayEndMs) {
     const net = closedList.reduce((sum, r) => sum + favorableMove(pipSize, r.entry, r.exitPrice, r.direction === 'buy'), 0)
     const winRate = Math.round((wins / closedList.length) * 100)
     lines.push('', `Win rate today: ${winRate}% (${wins}W / ${losses}L) · Net: ${formatAmount(pipSize, net)}`)
-  } else {
-    lines.push('No signals closed today.')
   }
 
   return lines.join('\n')
@@ -626,13 +654,21 @@ function buildSymbolDailySection(symbolKey, history, dayStartMs, dayEndMs) {
 // scheduling/dedup logic in maybeSendDailyReport below. Always covers both symbols —
 // BTCUSD posts new signals every day now (see the skipNewSignals gating in
 // updateSignalHistoryForSymbol), not just weekends, so there's no quiet day left to
-// special-case out of this recap either.
+// special-case out of this recap either. Returns null (send nothing) if truly neither
+// symbol had any activity — a "here's your report: nothing happened" message every
+// single quiet day is just noise.
 export function buildDailyReportMessage(history, dayStartMs) {
   const dayEndMs = dayStartMs + DAY_MS
-  const sections = ['XAUUSD', 'BTCUSD'].map((symbolKey) => buildSymbolDailySection(symbolKey, history, dayStartMs, dayEndMs))
+  const sections = ['XAUUSD', 'BTCUSD']
+    .map((symbolKey) => buildSymbolDailySection(symbolKey, history, dayStartMs, dayEndMs))
+    .filter(Boolean)
+  if (!sections.length) return null
   return [`📊 <b>Daily Report : ${formatWibDate(dayStartMs)}</b>`, '', sections.join('\n\n')].join('\n')
 }
 
+// Returns null when nothing closed for this symbol all week — omitted from the message
+// entirely (see buildDailyReportMessage's identical reasoning above), rather than a
+// section that just says "No trades closed this week."
 function buildSymbolWeeklySection(symbolKey, history, weekStartMs) {
   const pipSize = PIP_SIZES[symbolKey]
   const lines = [`<b>${symbolKey}</b>`]
@@ -644,12 +680,9 @@ function buildSymbolWeeklySection(symbolKey, history, weekStartMs) {
     const dayStartMs = weekStartMs + i * DAY_MS
     const dayEndMs = dayStartMs + DAY_MS
     const closedList = getClosedBetween(history, symbolKey, REPORT_TF, dayStartMs, dayEndMs)
-    const dayLabel = formatWibDayShort(dayStartMs)
+    if (!closedList.length) continue // a quiet day isn't listed at all, not even a placeholder line
 
-    if (!closedList.length) {
-      lines.push(`${dayLabel}: No closed trades`)
-      continue
-    }
+    const dayLabel = formatWibDayShort(dayStartMs)
     const wins = closedList.filter((r) => r.status === 'win').length
     const losses = closedList.length - wins
     const net = closedList.reduce((sum, r) => sum + favorableMove(pipSize, r.entry, r.exitPrice, r.direction === 'buy'), 0)
@@ -660,21 +693,21 @@ function buildSymbolWeeklySection(symbolKey, history, weekStartMs) {
   }
 
   const totalClosed = totalWins + totalLosses
-  lines.push('')
-  lines.push(
-    totalClosed
-      ? `Total: ${formatAmount(pipSize, totalNet)} · Win rate: ${Math.round((totalWins / totalClosed) * 100)}% (${totalWins}W / ${totalLosses}L)`
-      : 'No trades closed this week.'
-  )
+  if (!totalClosed) return null
+
+  lines.push('', `Total: ${formatAmount(pipSize, totalNet)} · Win rate: ${Math.round((totalWins / totalClosed) * 100)}% (${totalWins}W / ${totalLosses}L)`)
   return lines.join('\n')
 }
 
 // weekStartMs is the Monday 00:00 WIB that starts the week being recapped (the report
 // itself is sent the *following* Monday, at 00:01 WIB — see maybeSendWeeklyReport).
+// Returns null if neither symbol closed anything all week — see
+// buildDailyReportMessage's identical reasoning.
 export function buildWeeklyReportMessage(history, weekStartMs) {
   const weekEndMs = weekStartMs + 6 * DAY_MS // last day of the week, not the exclusive end
   const rangeLabel = `${formatWibDayNum(weekStartMs)} – ${formatWibDateNoWeekday(weekEndMs)}`
-  const sections = ['XAUUSD', 'BTCUSD'].map((symbolKey) => buildSymbolWeeklySection(symbolKey, history, weekStartMs))
+  const sections = ['XAUUSD', 'BTCUSD'].map((symbolKey) => buildSymbolWeeklySection(symbolKey, history, weekStartMs)).filter(Boolean)
+  if (!sections.length) return null
   return [`📅 <b>Weekly Report : ${rangeLabel}</b>`, '', sections.join('\n\n')].join('\n')
 }
 
@@ -695,7 +728,11 @@ export async function maybeSendDailyReport(history, now, state) {
 
   const todayStartMs = wibMidnightUtcMs(wib.year, wib.month, wib.day)
   const yesterdayStartMs = todayStartMs - DAY_MS
-  await sendTelegramMessage(buildDailyReportMessage(history, yesterdayStartMs))
+  // null means neither symbol had any activity yesterday — skip sending a "nothing
+  // happened" message every quiet day, but still remember today's date below so this
+  // doesn't re-evaluate on every 15-minute tick within the same hour.
+  const message = buildDailyReportMessage(history, yesterdayStartMs)
+  if (message) await sendTelegramMessage(message)
   state.lastDailyReportDate = todayKey
   return true
 }
@@ -703,12 +740,13 @@ export async function maybeSendDailyReport(history, now, state) {
 const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
 // Builds the 7 day buckets (Monday..Sunday, WIB) the chart images are computed over,
-// and renders + sends them as one album attached to the weekly text report — the
-// "nempel di laporan mingguan yang sudah ada" ask from the design-preview discussion.
+// then sends the whole weekly report — reportText and both chart images — as ONE
+// Telegram message: reportText becomes the caption on the first (performance chart)
+// image in a single sendMediaGroup album, rather than a separate text message followed
+// by a separate image album (two chat bubbles for what's conceptually one report).
 // Best-effort like every other Telegram notification here: a rendering or send failure
-// is logged and swallowed, never allowed to fail the whole cron run (the text report
-// above has already gone out by the time this runs).
-async function sendWeeklyPerformanceCharts(history, weekStartMs) {
+// is logged and swallowed, never allowed to fail the whole cron run.
+async function sendWeeklyReport(reportText, history, weekStartMs) {
   try {
     const days = Array.from({ length: 7 }, (_, i) => {
       const dayStartMs = weekStartMs + i * DAY_MS
@@ -723,7 +761,7 @@ async function sendWeeklyPerformanceCharts(history, weekStartMs) {
     const tradeLogBuffers = renderWeeklyTradeLogCharts(data, rangeLabel)
 
     const items = [
-      { buffer: performanceBuffer, filename: 'weekly-performance.png' },
+      { buffer: performanceBuffer, filename: 'weekly-performance.png', caption: reportText },
       ...tradeLogBuffers.map((buffer, i) => ({ buffer, filename: `weekly-trade-log-${i + 1}.png` })),
     ]
     await sendTelegramMediaGroupPhotos(items)
@@ -743,8 +781,11 @@ export async function maybeSendWeeklyReport(history, now, state) {
 
   const todayStartMs = wibMidnightUtcMs(wib.year, wib.month, wib.day)
   const weekStartMs = todayStartMs - 7 * DAY_MS // last Monday 00:00 WIB
-  await sendTelegramMessage(buildWeeklyReportMessage(history, weekStartMs))
-  await sendWeeklyPerformanceCharts(history, weekStartMs)
+  // null means neither symbol closed anything all week — skip sending (and the chart
+  // images, which would just show an all-empty week) entirely, but still remember
+  // today's date below.
+  const message = buildWeeklyReportMessage(history, weekStartMs)
+  if (message) await sendWeeklyReport(message, history, weekStartMs)
   state.lastWeeklyReportDate = todayKey
   return true
 }

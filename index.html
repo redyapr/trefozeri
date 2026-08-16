@@ -158,7 +158,9 @@
         </p>
         <p>
           Want new signals pushed straight to you? Join the
-          <a href="https://t.me/trefozeri" target="_blank" rel="noopener noreferrer">Telegram channel</a>.
+          <a href="https://t.me/trefozeri" target="_blank" rel="noopener noreferrer">Telegram channel</a>. Prefer to
+          build your own? All the data behind this dashboard is public —
+          see the <a href="api/">API docs</a>.
         </p>
       </footer>
     </div>
@@ -167,7 +169,10 @@
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="history-title">
         <div class="modal-header">
           <h2 id="history-title">Signal Track Record</h2>
-          <button type="button" id="history-close" class="modal-close" aria-label="Close">×</button>
+          <div class="modal-header-actions">
+            <button type="button" id="history-export-btn" class="modal-export-btn" title="Export as CSV" aria-label="Export track record as CSV">⬇ CSV</button>
+            <button type="button" id="history-close" class="modal-close" aria-label="Close">×</button>
+          </div>
         </div>
         <div id="history-body" class="modal-body"></div>
       </div>

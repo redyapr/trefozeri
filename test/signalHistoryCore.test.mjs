@@ -8,6 +8,9 @@ import {
   getHistory,
   getClosedBetween,
   getStats,
+  getBreakdown,
+  buildHistoryCsv,
+  getEquityCurve,
   favorableMove,
   formatAmount,
   formatMove,
@@ -40,6 +43,12 @@ test('recordSignals', async (t) => {
     assert.equal(history.length, 1)
     assert.equal(history[0].status, 'pending')
     assert.equal(history[0].key, 'XAUUSD-H1-Support-buy')
+  })
+
+  await t.test('captures the signal\'s strengthLabel onto the new record, for the win-rate-by-strength breakdown', () => {
+    const history = []
+    recordSignals(history, 'XAUUSD', 'H1', [buySignal({ strengthLabel: 'Strong' })])
+    assert.equal(history[0].strengthLabel, 'Strong')
   })
 
   await t.test('does not duplicate an already-open signal on the next tick, but syncs its entry/SL/TP to the recalculation', () => {
@@ -363,6 +372,185 @@ test('getClosedBetween', async (t) => {
       { symbolKey: 'XAUUSD', tf: 'H4', status: 'win', closedAt: 100 },
     ]
     assert.equal(getClosedBetween(history, 'XAUUSD', 'H1', 0, 1000).length, 1)
+  })
+})
+
+function closedRecord(overrides) {
+  return {
+    symbolKey: 'XAUUSD',
+    tf: 'H1',
+    category: 'Support',
+    strengthLabel: 'Medium',
+    direction: 'buy',
+    entry: 100,
+    sl: 95,
+    tp: [{ price: 110, rr: 2 }],
+    openedAt: 0,
+    filledAt: 0,
+    status: 'win',
+    exitPrice: 110,
+    hitTpIndex: 0,
+    closedAt: 0,
+    ...overrides,
+  }
+}
+
+test('getBreakdown', async (t) => {
+  await t.test('groups win/loss by category, with a win rate per group', () => {
+    const history = [
+      closedRecord({ category: 'Support', status: 'win' }),
+      closedRecord({ category: 'Support', status: 'win' }),
+      closedRecord({ category: 'Support', status: 'loss' }),
+      closedRecord({ category: 'Resistance', status: 'loss' }),
+    ]
+    const { byCategory } = getBreakdown(history, 'XAUUSD')
+    const support = byCategory.find((g) => g.key === 'Support')
+    const resistance = byCategory.find((g) => g.key === 'Resistance')
+    assert.deepEqual(support, { key: 'Support', wins: 2, losses: 1, total: 3, winRate: 67 })
+    assert.deepEqual(resistance, { key: 'Resistance', wins: 0, losses: 1, total: 1, winRate: 0 })
+  })
+
+  await t.test('sorts groups by total closed trades, most first', () => {
+    const history = [
+      closedRecord({ category: 'RBS', status: 'win' }),
+      closedRecord({ category: 'Support', status: 'win' }),
+      closedRecord({ category: 'Support', status: 'loss' }),
+    ]
+    const { byCategory } = getBreakdown(history, 'XAUUSD')
+    assert.deepEqual(byCategory.map((g) => g.key), ['Support', 'RBS'])
+  })
+
+  await t.test('groups win/loss by strength label (Strong = Golden/Diamond Zone, Medium = everything else)', () => {
+    const history = [
+      closedRecord({ strengthLabel: 'Strong', status: 'win' }),
+      closedRecord({ strengthLabel: 'Strong', status: 'win' }),
+      closedRecord({ strengthLabel: 'Medium', status: 'loss' }),
+    ]
+    const { byStrength } = getBreakdown(history, 'XAUUSD')
+    const strong = byStrength.find((g) => g.key === 'Strong')
+    assert.equal(strong.winRate, 100)
+    assert.equal(strong.total, 2)
+  })
+
+  await t.test('excludes records with no strengthLabel from the strength breakdown, without miscounting them as a group', () => {
+    const history = [
+      closedRecord({ strengthLabel: undefined, status: 'win' }),
+      closedRecord({ strengthLabel: 'Strong', status: 'win' }),
+    ]
+    const { byStrength, byCategory } = getBreakdown(history, 'XAUUSD')
+    assert.equal(byStrength.reduce((sum, g) => sum + g.total, 0), 1, 'only the Strong-labeled record counts')
+    assert.equal(byCategory[0].total, 2, 'category breakdown is unaffected — every record has a category')
+  })
+
+  await t.test('ignores pending/running records — only closed trades have a result to break down', () => {
+    const history = [closedRecord({ status: 'pending' }), closedRecord({ status: 'running' })]
+    const { byCategory, byStrength } = getBreakdown(history, 'XAUUSD')
+    assert.deepEqual(byCategory, [])
+    assert.deepEqual(byStrength, [])
+  })
+
+  await t.test('filters by symbol and (optional) timeframe like getHistory/getStats', () => {
+    const history = [closedRecord({ symbolKey: 'XAUUSD' }), closedRecord({ symbolKey: 'BTCUSD' })]
+    const { byCategory } = getBreakdown(history, 'XAUUSD')
+    assert.equal(byCategory[0].total, 1)
+  })
+})
+
+test('getEquityCurve', async (t) => {
+  await t.test('one point per closed trade, oldest first, value is the running cumulative total', () => {
+    const history = [
+      closedRecord({ closedAt: 300, entry: 100, exitPrice: 110 }), // +100 pips (0.1 pip size), out of order on purpose
+      closedRecord({ closedAt: 100, entry: 100, exitPrice: 105 }), // +50 pips
+      closedRecord({ closedAt: 200, status: 'loss', entry: 100, exitPrice: 98 }), // -20 pips
+    ]
+    const curve = getEquityCurve(history, 'XAUUSD')
+    assert.deepEqual(
+      curve.map((p) => [p.time, p.value]),
+      [
+        [100, 50],
+        [200, 30],
+        [300, 130],
+      ]
+    )
+  })
+
+  await t.test('ignores pending/running records — no exit price to include yet', () => {
+    const history = [closedRecord({ status: 'pending', closedAt: undefined }), closedRecord({ status: 'running', closedAt: undefined })]
+    assert.deepEqual(getEquityCurve(history, 'XAUUSD'), [])
+  })
+
+  await t.test('BTCUSD accumulates in raw $, not pips', () => {
+    const history = [
+      closedRecord({ symbolKey: 'BTCUSD', closedAt: 100, entry: 65000, exitPrice: 66200 }),
+      closedRecord({ symbolKey: 'BTCUSD', closedAt: 200, status: 'loss', entry: 65000, exitPrice: 64800 }),
+    ]
+    const curve = getEquityCurve(history, 'BTCUSD')
+    assert.deepEqual(
+      curve.map((p) => p.value),
+      [1200, 1000]
+    )
+  })
+
+  await t.test('filters by symbol and (optional) timeframe like getHistory', () => {
+    const history = [closedRecord({ symbolKey: 'XAUUSD', tf: 'H1' }), closedRecord({ symbolKey: 'XAUUSD', tf: 'H4' })]
+    assert.equal(getEquityCurve(history, 'XAUUSD', 'H1').length, 1)
+  })
+
+  await t.test('an empty history returns an empty curve, not a throw', () => {
+    assert.deepEqual(getEquityCurve([], 'XAUUSD'), [])
+  })
+})
+
+test('buildHistoryCsv', async (t) => {
+  await t.test('header row lists every column', () => {
+    const csv = buildHistoryCsv([], 'XAUUSD')
+    assert.equal(csv, 'Opened,Filled,Closed,Timeframe,Category,Strength,Direction,Entry,SL,TP,Status,Exit Price,Result')
+  })
+
+  await t.test('one data row per non-pending record, most recent first', () => {
+    const history = [
+      closedRecord({ openedAt: 1000, filledAt: 2000, closedAt: 3000, status: 'win', entry: 4300, exitPrice: 4320, hitTpIndex: 0 }),
+      closedRecord({ openedAt: 500, status: 'pending', filledAt: 0, closedAt: 0 }),
+    ]
+    const csv = buildHistoryCsv(history, 'XAUUSD')
+    const lines = csv.split('\n')
+    assert.equal(lines.length, 2, 'header + 1 row — the pending record is excluded')
+    assert.match(
+      lines[1],
+      /^\d{4}-\d\d-\d\dT.*Z,\d{4}-\d\d-\d\dT.*Z,\d{4}-\d\d-\d\dT.*Z,H1,Support,Medium,BUY,4300,95,110,win,4320,\+200 pips$/
+    )
+  })
+
+  await t.test('a still-open (running) record has no Closed/Exit Price/Result, but is still included', () => {
+    const history = [closedRecord({ status: 'running', closedAt: undefined, exitPrice: undefined, hitTpIndex: undefined })]
+    const csv = buildHistoryCsv(history, 'XAUUSD')
+    const [, row] = csv.split('\n')
+    const cols = row.split(',')
+    assert.equal(cols[2], '', 'Closed is blank')
+    assert.equal(cols[10], 'running')
+    assert.equal(cols[11], '', 'Exit Price is blank')
+    assert.equal(cols[12], '', 'Result is blank')
+  })
+
+  await t.test('multiple TP levels are joined with ";" in one column', () => {
+    const history = [closedRecord({ tp: [{ price: 110 }, { price: 120 }, { price: 130 }] })]
+    const csv = buildHistoryCsv(history, 'XAUUSD')
+    const [, row] = csv.split('\n')
+    assert.match(row, /,110;120;130,/)
+  })
+
+  await t.test('a record with no strengthLabel leaves that column blank, not "undefined"', () => {
+    const history = [closedRecord({ strengthLabel: undefined })]
+    const csv = buildHistoryCsv(history, 'XAUUSD')
+    const [, row] = csv.split('\n')
+    assert.match(row, /,Support,,BUY,/)
+  })
+
+  await t.test('BTCUSD has no pip convention — Result is a raw $ amount', () => {
+    const history = [closedRecord({ symbolKey: 'BTCUSD', entry: 65000, exitPrice: 66200 })]
+    const csv = buildHistoryCsv(history, 'BTCUSD')
+    const [, row] = csv.split('\n')
+    assert.match(row, /\+1200$/)
   })
 })
 

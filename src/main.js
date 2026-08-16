@@ -12,8 +12,9 @@ import {
   disableNotifications,
   checkZonesAndSignals,
 } from './lib/notifications.js'
-import { loadHistory, getHistory, getStats } from './lib/signalHistory.js'
+import { loadHistory, getHistory, getStats, getBreakdown, buildHistoryCsv, getEquityCurve } from './lib/signalHistory.js'
 import { formatMove, formatPrice } from './lib/signalHistoryCore.js'
+import { renderEquityChart } from './lib/priceChart.js'
 import { isGoldMarketClosed, nextGoldReopenUtc } from './lib/marketHours.js'
 
 const NEWS_HORIZON_HOURS = 12
@@ -35,6 +36,7 @@ const historyBtn = document.getElementById('history-btn')
 const historyModal = document.getElementById('history-modal')
 const historyBody = document.getElementById('history-body')
 const historyCloseBtn = document.getElementById('history-close')
+const historyExportBtn = document.getElementById('history-export-btn')
 const installBtn = document.getElementById('install-btn')
 
 const uiState = loadUiState()
@@ -59,6 +61,17 @@ function disposeChart() {
   if (!activeChart) return
   activeChart.remove()
   activeChart = null
+}
+
+// Same reasoning as disposeChart above, but for the track record modal's own equity
+// chart — historyBody.innerHTML is rebuilt from scratch on every renderHistory() call
+// (including the 5-minute auto-refresh while the modal's left open), which orphans
+// whatever chart instance was drawn into the previous container.
+let activeEquityChart = null
+function disposeEquityChart() {
+  if (!activeEquityChart) return
+  activeEquityChart.remove()
+  activeEquityChart = null
 }
 
 // Every accent-driven color on the page (brand mark, icon buttons, prices,
@@ -194,9 +207,39 @@ notifyBtn.addEventListener('click', async () => {
 // rather than "still loading".
 let historyLoaded = false
 
+// How many rows are currently shown per symbol — starts at HISTORY_PAGE_SIZE, grows by
+// the same amount each "Load more" click. Kept per-symbol (not just one shared number)
+// so switching symbols and back doesn't reset how far you'd scrolled into either one.
+// A plain module-level Map survives across renderHistory() calls (including the
+// 5-minute auto-refresh) without needing to thread it through anything.
+const HISTORY_PAGE_SIZE = 30
+const historyVisibleCounts = new Map()
+
+function breakdownGroupHtml(title, groups) {
+  return `
+    <div class="breakdown-section">
+      <h3>${title}</h3>
+      <div class="breakdown-list">
+        ${groups
+          .map(
+            (g) => `
+          <div class="breakdown-row">
+            <span class="breakdown-label">${g.key}</span>
+            <div class="breakdown-bar"><div class="breakdown-bar-fill" style="width:${g.winRate}%"></div></div>
+            <span class="breakdown-value">${g.winRate}% <small>(${g.wins}W/${g.losses}L)</small></span>
+          </div>`
+          )
+          .join('')}
+      </div>
+    </div>`
+}
+
 function renderHistory() {
+  disposeEquityChart()
+
   if (!historyLoaded) {
     historyBody.innerHTML = '<p class="history-empty">Loading track record…</p>'
+    historyExportBtn.disabled = true
     return
   }
 
@@ -205,12 +248,17 @@ function renderHistory() {
   // thing going forward. A handful of H4/D1 records from before that policy may still
   // show up here until they finish closing out on their own.
   const stats = getStats(activeSymbol.key)
+  const breakdown = getBreakdown(activeSymbol.key)
+  const equityPoints = getEquityCurve(activeSymbol.key)
   // 'pending' (not yet filled) signals are already visible as live cards on the main
   // dashboard — the track record is for what's actually happened, so it only lists
-  // trades that have at least filled.
-  const records = getHistory(activeSymbol.key)
-    .filter((r) => r.status !== 'pending')
-    .slice(0, 30)
+  // trades that have at least filled. Not sliced yet — CSV export and the "Load more"
+  // remaining-count both need the true total, not just what's currently visible.
+  const records = getHistory(activeSymbol.key).filter((r) => r.status !== 'pending')
+  historyExportBtn.disabled = records.length === 0
+
+  const visibleCount = historyVisibleCounts.get(activeSymbol.key) ?? HISTORY_PAGE_SIZE
+  const visibleRecords = records.slice(0, visibleCount)
 
   const statsHtml = `
     <div class="history-stats">
@@ -221,8 +269,28 @@ function renderHistory() {
     </div>
   `
 
-  const rowsHtml = records.length
-    ? `<div class="history-list">${records
+  // The one visual-trend view — cumulative pips/$ over time — alongside the static
+  // numbers above. Needs at least 2 closed trades to draw a meaningful line; skipped
+  // (not shown as an empty chart) otherwise.
+  const equityHtml =
+    equityPoints.length >= 2 ? `<div id="history-equity-chart" class="history-equity-chart"></div>` : ''
+
+  // Which setup is actually reliable — by zone category (Support/Resistance/SBR/RBS)
+  // and by zone strength (Golden/Diamond Zone vs Medium) — rather than only the one
+  // aggregate win rate above. Skipped entirely once there's nothing closed yet (would
+  // just repeat the empty-state message below), and the strength half is skipped on
+  // its own if every closed record predates that field being recorded (see
+  // recordSignals in signalHistoryCore.js).
+  const breakdownHtml =
+    stats.wins + stats.losses > 0
+      ? `<div class="history-breakdown">
+          ${breakdownGroupHtml('By Zone Type', breakdown.byCategory)}
+          ${breakdown.byStrength.length ? breakdownGroupHtml('By Zone Strength', breakdown.byStrength) : ''}
+        </div>`
+      : ''
+
+  const rowsHtml = visibleRecords.length
+    ? `<div class="history-list">${visibleRecords
         .map((r) => {
           // running: filled, waiting on SL/TP. win/loss: closed — show what it hit,
           // at what price, and the pip/price move. ('pending' rows are filtered out above.)
@@ -243,7 +311,24 @@ function renderHistory() {
         .join('')}</div>`
     : `<p class="history-empty">No filled signals yet for ${activeSymbol.label} — pending ones are on the dashboard, check back here once one fills.</p>`
 
-  historyBody.innerHTML = statsHtml + rowsHtml
+  const remaining = records.length - visibleRecords.length
+  const loadMoreHtml =
+    remaining > 0
+      ? `<button type="button" id="history-load-more" class="history-load-more">Load more (${remaining} older)</button>`
+      : ''
+
+  historyBody.innerHTML = statsHtml + equityHtml + breakdownHtml + rowsHtml + loadMoreHtml
+
+  // The chart needs a real, already-in-DOM container to size itself against — created
+  // fresh above the moment historyBody.innerHTML was set, so it's queried here rather
+  // than passed as an element reference.
+  const equityContainer = document.getElementById('history-equity-chart')
+  if (equityContainer) activeEquityChart = renderEquityChart(equityContainer, equityPoints)
+
+  document.getElementById('history-load-more')?.addEventListener('click', () => {
+    historyVisibleCounts.set(activeSymbol.key, visibleCount + HISTORY_PAGE_SIZE)
+    renderHistory()
+  })
 }
 
 // Remembers whatever had focus before the modal opened, so closing it (via Escape,
@@ -267,6 +352,22 @@ function closeHistoryModal() {
 historyBtn.addEventListener('click', openHistoryModal)
 
 historyCloseBtn.addEventListener('click', closeHistoryModal)
+
+// Client-side CSV export — a Blob + a throwaway <a download> is the standard way to
+// trigger a file save with no server endpoint involved, matching how this whole site
+// already has no backend of its own (see fetch-data.mjs's static-JSON-file approach).
+historyExportBtn.addEventListener('click', () => {
+  const csv = buildHistoryCsv(activeSymbol.key)
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `trefozeri-${activeSymbol.key.toLowerCase()}-track-record.csv`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+})
 
 historyModal.addEventListener('click', (e) => {
   if (e.target === historyModal) closeHistoryModal()

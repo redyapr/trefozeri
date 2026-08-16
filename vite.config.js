@@ -15,12 +15,14 @@ export default defineConfig({
   build: {
     target: 'es2020',
     rollupOptions: {
-      // id/index.html is a static Indonesian-language SEO landing page (see its own
-      // comments) — a second Vite entry so it gets the same base-path rewriting and
-      // asset bundling as the main app instead of being served unprocessed.
+      // id/index.html and api/index.html are static pages (an SEO landing page, and
+      // the public-data-API docs — see their own comments) — separate Vite entries so
+      // they get the same base-path rewriting and asset bundling as the main app
+      // instead of being served unprocessed.
       input: {
         main: 'index.html',
         id: 'id/index.html',
+        api: 'api/index.html',
       },
     },
   },

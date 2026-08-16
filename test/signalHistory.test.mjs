@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { loadHistory, getHistory, getStats } from '../src/lib/signalHistory.js'
+import { loadHistory, getHistory, getStats, getBreakdown, buildHistoryCsv, getEquityCurve } from '../src/lib/signalHistory.js'
 
 function mockFetch(handler) {
   const original = global.fetch
@@ -94,6 +94,31 @@ test('loadHistory / getHistory / getStats', async (t) => {
       assert.equal(getHistory('XAUUSD', 'H1').length, 1)
       assert.equal(getHistory('BTCUSD').length, 1)
       assert.equal(getStats('XAUUSD', 'H1').total, 1)
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('getBreakdown/buildHistoryCsv read from the same loaded records', async () => {
+    const restore = mockFetch(async () => ({
+      ok: true,
+      json: async () => [
+        record({ key: 'a', status: 'win', strengthLabel: 'Strong', exitPrice: 4320, hitTpIndex: 0, closedAt: Date.now() }),
+      ],
+    }))
+    try {
+      await loadHistory()
+      const { byCategory, byStrength } = getBreakdown('XAUUSD')
+      assert.equal(byCategory[0].key, 'Support')
+      assert.equal(byStrength[0].key, 'Strong')
+
+      const csv = buildHistoryCsv('XAUUSD')
+      assert.match(csv, /^Opened,Filled,Closed,Timeframe,Category,Strength,Direction,Entry,SL,TP,Status,Exit Price,Result/)
+      assert.match(csv, /Support,Strong,BUY,4300,4295,4310,win,4320,\+200 pips/)
+
+      const curve = getEquityCurve('XAUUSD')
+      assert.equal(curve.length, 1)
+      assert.equal(curve[0].value, 200)
     } finally {
       restore()
     }

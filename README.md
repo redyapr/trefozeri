@@ -36,17 +36,23 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
   whenever its entry/SL/TP recalculate, so it never shows stale numbers — once filled,
   it's a live position and stops changing. XAUUSD skips new signals while gold's market
   is closed; BTCUSD posts new signals every day (trades 24/7, no market-hours gate).
-  Optional — no-ops without `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`.
+  Optional — no-ops without `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`. Real sends are also
+  opt-in: only CI (`CI=true`, set automatically) or an explicit local
+  `ALLOW_TELEGRAM_SEND=true` actually posts — see [Local development](#local-development).
 - **Daily/weekly report** — same channel, also H1-only. Daily sends just after
-  midnight WIB, recapping the day just ended for both symbols. Weekly sends every
-  Monday, also covering both symbols. De-duplicated via `data/last-report.json`.
-- **Weekly performance charts** — attached to the weekly report as HD images (rendered
-  with [@napi-rs/canvas](https://github.com/Brooooooklyn/canvas), sent via
-  `sendDocument` so Telegram never re-compresses them): daily pips gained per symbol
-  (horizontal bars, red = loss), TP1–TP3 success rate as descending pie charts
-  (cumulative — a TP2 hit also counts toward TP1), and a separate trade-log image
-  (paginated at 20 rows) listing every closed trade's date, side, pair, result, and
-  P/L. See `scripts/weeklyChart.mjs`.
+  midnight WIB, recapping the day just ended; weekly sends every Monday. Both cover
+  whichever symbols/days actually had activity — a quiet symbol, a quiet day within the
+  week, or the whole report when literally nothing closed, is omitted rather than
+  padded out with "No signals closed" placeholder lines. De-duplicated via
+  `data/last-report.json`.
+- **Weekly performance charts** — the report text and its charts go out as ONE Telegram
+  message (the text is the caption on the first image), not a separate text message
+  followed by a separate album. Rendered at 2x scale with
+  [@napi-rs/canvas](https://github.com/Brooooooklyn/canvas), sent via `sendPhoto`/
+  `sendMediaGroup`: daily pips gained per symbol (horizontal bars, red = loss), TP1–TP3
+  success rate as descending pie charts (cumulative — a TP2 hit also counts toward
+  TP1), and a separate trade-log image (paginated at 20 rows) listing every closed
+  trade's date, side, pair, result, and P/L. See `scripts/weeklyChart.mjs`.
 - **Market status** — a banner during gold's closed hours (Fri 22:00 UTC → Sun 22:00
   UTC); also gates new XAUUSD signals during that window.
 - **Install prompt** — a custom "add to home screen" button in the header, in place of
@@ -63,7 +69,10 @@ npm run dev
 
 Re-run `npm run fetch:data` manually to refresh local data — there's no dev-time
 proxy. It also updates the real `data/signal-history.json` in place; check `git diff`
-before committing anything else.
+(or `git checkout -- data/signal-history.json`) before committing anything else.
+Telegram sends stay off during this either way (see the notifications feature above) —
+reverting the JSON file cannot un-send a real message, so don't set
+`ALLOW_TELEGRAM_SEND=true` unless you actually mean to test the real send path.
 
 | Script | Purpose |
 | --- | --- |
