@@ -150,26 +150,61 @@ test('buildNewSignalMessage', async (t) => {
   await t.test('buy -> blue circle, sell -> red circle, no bold, no timeframe mentioned', () => {
     const buySignal = { tf: 'H1', direction: 'buy', category: 'Support', entry: 4301, sl: 4296.5, tp: [{ price: 4307.75, rr: 1.5 }], strengthLabel: 'Medium' }
     const buyMsg = buildNewSignalMessage('XAUUSD', [buySignal])
-    assert.match(buyMsg, /^🔵 BUY LIMIT/)
+    assert.match(buyMsg, /^<a href="[^"]+">🔵 BUY LIMIT/)
     assert.doesNotMatch(buyMsg, /<b>/)
     assert.doesNotMatch(buyMsg, /H1/)
 
     const sellMsg = buildNewSignalMessage('XAUUSD', [{ ...buySignal, direction: 'sell' }])
-    assert.match(sellMsg, /^🔴 SELL LIMIT/)
+    assert.match(sellMsg, /^<a href="[^"]+">🔴 SELL LIMIT/)
+  })
+
+  await t.test('the title is a hyperlink to SITE_URL (or its default)', () => {
+    const signal = { tf: 'H1', direction: 'buy', category: 'Support', entry: 4301, sl: 4296.5, tp: [], strengthLabel: 'Medium' }
+    const msg = buildNewSignalMessage('XAUUSD', [signal])
+    const url = process.env.SITE_URL || 'https://redyapr.github.io/trefozeri'
+    assert.match(msg, new RegExp(`^<a href="${url.replace(/\//g, '\\/')}">`))
+  })
+
+  await t.test('the body is wrapped in <pre> so the columns render fixed-width', () => {
+    const signal = { tf: 'H1', direction: 'buy', category: 'Support', entry: 4301, sl: 4296.5, tp: [], strengthLabel: 'Medium' }
+    const msg = buildNewSignalMessage('XAUUSD', [signal])
+    assert.match(msg, /<pre>[\s\S]*<\/pre>$/)
+  })
+
+  await t.test('labels are padded so every ":" lines up in the same column', () => {
+    const signal = {
+      tf: 'H1',
+      direction: 'buy',
+      category: 'Support',
+      entry: 4301,
+      sl: 4296.5,
+      tp: [
+        { price: 4307.75, rr: 1.5 },
+        { price: 4312.25, rr: 2.5 },
+      ],
+      strengthLabel: 'Medium',
+    }
+    const msg = buildNewSignalMessage('XAUUSD', [signal])
+    // Longest label here is "Price" (5 chars) — every other label pads out to match.
+    assert.match(msg, /Zone : Support \(Medium\)/)
+    assert.match(msg, /Price: 4301/)
+    assert.match(msg, /SL   : 4296\.5/)
+    assert.match(msg, /TP1  : 4307\.8 \(1\.5R\)/)
+    assert.match(msg, /TP2  : 4312\.3 \(2\.5R\)/)
   })
 
   await t.test('flags a Golden Zone (Strong) confluence level in the title and zone line', () => {
     const strong = { tf: 'H1', direction: 'buy', category: 'Support', entry: 4301, sl: 4296.5, tp: [], strengthLabel: 'Strong' }
     const msg = buildNewSignalMessage('XAUUSD', [strong])
     assert.match(msg, /⭐ Golden Zone/)
-    assert.match(msg, /Zone: Support \(Strong\)/)
+    assert.match(msg, /Zone : Support \(Strong\)/)
   })
 
   await t.test('a non-golden level shows Medium and no star', () => {
     const medium = { tf: 'H1', direction: 'buy', category: 'Support', entry: 4301, sl: 4296.5, tp: [], strengthLabel: 'Medium' }
     const msg = buildNewSignalMessage('XAUUSD', [medium])
     assert.doesNotMatch(msg, /⭐/)
-    assert.match(msg, /Zone: Support \(Medium\)/)
+    assert.match(msg, /Zone : Support \(Medium\)/)
   })
 
   await t.test('prices drop a trailing .0, TPs are numbered in order', () => {
@@ -187,9 +222,9 @@ test('buildNewSignalMessage', async (t) => {
     }
     const msg = buildNewSignalMessage('XAUUSD', [signal])
     assert.match(msg, /Price: 4301\n/)
-    assert.match(msg, /SL: 4296\.5/)
-    assert.match(msg, /TP1: 4307\.8 \(1\.5R\)/)
-    assert.match(msg, /TP2: 4312\.3 \(2\.5R\)/)
+    assert.match(msg, /SL   : 4296\.5/)
+    assert.match(msg, /TP1  : 4307\.8 \(1\.5R\)/)
+    assert.match(msg, /TP2  : 4312\.3 \(2\.5R\)/)
   })
 
   await t.test('a multi-member group uses the earliest timeframe (TF_ORDER) as primary', () => {
@@ -642,7 +677,7 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
       assert.equal(sent[1].message_id, originalMessageId, 'edits the same message the signal was first posted as')
       assert.equal(sent[1].reply_to_message_id, undefined, 'an edit, not a reply')
       assert.notEqual(h1.sl, originalSl, 'the record itself is synced too, not just the Telegram message')
-      assert.match(sent[1].text, /SL: /)
+      assert.match(sent[1].text, /SL\s*: /)
       assert.equal(history.length, 1, 'still the same single record, not a duplicate')
       assert.equal(h1.status, 'pending')
     } finally {

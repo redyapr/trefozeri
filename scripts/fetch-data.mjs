@@ -73,12 +73,14 @@ export function resetFailures() {
   FAILURE_LABELS.length = 0
 }
 
+// SITE_URL is optional (defaults to this repo's own deployment) so a fork/rename/domain
+// change is one env var, not a code edit that's easy to forget. Also used as-is as the
+// dashboard link in every signal message's title (see buildNewSignalMessage).
+const SITE_URL = process.env.SITE_URL || 'https://redyapr.github.io/trefozeri'
 // If today's upstream fetch fails (rate limit, outage), fall back to whatever is
 // already live rather than shipping a hole in the data — a stale snapshot beats a
-// missing one, and the next successful cron run heals it anyway. SITE_URL is optional
-// (defaults to this repo's own deployment) so a fork/rename/domain change is one env
-// var, not a code edit that's easy to forget.
-const LIVE_BASE = `${process.env.SITE_URL || 'https://redyapr.github.io/trefozeri'}/data`
+// missing one, and the next successful cron run heals it anyway.
+const LIVE_BASE = `${SITE_URL}/data`
 
 // Kept as a local, minimal copy rather than importing src/lib/twelveData.js — that
 // module reads import.meta.env (a Vite/browser concern), which plain Node doesn't have.
@@ -317,19 +319,27 @@ export async function sendAdminAlertDeduped(text, dedupKey = text) {
 // works unchanged if TELEGRAM_TIMEFRAMES is ever widened back out. The timeframe
 // itself isn't printed: with only one timeframe ever reaching Telegram, naming it on
 // every message is just noise.
+// Right-pads every row's label to the widest one in this message, so the ":"s all land
+// in the same column — only readable as a fixed-width block, hence the <pre> wrapper
+// below (Telegram's normal proportional font would make manual padding meaningless).
+function alignRows(rows) {
+  const labelWidth = Math.max(...rows.map(([label]) => label.length))
+  return rows.map(([label, value]) => `${label.padEnd(labelWidth)}: ${value}`).join('\n')
+}
+
 export function buildNewSignalMessage(symbolKey, group) {
   group.sort((a, b) => TF_ORDER.indexOf(a.tf) - TF_ORDER.indexOf(b.tf))
   const primary = group[0]
   const isBuy = primary.direction === 'buy'
   const isGolden = primary.strengthLabel === 'Strong'
-  const lines = [
-    `${isBuy ? '🔵' : '🔴'} ${isBuy ? 'BUY' : 'SELL'} LIMIT — ${symbolKey}${isGolden ? ' ⭐ Golden Zone' : ''}`,
-    `Zone: ${primary.category} (${primary.strengthLabel})`,
-    `Price: ${formatPrice(primary.entry)}`,
-    `SL: ${formatPrice(primary.sl)}`,
-    ...primary.tp.map((t, i) => `TP${i + 1}: ${formatPrice(t.price)} (${formatPrice(t.rr)}R)`),
+  const title = `${isBuy ? '🔵' : '🔴'} ${isBuy ? 'BUY' : 'SELL'} LIMIT — ${symbolKey}${isGolden ? ' ⭐ Golden Zone' : ''}`
+  const rows = [
+    ['Zone', `${primary.category} (${primary.strengthLabel})`],
+    ['Price', formatPrice(primary.entry)],
+    ['SL', formatPrice(primary.sl)],
+    ...primary.tp.map((t, i) => [`TP${i + 1}`, `${formatPrice(t.price)} (${formatPrice(t.rr)}R)`]),
   ]
-  return lines.join('\n')
+  return `<a href="${SITE_URL}">${title}</a>\n<pre>${alignRows(rows)}</pre>`
 }
 
 // No symbol/direction/price here either, same reasoning as buildCloseMessage — it's a
