@@ -6,7 +6,10 @@
 // served from a GitHub Pages project subpath.
 import { PIP_SIZES } from './signalHistoryCore.js'
 
-const DATA_ENDPOINT = `${import.meta.env.BASE_URL}data`
+// import.meta.env is undefined outside a Vite build (e.g. this module loaded directly
+// under plain Node, as the test suite does) — without the fallback, merely importing
+// this module would throw before any test ever got to run.
+const DATA_ENDPOINT = `${import.meta.env?.BASE_URL ?? '/'}data`
 // Cache-busts the static JSON so the browser doesn't keep serving a snapshot from
 // before the last cron refresh — these files are small and change every ~15 minutes.
 const cacheBust = () => `?v=${Date.now()}`
@@ -48,12 +51,25 @@ async function fetchSeries(apiSymbol, tf) {
   const symbolKey = SYMBOLS.find((s) => s.apiSymbol === apiSymbol)?.key
   const url = `${DATA_ENDPOINT}/quote/${symbolKey}-${tf.key}.json${cacheBust()}`
   const res = await fetch(url)
+  // A missing static file (a symbol/timeframe combo that was never generated, or a
+  // stale deploy) serves GitHub Pages' HTML 404 page — without this check that gets
+  // handed to res.json() below and throws a cryptic "Unexpected token '<'" instead of
+  // a clear, loggable "fetch failed (404)".
+  if (!res.ok) {
+    throw new Error(`Fetch failed (${res.status})`)
+  }
   const json = await res.json()
 
   if (json.status === 'error' || json.code || json.message) {
     throw new Error(json.message || 'Failed to fetch data from Twelve Data')
   }
-  if (!json.values || !Array.isArray(json.values)) {
+  // A valid-but-empty `values: []` (a provider/cron hiccup that still writes valid
+  // JSON) would otherwise pass through as "success" with zero candles — main.js reads
+  // series[series.length - 1] right after a successful fetch and crashes on undefined.
+  // Treating it as a fetch error here means it's handled the same way any other
+  // failure already is (kept as {error}, previous data left on screen, retried next
+  // cycle) instead of silently corrupting that refresh.
+  if (!Array.isArray(json.values) || json.values.length === 0) {
     throw new Error('Unrecognized data format from Twelve Data')
   }
 
@@ -66,15 +82,18 @@ async function fetchSeries(apiSymbol, tf) {
   }))
 }
 
-export async function fetchAllTimeframes(apiSymbol, timeframes = TIMEFRAMES, onProgress) {
+export async function fetchAllTimeframes(apiSymbol, timeframes = TIMEFRAMES) {
   const results = {}
   for (const tf of timeframes) {
     try {
       results[tf.key] = await fetchSeries(apiSymbol, tf)
     } catch (err) {
+      // Logged here, not just carried as {error} — a permanently broken endpoint
+      // otherwise fails completely silently forever (main.js just does
+      // `if (series?.error) continue`, with no trace of *why* left anywhere).
+      console.error(`[twelveData] ${apiSymbol} ${tf.key} fetch failed: ${err.message}`)
       results[tf.key] = { error: err.message }
     }
-    onProgress?.(tf.key)
   }
   return results
 }

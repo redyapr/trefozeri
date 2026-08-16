@@ -33,6 +33,15 @@ test('uiState', async (t) => {
     assert.deepEqual(loadUiState(), {})
   })
 
+  await t.test('valid JSON that is not a plain object (a stray primitive or array) is treated as nothing saved', () => {
+    localStorage.setItem('gold-sr-ui-state', '5')
+    assert.deepEqual(loadUiState(), {}, 'a bare number would otherwise pass through as-is')
+    localStorage.setItem('gold-sr-ui-state', '["not", "an", "object"]')
+    assert.deepEqual(loadUiState(), {}, 'an array is technically an object but not the shape callers expect')
+    localStorage.setItem('gold-sr-ui-state', 'null')
+    assert.deepEqual(loadUiState(), {})
+  })
+
   await t.test('a storage write failure is swallowed, not thrown', () => {
     const original = localStorage.setItem
     localStorage.setItem = () => {

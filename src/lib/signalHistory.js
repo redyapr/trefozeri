@@ -6,7 +6,10 @@
 // evaluating signals only ever happens in the cron job.
 import { getHistory as coreGetHistory, getStats as coreGetStats } from './signalHistoryCore.js'
 
-const DATA_ENDPOINT = `${import.meta.env.BASE_URL}data`
+// import.meta.env is undefined outside a Vite build (e.g. this module loaded directly
+// under plain Node, as the test suite does) — without the fallback, merely importing
+// this module would throw before any test ever got to run.
+const DATA_ENDPOINT = `${import.meta.env?.BASE_URL ?? '/'}data`
 // Cache-busts the static JSON so the browser doesn't keep serving a snapshot from
 // before the last cron refresh.
 const cacheBust = () => `?v=${Date.now()}`
@@ -21,7 +24,11 @@ export async function loadHistory() {
     const res = await fetch(`${DATA_ENDPOINT}/signal-history.json${cacheBust()}`)
     if (!res.ok) throw new Error(`signal history fetch failed (${res.status})`)
     const json = await res.json()
-    if (Array.isArray(json)) records = json
+    if (Array.isArray(json)) {
+      records = json
+    } else {
+      console.error('[signalHistory] unexpected response shape (not an array) — keeping last good history')
+    }
   } catch (err) {
     console.error('[signalHistory] failed to load shared track record', err)
   }

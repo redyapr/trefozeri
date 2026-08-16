@@ -100,6 +100,28 @@ test('detectLevels: pivot state machine', async (t) => {
     assert.deepEqual(detectLevels([candle(0, 1, 2, 0, 1)], 1), [])
     assert.deepEqual(detectLevels(null, 100), [])
   })
+
+  await t.test('still correctly picks the newest pivot once far more than MAX_KEEP (40) have accumulated', () => {
+    // Each cycle reuses seriesWithLowPivot's own shape (well-separated bases so pivots
+    // never interfere with each other), repeated well past the 40-pivot retention cap
+    // — if that cap or the "pick the newest still-valid one" logic ever regressed,
+    // this would either crash or return a stale/wrong price instead of the latest one.
+    let all = []
+    let t = 0
+    let lastBase
+    const CYCLES = 45
+    for (let c = 0; c < CYCLES; c++) {
+      const base = 4300 + c * 50
+      lastBase = base
+      const cycle = seriesWithLowPivot(base).map((candle) => ({ ...candle, time: candle.time + t }))
+      all = all.concat(cycle)
+      t += cycle.length
+    }
+    const zones = detectLevels(all, all.at(-1).close)
+    const support = zones.find((z) => z.category === 'Support')
+    assert.ok(support, 'expected exactly one still-current Support zone')
+    assert.equal(support.price, lastBase + 1, 'must be the newest cycle\'s pivot, not a stale earlier one')
+  })
 })
 
 test('annotateGoldenZones', async (t) => {
@@ -123,6 +145,34 @@ test('annotateGoldenZones', async (t) => {
     const h1Support = h1.find((z) => z.category === 'Support')
     assert.equal(h1Support.isGolden, false)
     assert.deepEqual(h1Support.confluence, [])
+  })
+
+  await t.test('lists every matching timeframe when 3+ are in play at once (production always runs H1+H4+D1 together)', () => {
+    const h1 = detectLevels(seriesWithLowPivot(4300), 4305)
+    const h4 = detectLevels(seriesWithLowPivot(4300), 4305) // identical -> matches H1
+    const d1 = detectLevels(seriesWithLowPivot(3800), 3805) // far away -> matches neither
+    const zonesByTimeframe = { H1: { zones: h1 }, H4: { zones: h4 }, D1: { zones: d1 } }
+    annotateGoldenZones(zonesByTimeframe)
+
+    const h1Support = h1.find((z) => z.category === 'Support')
+    assert.equal(h1Support.isGolden, true)
+    assert.deepEqual(h1Support.confluence, ['H4'], 'matches H4 only, not the genuinely-distant D1')
+
+    const d1Support = d1.find((z) => z.category === 'Support')
+    assert.equal(d1Support.isGolden, false)
+    assert.deepEqual(d1Support.confluence, [])
+  })
+
+  await t.test('confluence lists all matching timeframes when a level matches more than one at once', () => {
+    const h1 = detectLevels(seriesWithLowPivot(4300), 4305)
+    const h4 = detectLevels(seriesWithLowPivot(4300), 4305)
+    const d1 = detectLevels(seriesWithLowPivot(4300), 4305) // all three identical -> all match each other
+    const zonesByTimeframe = { H1: { zones: h1 }, H4: { zones: h4 }, D1: { zones: d1 } }
+    annotateGoldenZones(zonesByTimeframe)
+
+    const h1Support = h1.find((z) => z.category === 'Support')
+    assert.equal(h1Support.isGolden, true)
+    assert.deepEqual(h1Support.confluence.sort(), ['D1', 'H4'])
   })
 })
 
@@ -387,6 +437,49 @@ test('take-profit building and display-collision dedup', async (t) => {
       confluence: [],
     }
     const signal = buySignalWith([tooFar])
+    assert.equal(signal.tp.length, 3)
+    signal.tp.forEach((t, i) => assert.ok(Math.abs(t.rr - [1.5, 2.5, 3.5][i]) < 1e-6))
+  })
+
+  await t.test('excludes a target under 0.5R, but keeps a genuinely-rewarding one', () => {
+    // Symmetric case to the 100R ceiling above — a zone sitting almost on top of
+    // entry is a "TP" worth basically nothing (see MIN_ZONE_TP_RR's own comment).
+    const risk = Math.abs(buySignalWith([]).entry - buySignalWith([]).sl)
+    const entry = 4359
+    const tooClose = {
+      category: 'Resistance',
+      type: 'resistance',
+      price: entry + risk * 0.2, // 0.2R — under the 0.5R floor
+      mid: entry + risk * 0.2,
+      threshold: 0.88,
+      atr: 3,
+      structureAnchor: entry + risk * 0.2 + 3,
+      distanceFromPrice: 40,
+      isGolden: false,
+      confluence: [],
+    }
+    const farEnough = { ...tooClose, category: 'SBR', price: entry + risk * 5, mid: entry + risk * 5 } // 5R
+    const signal = buySignalWith([tooClose, farEnough])
+    assert.equal(signal.tp.length, 1, 'the 0.2R target is dropped, only the 5R one surfaces')
+    assert.ok(Math.abs(signal.tp[0].rr - 5) < 1e-6)
+  })
+
+  await t.test('falls back to fixed R-multiples when every qualifying zone is under 0.5R', () => {
+    const risk = Math.abs(buySignalWith([]).entry - buySignalWith([]).sl)
+    const entry = 4359
+    const tooClose = {
+      category: 'Resistance',
+      type: 'resistance',
+      price: entry + risk * 0.1,
+      mid: entry + risk * 0.1,
+      threshold: 0.88,
+      atr: 3,
+      structureAnchor: entry + risk * 0.1 + 3,
+      distanceFromPrice: 40,
+      isGolden: false,
+      confluence: [],
+    }
+    const signal = buySignalWith([tooClose])
     assert.equal(signal.tp.length, 3)
     signal.tp.forEach((t, i) => assert.ok(Math.abs(t.rr - [1.5, 2.5, 3.5][i]) < 1e-6))
   })

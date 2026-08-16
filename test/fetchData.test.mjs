@@ -24,6 +24,10 @@ const {
   sendAdminAlertDeduped,
   getFailures,
   resetFailures,
+  toTwelveDataDatetime,
+  parseUtc,
+  toCandles,
+  main,
 } = await import('../scripts/fetch-data.mjs')
 
 // sendAdminAlertDeduped persists its de-dup state to this real file (there's no
@@ -39,6 +43,24 @@ async function withClearAlertState(fn) {
   } finally {
     if (backup == null) await rm(ALERT_STATE_PATH, { force: true })
     else await writeFile(ALERT_STATE_PATH, backup)
+  }
+}
+
+// main() writes the real, git-tracked data/signal-history.json (there's no injectable
+// path — it has to survive across separate CI processes, same reasoning as
+// ALERT_STATE_PATH above) — back it up and restore it around any test that actually
+// calls main(), so the suite never leaves the repo's real shared track record altered.
+// public/data/* is NOT backed up: it's gitignored and regenerated from scratch by any
+// real run anyway, so main() overwriting it with test fixture data during a test run
+// is harmless.
+const REAL_HISTORY_PATH = path.join(process.cwd(), 'data', 'signal-history.json')
+async function withBackedUpHistoryFile(fn) {
+  const backup = await readFile(REAL_HISTORY_PATH, 'utf8').catch(() => null)
+  try {
+    await fn()
+  } finally {
+    if (backup == null) await rm(REAL_HISTORY_PATH, { force: true })
+    else await writeFile(REAL_HISTORY_PATH, backup)
   }
 }
 
@@ -402,7 +424,7 @@ test('sendAdminAlertDeduped', async (t) => {
 
   await t.test('re-sends the same text once the suppression window has passed', async () => {
     await withClearAlertState(async () => {
-      await writeFile(ALERT_STATE_PATH, JSON.stringify({ text: 'API key expired', sentAt: Date.now() - 7 * 60 * 60 * 1000 }))
+      await writeFile(ALERT_STATE_PATH, JSON.stringify({ dedupKey: 'API key expired', sentAt: Date.now() - 7 * 60 * 60 * 1000 }))
       const { sent, restore } = mockTelegram()
       try {
         await sendAdminAlertDeduped('API key expired')
@@ -417,7 +439,7 @@ test('sendAdminAlertDeduped', async (t) => {
     await withClearAlertState(async () => {
       // 2 hours ago — would still be suppressed under the default 6-hour window, but
       // not under a 1-hour override.
-      await writeFile(ALERT_STATE_PATH, JSON.stringify({ text: 'API key expired', sentAt: Date.now() - 2 * 60 * 60 * 1000 }))
+      await writeFile(ALERT_STATE_PATH, JSON.stringify({ dedupKey: 'API key expired', sentAt: Date.now() - 2 * 60 * 60 * 1000 }))
       const saved = process.env.ALERT_SUPPRESS_HOURS
       process.env.ALERT_SUPPRESS_HOURS = '1'
       try {
@@ -432,6 +454,37 @@ test('sendAdminAlertDeduped', async (t) => {
         }
       } finally {
         process.env.ALERT_SUPPRESS_HOURS = saved
+      }
+    })
+  })
+
+  await t.test('a dedupKey lets two different-text alerts still be recognized as the same underlying cause', async () => {
+    // Reproduces a real fragility: a persistent failure (e.g. an expired API key) can
+    // still vary its exact error text run to run (a different retry count, a slightly
+    // different upstream response body) — exact-text matching would never dedupe that,
+    // defeating ALERT_SUPPRESS_HOURS for the one case it exists to handle. Passing an
+    // explicit, stable dedupKey separate from the (possibly-varying) text fixes this.
+    await withClearAlertState(async () => {
+      const { sent, restore } = mockTelegram()
+      try {
+        await sendAdminAlertDeduped('XAUUSD H1: attempt 1 failed (timeout after 3011ms)', 'data-source-failure:XAUUSD H1')
+        await sendAdminAlertDeduped('XAUUSD H1: attempt 2 failed (timeout after 2847ms)', 'data-source-failure:XAUUSD H1')
+        assert.equal(sent.length, 1, 'same dedupKey — still recognized as the same persistent cause despite differing text')
+      } finally {
+        restore()
+      }
+    })
+  })
+
+  await t.test('without an explicit dedupKey, it still defaults to the text itself (backward compatible)', async () => {
+    await withClearAlertState(async () => {
+      const { sent, restore } = mockTelegram()
+      try {
+        await sendAdminAlertDeduped('API key expired')
+        await sendAdminAlertDeduped('API key expired')
+        assert.equal(sent.length, 1)
+      } finally {
+        restore()
       }
     })
   })
@@ -708,6 +761,131 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
       assert.equal(sent[1].text, '🟡 ENTRY FILLED')
     } finally {
       restore()
+    }
+  })
+})
+
+test('toTwelveDataDatetime / parseUtc round-trip', async (t) => {
+  await t.test('toTwelveDataDatetime formats a UTC epoch as "YYYY-MM-DD HH:mm:ss"', () => {
+    const ms = Date.UTC(2026, 7, 15, 9, 5, 3) // 2026-08-15 09:05:03 UTC
+    assert.equal(toTwelveDataDatetime(ms), '2026-08-15 09:05:03')
+  })
+
+  await t.test('pads single-digit month/day/hour/minute/second', () => {
+    const ms = Date.UTC(2026, 0, 2, 3, 4, 5) // 2026-01-02 03:04:05 UTC
+    assert.equal(toTwelveDataDatetime(ms), '2026-01-02 03:04:05')
+  })
+
+  await t.test('parseUtc parses that exact format back to the same epoch ms', () => {
+    const ms = Date.UTC(2026, 7, 15, 9, 5, 3)
+    assert.equal(parseUtc(toTwelveDataDatetime(ms)), ms)
+  })
+
+  await t.test('parseUtc treats a date-only string ("YYYY-MM-DD", as D1 candles use) as UTC midnight', () => {
+    assert.equal(parseUtc('2026-08-15'), Date.UTC(2026, 7, 15, 0, 0, 0))
+  })
+
+  await t.test('parseUtc never drifts by the host machine\'s own timezone offset (the bug a naive `new Date(str)` would have)', () => {
+    // If this used `new Date(datetime)` directly (no explicit 'Z'), a naive string
+    // with no offset parses as *local* time — on a host west of UTC that silently
+    // shifts every candle's timestamp, and can even make "ago" math go negative.
+    const ms = parseUtc('2026-08-15 00:00:00')
+    assert.equal(new Date(ms).getUTCHours(), 0, 'must land on UTC midnight regardless of the host TZ')
+  })
+})
+
+test('toCandles', async (t) => {
+  await t.test('parses datetime + OHLC strings/numbers into numeric candle objects', () => {
+    const values = [{ datetime: '2026-08-15 09:00:00', open: '4300.5', high: '4310', low: '4295.2', close: '4305' }]
+    const candles = toCandles(values)
+    assert.equal(candles.length, 1)
+    assert.equal(candles[0].time, Date.UTC(2026, 7, 15, 9, 0, 0))
+    assert.equal(candles[0].open, 4300.5)
+    assert.equal(candles[0].high, 4310)
+    assert.equal(candles[0].low, 4295.2)
+    assert.equal(candles[0].close, 4305)
+  })
+
+  await t.test('preserves input order and handles an empty array', () => {
+    assert.deepEqual(toCandles([]), [])
+    const values = [
+      { datetime: '2026-08-15 09:00:00', open: 1, high: 2, low: 0, close: 1 },
+      { datetime: '2026-08-15 10:00:00', open: 1, high: 2, low: 0, close: 1 },
+    ]
+    const candles = toCandles(values)
+    assert.ok(candles[0].time < candles[1].time)
+  })
+})
+
+test('main()', async (t) => {
+  const goldValues = (base) =>
+    Array.from({ length: 20 }, (_, i) => ({
+      datetime: toTwelveDataDatetime(Date.now() - (20 - i) * 3600000),
+      open: base + i,
+      high: base + i + 1,
+      low: base + i - 1,
+      close: base + i + 0.5,
+    }))
+  const binanceKlines = (base) =>
+    Array.from({ length: 20 }, (_, i) => [Date.now() - (20 - i) * 3600000, base + i, base + i + 1, base + i - 1, base + i + 0.5])
+
+  // Routes every URL main() actually calls to controlled fixture data — Twelve Data
+  // (gold), Binance.US (BTC), and the ForexFactory-style calendar feed — so a real
+  // run-through of main() never touches the real network.
+  function mockAllSources() {
+    const original = global.fetch
+    global.fetch = async (url) => {
+      const u = String(url)
+      if (u.includes('api.telegram.org')) {
+        return { ok: true, json: async () => ({ ok: true, result: { message_id: 1 } }) }
+      }
+      if (u.includes('api.twelvedata.com')) {
+        return { ok: true, json: async () => ({ status: 'ok', values: goldValues(4300) }) }
+      }
+      if (u.includes('api.binance.us')) {
+        return { ok: true, json: async () => binanceKlines(63000) }
+      }
+      if (u.includes('ff_calendar_thisweek')) {
+        return { ok: true, json: async () => [] }
+      }
+      throw new Error(`unexpected fetch in main() test: ${u}`)
+    }
+    return () => (global.fetch = original)
+  }
+
+  await t.test('a full run writes a readable signal-history.json and does not throw', async () => {
+    // FAILURES/FAILURE_LABELS are module-level state that persists across this whole
+    // test file — an earlier, unrelated test (fetchWithFallback's own failure test)
+    // can leave a stale entry sitting there, which would make main()'s own
+    // `if (FAILURES.length)` branch fire for real and write to the real, shared
+    // data/last-alert.json. Reset first, and back that file up too just in case.
+    resetFailures()
+    await withBackedUpHistoryFile(async () => {
+      await withClearAlertState(async () => {
+        const restoreFetch = mockAllSources()
+        const savedKey = process.env.TWELVE_DATA_API_KEY
+        process.env.TWELVE_DATA_API_KEY = 'test-key'
+        try {
+          await assert.doesNotReject(() => main())
+          const written = JSON.parse(await readFile(REAL_HISTORY_PATH, 'utf8'))
+          assert.ok(Array.isArray(written), 'signal-history.json must still be a JSON array afterward')
+        } finally {
+          restoreFetch()
+          process.env.TWELVE_DATA_API_KEY = savedKey
+        }
+      })
+    })
+  })
+
+  await t.test('throws immediately when TWELVE_DATA_API_KEY is not set, before touching the network', async () => {
+    const savedKey = process.env.TWELVE_DATA_API_KEY
+    delete process.env.TWELVE_DATA_API_KEY
+    const restoreFetch = mockAllSources()
+    try {
+      await assert.rejects(() => main(), /TWELVE_DATA_API_KEY/)
+    } finally {
+      restoreFetch()
+      process.env.TWELVE_DATA_API_KEY = savedKey
     }
   })
 })

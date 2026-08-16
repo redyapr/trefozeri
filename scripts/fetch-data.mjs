@@ -42,14 +42,22 @@ const TF_ORDER = ['H1', 'H4', 'D1']
 // source down, a fatal script error) never lands in front of channel subscribers. Also
 // no-ops if unset, same as the public channel.
 const FAILURES = []
-function recordFailure(message) {
-  FAILURES.push(message)
+// Parallel to FAILURES, but just the stable label (e.g. "XAUUSD H1"), not the full
+// message — used to build sendAdminAlertDeduped's dedup key (see main()) instead of
+// the full text, since the full text embeds each error's own .message and would
+// otherwise defeat de-duplication if that varies at all run to run for what's really
+// the same persistent cause.
+const FAILURE_LABELS = []
+function recordFailure(label, message) {
+  FAILURES.push(`${label}: ${message}`)
+  FAILURE_LABELS.push(label)
 }
 export function getFailures() {
   return FAILURES
 }
 export function resetFailures() {
   FAILURES.length = 0
+  FAILURE_LABELS.length = 0
 }
 
 // If today's upstream fetch fails (rate limit, outage), fall back to whatever is
@@ -67,7 +75,7 @@ const TIMEFRAMES = [
   { key: 'D1', twelveDataInterval: '1day', binanceInterval: '1d', outputsize: 300 },
 ]
 
-function toTwelveDataDatetime(ms) {
+export function toTwelveDataDatetime(ms) {
   const d = new Date(ms)
   const pad = (n) => String(n).padStart(2, '0')
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`
@@ -154,7 +162,7 @@ export async function fetchWithFallback(label, primary, fallbackRelPath, retryOp
       return await res.json()
     } catch (fallbackErr) {
       console.warn(`[fetch-data] ${label} fallback also failed (${fallbackErr.message}) — leaving this file unwritten`)
-      recordFailure(`${label}: primary failed after retries (${err.message}); fallback also failed (${fallbackErr.message})`)
+      recordFailure(label, `primary failed after retries (${err.message}); fallback also failed (${fallbackErr.message})`)
       return null
     }
   }
@@ -171,12 +179,12 @@ async function writeJson(relPath, data) {
 // "YYYY-MM-DD[ HH:mm:ss]" strings with no offset — kept as a local copy of
 // src/lib/twelveData.js's parseUtc rather than importing it, since that module reads
 // import.meta.env (a Vite/browser concern) that plain Node doesn't have.
-function parseUtc(datetime) {
+export function parseUtc(datetime) {
   const iso = datetime.includes(' ') ? datetime.replace(' ', 'T') + 'Z' : `${datetime}T00:00:00Z`
   return new Date(iso).getTime()
 }
 
-function toCandles(values) {
+export function toCandles(values) {
   return values.map((v) => ({
     time: parseUtc(v.datetime),
     open: parseFloat(v.open),
@@ -245,19 +253,24 @@ async function saveAlertState(state) {
 
 // Wraps sendAdminAlert with de-duplication, persisted across runs (data/last-alert.json
 // is git-tracked the same way data/signal-history.json is — see the workflow's persist
-// step) since every run is otherwise a fresh, stateless process. Only resends if the
-// alert text changed, or ALERT_SUPPRESS_MS has passed since this same text last
-// actually sent — a transient blip that resolves itself never touches this at all,
-// since FAILURES/fatal errors are the only callers.
-export async function sendAdminAlertDeduped(text) {
+// step) since every run is otherwise a fresh, stateless process. Only resends if
+// `dedupKey` changed, or ALERT_SUPPRESS_MS has passed since this same key last actually
+// sent — a transient blip that resolves itself never touches this at all, since
+// FAILURES/fatal errors are the only callers. `dedupKey` defaults to `text` itself for
+// a caller with no more stable identity to key off (e.g. a one-off fatal error), but
+// callers whose alert text embeds something that can legitimately vary run-to-run for
+// the *same* underlying cause (a data-source failure's own err.message, say) should
+// pass a separate, stable key — otherwise de-dup can never actually trigger for what's
+// really a persistent, already-alerted issue, defeating ALERT_SUPPRESS_HOURS entirely.
+export async function sendAdminAlertDeduped(text, dedupKey = text) {
   const state = await loadAlertState()
   const now = Date.now()
-  if (state && state.text === text && now - state.sentAt < ALERT_SUPPRESS_MS) {
+  if (state && state.dedupKey === dedupKey && now - state.sentAt < ALERT_SUPPRESS_MS) {
     console.warn('[fetch-data] suppressing repeat admin alert (already sent recently):', text.split('\n')[0])
     return
   }
   await sendAdminAlert(text)
-  await saveAlertState({ text, sentAt: now })
+  await saveAlertState({ dedupKey, sentAt: now })
 }
 
 // group is almost always a single signal now that TELEGRAM_TIMEFRAMES filters down to
@@ -417,7 +430,7 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
   }
 }
 
-async function main() {
+export async function main() {
   const apiKey = process.env.TWELVE_DATA_API_KEY
   if (!apiKey) throw new Error('TWELVE_DATA_API_KEY is not set')
 
@@ -457,7 +470,15 @@ async function main() {
   if (calendar) await writeJson('calendar.json', calendar)
 
   if (FAILURES.length) {
-    await sendAdminAlertDeduped(`${FAILURES.length} data source(s) failed this run (retries + fallback both exhausted):\n${FAILURES.join('\n')}`)
+    // Keyed on which sources are failing, not the full message text — a persistent
+    // cause (e.g. an expired API key) can still vary its exact error text run to run
+    // (a different retry count, a slightly different upstream response), which would
+    // otherwise never match state.dedupKey and defeat ALERT_SUPPRESS_HOURS entirely.
+    const dedupKey = `data-source-failure:${[...FAILURE_LABELS].sort().join(',')}`
+    await sendAdminAlertDeduped(
+      `${FAILURES.length} data source(s) failed this run (retries + fallback both exhausted):\n${FAILURES.join('\n')}`,
+      dedupKey
+    )
   }
 }
 
@@ -467,7 +488,10 @@ async function main() {
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch(async (err) => {
     console.error('[fetch-data] fatal:', err)
-    await sendAdminAlertDeduped(`Fatal error, run aborted:\n${err.message}`)
+    // A fixed key, not the message itself — a fatal crash recurring for any reason
+    // within the suppress window is already noise worth deduping uniformly, same
+    // reasoning as the data-source-failure key above.
+    await sendAdminAlertDeduped(`Fatal error, run aborted:\n${err.message}`, 'fatal-error')
     process.exit(1)
   })
 }

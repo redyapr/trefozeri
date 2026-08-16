@@ -4,9 +4,21 @@ function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
 }
 
-function hexToRgba(hex, alpha) {
+// Exported (only) so it's directly unit-testable — renderZoneChart itself needs a
+// real canvas + lightweight-charts instance, which isn't worth a test-only shim; this
+// pure helper is where the actual parsing logic worth verifying lives.
+export function hexToRgba(hex, alpha) {
   const clean = hex.replace('#', '')
-  const value = parseInt(clean, 16)
+  // Support the shorthand 3-digit form (#rgb) too, not just the 6-digit one this
+  // codebase's own CSS vars currently always use — and fall back to a neutral gray
+  // instead of silently producing NaN channels (an invisible fill, no error anywhere)
+  // if the value is ever something else entirely (e.g. a CSS color function).
+  const expanded = clean.length === 3 ? clean.split('').map((c) => c + c).join('') : clean
+  const value = parseInt(expanded, 16)
+  if (expanded.length !== 6 || Number.isNaN(value)) {
+    console.error(`[priceChart] unrecognized color value, falling back to gray: "${hex}"`)
+    return `rgba(128, 128, 128, ${alpha})`
+  }
   const r = (value >> 16) & 255
   const g = (value >> 8) & 255
   const b = value & 255
@@ -48,7 +60,12 @@ class ZoneRectangle {
 
             const y1 = series.priceToCoordinate(this._zone.high)
             const y2 = series.priceToCoordinate(this._zone.low)
-            if (y1 == null || y2 == null) return
+            // Only bail when *neither* edge maps to a coordinate — that's genuinely
+            // nothing to draw. One edge coming back null (the price scale's visible
+            // range only covers part of the zone) used to bail on the whole zone;
+            // now that edge is clipped to the pane's own boundary below instead, so a
+            // zone that's only partially in view still shows the visible portion.
+            if (y1 == null && y2 == null) return
 
             const startX = chart.timeScale().timeToCoordinate(Math.floor(this._zone.startTime / 1000))
             const label = this._zone.isGolden ? `★ ${this._zone.category}` : this._zone.category
@@ -59,8 +76,10 @@ class ZoneRectangle {
               const right = mediaSize.width * hRatio
               if (right <= left) return
 
-              const top = Math.min(y1, y2) * vRatio
-              const bottom = Math.max(y1, y2) * vRatio
+              const topPx = y1 == null ? 0 : y1 * vRatio
+              const bottomPx = y2 == null ? mediaSize.height * vRatio : y2 * vRatio
+              const top = Math.min(topPx, bottomPx)
+              const bottom = Math.max(topPx, bottomPx)
 
               ctx.fillStyle = this._colors.fill
               ctx.fillRect(left, top, right - left, bottom - top)

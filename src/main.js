@@ -46,6 +46,11 @@ let zonesByTimeframe = {}
 let lastFetchedAt = {}
 let currentPrice = null
 let refreshing = false
+// Bumped on every symbol switch so a fetch already in flight for the symbol just left
+// can tell it's been superseded — its own `finally` block checks this before touching
+// `refreshing`/re-rendering, so it can't re-open the guard or trigger an extra render
+// out from under the new symbol's own, still-genuinely-in-progress fetch.
+let refreshGeneration = 0
 let newsEvents = []
 let activeChart = null
 
@@ -81,10 +86,15 @@ function renderSymbolTabs() {
       lastFetchedAt = {}
       currentPrice = null
       priceEl.textContent = '—'
+      lastUpdateEl.textContent = '' // the old symbol's fetch time no longer applies to this one
+      historyTfFilter = 'ALL' // start each symbol's track record view unfiltered
+      refreshGeneration++
       renderSymbolTabs()
       renderDashboard()
       // Force past the in-flight guard: any still-running fetch for the symbol we
-      // just left will see `activeSymbol !== symbol` and discard itself harmlessly.
+      // just left will see `activeSymbol !== symbol` and discard itself harmlessly —
+      // and, since refreshGeneration just changed, its own finally block won't reset
+      // `refreshing` or re-render out from under this fetch once it eventually settles.
       refreshing = false
       refreshData()
     })
@@ -127,16 +137,24 @@ function updateNotifyBtn() {
     notifyBtn.hidden = true
     return
   }
+  // Ships `hidden` in the markup (like install-btn) so it never flashes visible for
+  // an instant on an unsupported browser before this function gets to hide it — has
+  // to be explicitly un-hidden here the first time support is confirmed.
+  notifyBtn.hidden = false
   const permission = getNotifyPermission()
   const enabled = isNotifyEnabled()
   notifyBtn.classList.toggle('active', enabled)
   notifyBtn.disabled = permission === 'denied'
-  notifyBtn.title =
+  const label =
     permission === 'denied'
       ? 'Notifications blocked — enable in browser settings'
       : enabled
         ? 'Disable price/signal alerts'
         : 'Enable price/signal alerts'
+  notifyBtn.title = label
+  // aria-label wins over title as the accessible name — update both, or a screen
+  // reader keeps announcing the button's very first state forever.
+  notifyBtn.setAttribute('aria-label', label)
 }
 
 notifyBtn.addEventListener('click', async () => {
@@ -158,7 +176,19 @@ notifyBtn.addEventListener('click', async () => {
 // someone line the two up directly instead of wondering why they don't match.
 let historyTfFilter = 'ALL'
 
+// Distinguishes "genuinely no filled signals yet" from "haven't fetched the track
+// record from the server at all yet" — without this, opening the modal in the brief
+// window before the first refreshHistory() resolves shows the same empty-state copy
+// as a real zero-signals case, which reads as "this dashboard has no track record"
+// rather than "still loading".
+let historyLoaded = false
+
 function renderHistory() {
+  if (!historyLoaded) {
+    historyBody.innerHTML = '<p class="history-empty">Loading track record…</p>'
+    return
+  }
+
   const stats = getStats(activeSymbol.key, historyTfFilter)
   // 'pending' (not yet filled) signals are already visible as live cards on the main
   // dashboard — the track record is for what's actually happened, so it only lists
@@ -221,17 +251,57 @@ historyBody.addEventListener('click', (e) => {
   renderHistory()
 })
 
-historyBtn.addEventListener('click', () => {
+// Remembers whatever had focus before the modal opened, so closing it (via Escape,
+// the backdrop, or the close button) returns focus there instead of dropping it back
+// to <body> — standard modal-dialog accessibility expectation.
+let previouslyFocusedEl = null
+
+function openHistoryModal() {
+  previouslyFocusedEl = document.activeElement
   renderHistory()
   historyModal.hidden = false
-})
+  historyCloseBtn.focus()
+}
 
-historyCloseBtn.addEventListener('click', () => {
+function closeHistoryModal() {
   historyModal.hidden = true
-})
+  previouslyFocusedEl?.focus?.()
+  previouslyFocusedEl = null
+}
+
+historyBtn.addEventListener('click', openHistoryModal)
+
+historyCloseBtn.addEventListener('click', closeHistoryModal)
 
 historyModal.addEventListener('click', (e) => {
-  if (e.target === historyModal) historyModal.hidden = true
+  if (e.target === historyModal) closeHistoryModal()
+})
+
+// Escape closes it; Tab/Shift+Tab is trapped inside it while open, so background
+// content (topbar, symbol/timeframe tabs) never becomes keyboard-reachable behind an
+// open modal. historyBody's contents (the tf-filter buttons) are re-rendered on every
+// renderHistory() call, so focusable elements are queried fresh on every keypress
+// rather than cached once at open time.
+historyModal.addEventListener('keydown', (e) => {
+  if (historyModal.hidden) return
+  if (e.key === 'Escape') {
+    closeHistoryModal()
+    return
+  }
+  if (e.key !== 'Tab') return
+  const focusable = historyModal.querySelectorAll(
+    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+  )
+  if (!focusable.length) return
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault()
+    last.focus()
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault()
+    first.focus()
+  }
 })
 
 function renderTabs() {
@@ -315,6 +385,7 @@ async function refreshNewsCalendar() {
 // rather than only once at startup, so a track record modal left open updates on its own.
 async function refreshHistory() {
   await loadHistory()
+  historyLoaded = true
   renderDashboard()
 }
 
@@ -356,28 +427,47 @@ function renderZoneCard(zone) {
   return card
 }
 
+// Tracks which `zonesByTimeframe[tab]` object is currently reflected by activeChart,
+// so a refresh tick that didn't actually refetch the *visible* tab (e.g. an H1-only
+// tick while D1 is on screen) can skip tearing the chart down — renderDashboard() runs
+// after every refreshData()/refreshHistory() (every 5 minutes each), and rebuilding the
+// chart unconditionally reset any zoom/pan the user was mid-inspection with, even
+// though nothing about their tab's own data changed.
+let chartedResult = null
+
 function renderContent() {
   const result = zonesByTimeframe[activeTab]
-  disposeChart()
 
   if (!result) {
+    disposeChart()
+    chartedResult = null
     contentEl.innerHTML = `<p class="empty-state">Loading ${activeTab} data...</p>`
     return
   }
 
   if (!result.zones.length) {
+    disposeChart()
+    chartedResult = null
     contentEl.innerHTML = `<p class="empty-state">No significant S/R zones detected yet for ${activeTab}.</p>`
     return
   }
 
-  contentEl.innerHTML = ''
-
-  // Chart needs to be attached to the DOM before it's created (lightweight-charts
-  // measures the container for its initial size), so append the empty div first.
-  const chartContainer = document.createElement('div')
-  chartContainer.className = 'zone-chart'
-  contentEl.appendChild(chartContainer)
-  activeChart = renderZoneChart(chartContainer, result.series, result.zones)
+  const needsFreshChart = chartedResult !== result
+  if (needsFreshChart) {
+    disposeChart()
+    contentEl.innerHTML = ''
+    // Chart needs to be attached to the DOM before it's created (lightweight-charts
+    // measures the container for its initial size), so append the empty div first.
+    const chartContainer = document.createElement('div')
+    chartContainer.className = 'zone-chart'
+    contentEl.appendChild(chartContainer)
+    activeChart = renderZoneChart(chartContainer, result.series, result.zones)
+    chartedResult = result
+  } else {
+    // Same tab, same (unchanged) result object — leave the chart and its DOM alone,
+    // just drop the old zone/signal cards below it before rebuilding them fresh.
+    contentEl.querySelectorAll('.zones-grid, .signals-grid').forEach((el) => el.remove())
+  }
 
   // Nearest-to-price first — the levels most likely to matter for the next move show
   // up top (there's at most one Support/Resistance/SBR/RBS each, so this is a 0-2 sort).
@@ -509,7 +599,14 @@ async function refreshData() {
   if (!dueTimeframes.length) return
 
   refreshing = true
-  contentEl.querySelectorAll('.zone-card, .signal-card').forEach((c) => (c.style.opacity = '0.6'))
+  const myGeneration = refreshGeneration
+  // Only dim the visible cards when the *active* tab's own timeframe is actually
+  // among this tick's due list — dimming unconditionally implied a refresh was
+  // happening for whatever's on screen even when it wasn't (e.g. viewing D1 during an
+  // H1-only tick).
+  if (dueTimeframes.some((tf) => tf.key === activeTab)) {
+    contentEl.querySelectorAll('.zone-card, .signal-card').forEach((c) => (c.style.opacity = '0.6'))
+  }
 
   const symbol = activeSymbol
 
@@ -561,8 +658,15 @@ async function refreshData() {
   } catch (err) {
     console.error(err) // keep last good data on screen, no user-facing warning
   } finally {
-    refreshing = false
-    renderDashboard()
+    // A symbol switch that happened while this fetch was in flight already bumped
+    // refreshGeneration — if so, this call has been superseded: the new symbol's own
+    // refreshData() call owns `refreshing`/rendering now, and this stale one touching
+    // either would race it (reopening the guard or re-rendering mid-flight of the
+    // fetch that actually matters).
+    if (myGeneration === refreshGeneration) {
+      refreshing = false
+      renderDashboard()
+    }
   }
 }
 

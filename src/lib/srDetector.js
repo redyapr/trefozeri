@@ -291,8 +291,11 @@ function buildTakeProfits(entryPrice, sl, direction, candidateZones, mergeThresh
   const mergeDistance = Math.max(mergeThreshold, MIN_TP_DISPLAY_SEPARATION)
   const fromZones = []
   for (const z of sortedZones) {
-    const last = fromZones[fromZones.length - 1]
-    if (last && Math.abs(z.mid - last) <= mergeDistance) continue
+    // Checked by length, not truthiness of the value itself — a price of exactly 0
+    // (never realistic for XAUUSD/BTCUSD, but not worth relying on that) would
+    // otherwise read as "no previous zone yet" and skip the merge check entirely.
+    const last = fromZones.length ? fromZones[fromZones.length - 1] : null
+    if (last != null && Math.abs(z.mid - last) <= mergeDistance) continue
     fromZones.push(z.mid)
   }
 

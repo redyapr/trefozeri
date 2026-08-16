@@ -1,6 +1,13 @@
 import { test, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { setupDom, teardownDom, MockNotification } from '../test-helpers/setupDom.mjs'
+import {
+  setupDom,
+  teardownDom,
+  MockNotification,
+  MockServiceWorkerRegistration,
+  installMockServiceWorker,
+  removeMockServiceWorker,
+} from '../test-helpers/setupDom.mjs'
 import {
   isSupported,
   getPermission,
@@ -189,5 +196,97 @@ test('checkZonesAndSignals', async (t) => {
     checkZonesAndSignals(symA, symA, near, 102)
     await flush()
     assert.equal(MockNotification.instances.length, 1, 'only symA (which just had a real second look) should fire')
+  })
+
+  await t.test('checks every timeframe in zonesByTimeframe, not just the first', async () => {
+    enable()
+    const sym = freshSymbol()
+    const far = {
+      H1: { zones: [{ category: 'Support', price: 100, distanceFromPrice: 50, threshold: 5 }] },
+      H4: { zones: [{ category: 'Resistance', price: 200, distanceFromPrice: 50, threshold: 5 }] },
+    }
+    checkZonesAndSignals(sym, sym, far, 150)
+    await flush()
+    const near = {
+      H1: { zones: [{ category: 'Support', price: 100, distanceFromPrice: 2, threshold: 5 }] },
+      H4: { zones: [{ category: 'Resistance', price: 200, distanceFromPrice: 2, threshold: 5 }] },
+    }
+    checkZonesAndSignals(sym, sym, near, 150)
+    await flush()
+    assert.equal(MockNotification.instances.length, 2, 'both H1 and H4 zones newly went near — both should fire')
+    const titles = MockNotification.instances.map((n) => n.title)
+    assert.ok(titles.some((t) => t.includes('Support')))
+    assert.ok(titles.some((t) => t.includes('Resistance')))
+  })
+
+  await t.test('never fires once permission is denied, even with a real transition into "near"', async () => {
+    const sym = freshSymbol()
+    MockNotification.permission = 'denied'
+    const far = { H1: { zones: [{ category: 'Support', price: 100, distanceFromPrice: 50, threshold: 5 }] } }
+    checkZonesAndSignals(sym, sym, far, 150)
+    await flush()
+    const near = { H1: { zones: [{ category: 'Support', price: 100, distanceFromPrice: 2, threshold: 5 }] } }
+    checkZonesAndSignals(sym, sym, near, 102)
+    await flush()
+    assert.equal(MockNotification.instances.length, 0, 'isEnabled() is false while denied, so this is a no-op throughout')
+  })
+
+  await t.test('a zone identified by its pivot (startTime), not rounded price, so drift across a rounding boundary does not re-fire', async () => {
+    enable()
+    const sym = freshSymbol()
+    const far = { H1: { zones: [{ category: 'Support', price: 99.6, startTime: 111, distanceFromPrice: 50, threshold: 5 }] } }
+    checkZonesAndSignals(sym, sym, far, 150)
+    await flush()
+    const near = { H1: { zones: [{ category: 'Support', price: 99.6, startTime: 111, distanceFromPrice: 2, threshold: 5 }] } }
+    checkZonesAndSignals(sym, sym, near, 102)
+    await flush()
+    assert.equal(MockNotification.instances.length, 1)
+    // Same pivot (startTime), price only drifts slightly across the 99.6 -> 100.4
+    // rounding boundary a plain Math.round-based key would have treated as "new".
+    const stillDrifted = { H1: { zones: [{ category: 'Support', price: 100.4, startTime: 111, distanceFromPrice: 2, threshold: 5 }] } }
+    checkZonesAndSignals(sym, sym, stillDrifted, 102)
+    await flush()
+    assert.equal(MockNotification.instances.length, 1, 'still the same pivot — no duplicate fire from the price crossing a rounding boundary')
+  })
+
+  await t.test('prefers the service worker route when a registration is available, instead of new Notification()', async () => {
+    enable()
+    installMockServiceWorker()
+    try {
+      const sym = freshSymbol()
+      const noSignal = { H1: { zones: [], signals: [] } }
+      checkZonesAndSignals(sym, sym, noSignal, 100)
+      await flush()
+      const withSignal = {
+        H1: { zones: [], signals: [{ category: 'Support', direction: 'buy', orderType: 'LIMIT', entry: 100 }] },
+      }
+      checkZonesAndSignals(sym, sym, withSignal, 100)
+      await flush()
+      assert.equal(MockNotification.instances.length, 0, 'the service-worker route was available — new Notification() was not used')
+      assert.equal(MockServiceWorkerRegistration.instances.length, 1)
+      assert.match(MockServiceWorkerRegistration.instances[0].title, /new BUY signal/)
+    } finally {
+      removeMockServiceWorker()
+    }
+  })
+
+  await t.test('a rejected showNotification() is swallowed, same as any other fire() failure', async () => {
+    enable()
+    installMockServiceWorker()
+    MockServiceWorkerRegistration.shouldReject = true
+    try {
+      const sym = freshSymbol()
+      const noSignal = { H1: { zones: [], signals: [] } }
+      checkZonesAndSignals(sym, sym, noSignal, 100)
+      await flush()
+      const withSignal = {
+        H1: { zones: [], signals: [{ category: 'Support', direction: 'buy', orderType: 'LIMIT', entry: 100 }] },
+      }
+      assert.doesNotThrow(() => checkZonesAndSignals(sym, sym, withSignal, 100))
+      await flush()
+      assert.equal(MockServiceWorkerRegistration.instances.length, 0, 'rejected before it could record itself as fired')
+    } finally {
+      removeMockServiceWorker()
+    }
   })
 })

@@ -52,3 +52,32 @@ export function teardownDom() {
   delete global.navigator
   delete global.Notification
 }
+
+// jsdom's navigator has no `serviceWorker` at all, so notifications.js's fire()
+// always falls through to `new Notification(...)` under test — its *preferred* route
+// (navigator.serviceWorker.getRegistration() -> reg.showNotification(), the one
+// Android Chrome actually requires) is otherwise never exercised. Opt-in per test
+// (via installMockServiceWorker/removeMockServiceWorker) rather than installed by
+// default in setupDom(), so every other existing test keeps asserting against plain
+// MockNotification instances unaffected.
+export class MockServiceWorkerRegistration {
+  static instances = []
+  static shouldReject = false
+
+  async showNotification(title, options) {
+    if (MockServiceWorkerRegistration.shouldReject) throw new Error('showNotification rejected')
+    MockServiceWorkerRegistration.instances.push({ title, options })
+  }
+}
+
+export function installMockServiceWorker() {
+  MockServiceWorkerRegistration.instances = []
+  MockServiceWorkerRegistration.shouldReject = false
+  navigator.serviceWorker = {
+    getRegistration: async () => new MockServiceWorkerRegistration(),
+  }
+}
+
+export function removeMockServiceWorker() {
+  delete navigator.serviceWorker
+}

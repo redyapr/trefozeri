@@ -382,11 +382,6 @@ body[data-symbol='btcusd'] {
   background: var(--resistance);
 }
 
-.history-row-badge.pending {
-  color: var(--accent);
-  border: 1px solid var(--accent);
-}
-
 .history-row-badge.running {
   color: #000;
   background: var(--accent);
@@ -778,10 +773,6 @@ body[data-symbol='btcusd'] {
   color: var(--text-dim);
 }
 
-.strength-badge.weak {
-  color: var(--resistance);
-}
-
 /* Explicit confluence badge — its own filled pill, distinct from the (plain,
    outlined) strength badge above. There's no "strong but not confluent" state (see
    srDetector.js's strengthLabel), so this fully replaces strength-badge.strong
@@ -813,11 +804,6 @@ body[data-symbol='btcusd'] {
   line-height: 1;
   position: relative;
   top: -1.5px;
-}
-
-.touches {
-  font-size: 0.72rem;
-  color: var(--text-dim);
 }
 
 .last-update {

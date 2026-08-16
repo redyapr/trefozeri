@@ -2,7 +2,12 @@ const STORAGE_KEY = 'gold-sr-ui-state'
 
 export function loadUiState() {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}
+    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY))
+    // Guard against valid-but-wrong-shaped JSON (a stray primitive or array somehow
+    // stored under this key) — spreading a non-object in saveUiState below would
+    // silently discard it, so this is treated the same as "nothing saved" up front
+    // rather than passing an unverified shape on to callers.
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
   } catch {
     return {}
   }

@@ -81,6 +81,16 @@ test('recordSignals', async (t) => {
     assert.equal(history[0].category, 'RBS')
   })
 
+  await t.test('a fresh signal missing threshold gets infinite drift tolerance — never dropped as stale on price alone', () => {
+    const history = []
+    recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 100 })])
+    // No `threshold` on this tick's signal — `s.threshold ?? Infinity` means *any*
+    // entry, however far the pivot recalculated, still counts as "the same" pivot.
+    recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 100000, threshold: undefined })])
+    assert.equal(history.length, 1, 'still recognized as the same still-current signal, not dropped')
+    assert.equal(history[0].entry, 100, 'the original open record is untouched — only whether to drop it is affected')
+  })
+
   await t.test('does not drop a pending record whose own entry currentPrice already shows was reached, even if its level vanished', () => {
     // Reproduces a real production bug: a SELL entry sits right at a resistance level,
     // so price reaching that entry (rallying up to it) and price breaking that same
