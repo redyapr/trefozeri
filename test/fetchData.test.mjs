@@ -622,21 +622,68 @@ test('sendAdminAlertDeduped', async (t) => {
 })
 
 test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
-  await t.test("a signal that's real on H4 but doesn't exist on H1 never reaches Telegram (H1-only, per TELEGRAM_TIMEFRAMES)", async () => {
+  await t.test('a signal that would be real on H4 is never recorded at all — signals are H1-only', async () => {
     const { sent, restore } = mockTelegram()
     try {
       // H1 is flat (no pivot at all -> no signal of its own), so currentPrice still
-      // comes from H1, but the only actual signal this tick is on H4.
-      // The high pivot's body lands at base-1 (see seriesWithHighPivot) — keep H1's flat
-      // reference price safely below that, so the H4 resistance is legitimately still
-      // above price (otherwise the wrong-side-of-price guard in buildSignals would
-      // reject it too, for an unrelated reason).
+      // comes from H1, but the only actual qualifying level this tick is on H4.
       const seriesByTf = { H1: flatSeries(4290), H4: seriesWithHighPivot(4300) }
       const history = []
       await updateSignalHistoryForSymbol(history, 'XAUUSD', seriesByTf)
-      assert.equal(sent.length, 0, 'an H4-only signal must never post, even though H1 (the reference price) is present')
-      assert.ok(history.some((r) => r.tf === 'H4'), 'still tracked in the shared history')
-      assert.equal(history.find((r) => r.tf === 'H4').telegramMessageId, undefined)
+      assert.equal(sent.length, 0)
+      assert.deepEqual(history, [], 'H4 never becomes a tracked record, real level or not')
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('a still-pending H4 record from before this policy gets dropped, not left lingering forever', async () => {
+    const { restore } = mockTelegram()
+    try {
+      const history = [
+        {
+          key: 'XAUUSD-H4-Resistance-sell',
+          symbolKey: 'XAUUSD',
+          tf: 'H4',
+          category: 'Resistance',
+          direction: 'sell',
+          entry: 4400,
+          sl: 4410,
+          tp: [],
+          openedAt: 0,
+          status: 'pending',
+        },
+      ]
+      const seriesByTf = { H1: flatSeries(4290), H4: seriesWithHighPivot(4300) }
+      await updateSignalHistoryForSymbol(history, 'XAUUSD', seriesByTf)
+      assert.deepEqual(history, [], 'recordSignals still runs with an empty signal list for H4, so it gets pruned')
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('an already-running H4 position (filled before this policy) is left alone until it naturally closes', async () => {
+    const { restore } = mockTelegram()
+    try {
+      const history = [
+        {
+          key: 'XAUUSD-H4-Resistance-sell',
+          symbolKey: 'XAUUSD',
+          tf: 'H4',
+          category: 'Resistance',
+          direction: 'sell',
+          entry: 4291,
+          sl: 4400,
+          tp: [{ price: 4200, rr: 1 }],
+          openedAt: 0,
+          status: 'running',
+          filledAt: 0,
+        },
+      ]
+      const seriesByTf = { H1: flatSeries(4290), H4: seriesWithHighPivot(4300) }
+      await updateSignalHistoryForSymbol(history, 'XAUUSD', seriesByTf)
+      assert.equal(history.length, 1, 'a running record is never dropped just because new signals stopped generating for its timeframe')
+      assert.equal(history[0].status, 'running')
     } finally {
       restore()
     }
@@ -649,7 +696,7 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
       const history = []
       await updateSignalHistoryForSymbol(history, 'XAUUSD', seriesByTf)
       assert.equal(sent.length, 0)
-      assert.deepEqual(history, [], 'without a currentPrice reference (from H1), buildSignals produces nothing at all')
+      assert.deepEqual(history, [], 'H4 signals are never recorded regardless — and there is no currentPrice to build from anyway')
     } finally {
       restore()
     }

@@ -16,9 +16,12 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
   plus qualifying levels from *higher* timeframes only. Shown between 0.5R–100R;
   near-duplicates merged. Falls back to fixed 1.5R/2.5R/3.5R if no structural level
   qualifies.
-- **Timeframes** — H1, H4, D1 only.
+- **Timeframes** — H1, H4, D1, shown combined (no per-timeframe tab). Signals — the
+  actionable BUY/SELL LIMIT cards — are H1 only; H4/D1 zones are shown for context and
+  still lend H1 extra TP targets (see Take-profits above), but never become tradeable
+  ideas of their own.
 - **Chart** — [lightweight-charts](https://github.com/tradingview/lightweight-charts):
-  candles plus shaded, labeled zone bands.
+  H1 candles with every timeframe's zones drawn together as shaded, labeled bands.
 - **Data** — Gold from Twelve Data, BTC from Binance.US, news from a free
   ForexFactory-style feed. See [Data & deployment](#data--deployment).
 - **PWA** — a service worker precaches the app shell; price/signal data always fetches
@@ -27,8 +30,7 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
   new signal forms.
 - **Track record** — shared across every visitor. Each signal goes `pending` →
   `running` (filled) → `win`/`loss`, stored in `data/signal-history.json` and
-  committed by CI. View it via the chart-icon button; filter by timeframe. Capped at
-  300 records per symbol.
+  committed by CI. View it via the chart-icon button. Capped at 300 records per symbol.
 - **Telegram notifications** — public channel, H1 only. Posts new signals, fills, and
   SL/TP results automatically. A still-pending signal's own message is edited in place
   whenever its entry/SL/TP recalculate, so it never shows stale numbers — once filled,

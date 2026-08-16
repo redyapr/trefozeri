@@ -25,7 +25,6 @@ const NEWS_HORIZON_HOURS = 12
 const AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000
 
 const symbolTabsEl = document.getElementById('symbol-tabs')
-const tabsEl = document.getElementById('tabs')
 const marketStatusBannerEl = document.getElementById('market-status-banner')
 const newsBannerEl = document.getElementById('news-banner')
 const contentEl = document.getElementById('content')
@@ -41,7 +40,6 @@ const installBtn = document.getElementById('install-btn')
 const uiState = loadUiState()
 
 let activeSymbol = SYMBOLS.find((s) => s.key === uiState.symbolKey) ?? SYMBOLS[0]
-let activeTab = TIMEFRAMES.find((tf) => tf.key === uiState.tab)?.key ?? TIMEFRAMES[0].key // H1 default
 let zonesByTimeframe = {}
 let lastFetchedAt = {}
 let currentPrice = null
@@ -87,7 +85,6 @@ function renderSymbolTabs() {
       currentPrice = null
       priceEl.textContent = '—'
       lastUpdateEl.textContent = '' // the old symbol's fetch time no longer applies to this one
-      historyTfFilter = 'ALL' // start each symbol's track record view unfiltered
       refreshGeneration++
       renderSymbolTabs()
       renderDashboard()
@@ -190,12 +187,6 @@ notifyBtn.addEventListener('click', async () => {
   updateNotifyBtn()
 })
 
-// 'ALL' combines every timeframe. Telegram only ever posts H1 signals (see
-// TELEGRAM_TIMEFRAMES in scripts/fetch-data.mjs), so the combined win rate here can
-// otherwise read differently than the channel's own H1-only track record — this lets
-// someone line the two up directly instead of wondering why they don't match.
-let historyTfFilter = 'ALL'
-
 // Distinguishes "genuinely no filled signals yet" from "haven't fetched the track
 // record from the server at all yet" — without this, opening the modal in the brief
 // window before the first refreshHistory() resolves shows the same empty-state copy
@@ -209,24 +200,17 @@ function renderHistory() {
     return
   }
 
-  const stats = getStats(activeSymbol.key, historyTfFilter)
+  // No per-timeframe filter — signals (and so the track record) are H1-only now (see
+  // scripts/fetch-data.mjs), so "every timeframe" and "H1 only" are already the same
+  // thing going forward. A handful of H4/D1 records from before that policy may still
+  // show up here until they finish closing out on their own.
+  const stats = getStats(activeSymbol.key)
   // 'pending' (not yet filled) signals are already visible as live cards on the main
   // dashboard — the track record is for what's actually happened, so it only lists
   // trades that have at least filled.
-  const records = getHistory(activeSymbol.key, historyTfFilter)
+  const records = getHistory(activeSymbol.key)
     .filter((r) => r.status !== 'pending')
     .slice(0, 30)
-
-  const tfFilterHtml = `
-    <div class="history-tf-filter">
-      ${['ALL', ...TIMEFRAMES.map((tf) => tf.key)]
-        .map(
-          (tf) =>
-            `<button type="button" class="history-tf-btn${tf === historyTfFilter ? ' active' : ''}" data-tf-filter="${tf}">${tf === 'ALL' ? 'All' : tf}</button>`
-        )
-        .join('')}
-    </div>
-  `
 
   const statsHtml = `
     <div class="history-stats">
@@ -257,19 +241,10 @@ function renderHistory() {
         </div>`
         })
         .join('')}</div>`
-    : `<p class="history-empty">No filled signals yet for ${activeSymbol.label}${historyTfFilter !== 'ALL' ? ` on ${historyTfFilter}` : ''} — pending ones are on the dashboard, check back here once one fills.</p>`
+    : `<p class="history-empty">No filled signals yet for ${activeSymbol.label} — pending ones are on the dashboard, check back here once one fills.</p>`
 
-  historyBody.innerHTML = tfFilterHtml + statsHtml + rowsHtml
+  historyBody.innerHTML = statsHtml + rowsHtml
 }
-
-// Delegated once on the stable container rather than re-attached per render, since
-// renderHistory() replaces historyBody's entire innerHTML each time it runs.
-historyBody.addEventListener('click', (e) => {
-  const btn = e.target.closest('[data-tf-filter]')
-  if (!btn) return
-  historyTfFilter = btn.dataset.tfFilter
-  renderHistory()
-})
 
 // Remembers whatever had focus before the modal opened, so closing it (via Escape,
 // the backdrop, or the close button) returns focus there instead of dropping it back
@@ -323,22 +298,6 @@ historyModal.addEventListener('keydown', (e) => {
     first.focus()
   }
 })
-
-function renderTabs() {
-  tabsEl.innerHTML = ''
-  for (const tf of TIMEFRAMES) {
-    const btn = document.createElement('button')
-    btn.className = 'tab-btn' + (tf.key === activeTab ? ' active' : '')
-    btn.textContent = tf.label
-    btn.addEventListener('click', () => {
-      activeTab = tf.key
-      saveUiState({ tab: activeTab })
-      renderTabs()
-      renderContent()
-    })
-    tabsEl.appendChild(btn)
-  }
-}
 
 function formatDateTime(ts) {
   const d = new Date(ts)
@@ -440,39 +399,53 @@ function renderZoneCard(zone) {
     <span class="zone-type">${shortCategory(zone.category)}</span>
     <div class="zone-range">
       <div class="zone-price">${formatPrice(zone.price)}</div>
-      <div class="zone-meta">Distance: ${formatPrice(zone.distanceFromPrice)} · Formed ${timeAgo(zone.startTime)}${brokenNote}${confluenceNote}</div>
+      <div class="zone-meta">${zone.tf} · Distance: ${formatPrice(zone.distanceFromPrice)} · Formed ${timeAgo(zone.startTime)}${brokenNote}${confluenceNote}</div>
     </div>
     <div class="zone-stats">${badge}</div>
   `
   return card
 }
 
-// Tracks which `zonesByTimeframe[tab]` object is currently reflected by activeChart,
-// so a refresh tick that didn't actually refetch the *visible* tab (e.g. an H1-only
-// tick while D1 is on screen) can skip tearing the chart down — renderDashboard() runs
-// after every refreshData()/refreshHistory() (every 5 minutes each), and rebuilding the
-// chart unconditionally reset any zoom/pan the user was mid-inspection with, even
-// though nothing about their tab's own data changed.
-let chartedResult = null
+// Tracks which per-timeframe result object is currently reflected by activeChart, so a
+// refresh tick that didn't actually refetch *any* of the three (all three still within
+// their own minRefetchMs cooldown) can skip tearing the chart down — renderDashboard()
+// runs after every refreshData()/refreshHistory() (every 5 minutes each), and rebuilding
+// the chart unconditionally would reset any zoom/pan the user was mid-inspection with
+// even though nothing actually changed. Chart candles are always H1's own series (the
+// finest-grained one); H4/D1 only ever contribute their zone bands on top of it.
+let chartedH1 = null
+let chartedH4 = null
+let chartedD1 = null
 
 function renderContent() {
-  const result = zonesByTimeframe[activeTab]
+  const h1 = zonesByTimeframe.H1
+  const h4 = zonesByTimeframe.H4
+  const d1 = zonesByTimeframe.D1
 
-  if (!result) {
+  if (!h1) {
     disposeChart()
-    chartedResult = null
-    contentEl.innerHTML = `<p class="empty-state">Loading ${activeTab} data...</p>`
+    chartedH1 = chartedH4 = chartedD1 = null
+    contentEl.innerHTML = `<p class="empty-state">Loading data...</p>`
     return
   }
 
-  if (!result.zones.length) {
+  // Every zone from all three timeframes, tagged with which one it came from — the
+  // chart and the zone cards below both show H1, H4 and D1 combined, with no
+  // per-timeframe tab to switch between them.
+  const allZones = [
+    ...h1.zones.map((z) => ({ ...z, tf: 'H1' })),
+    ...(h4?.zones ?? []).map((z) => ({ ...z, tf: 'H4' })),
+    ...(d1?.zones ?? []).map((z) => ({ ...z, tf: 'D1' })),
+  ]
+
+  if (!allZones.length) {
     disposeChart()
-    chartedResult = null
-    contentEl.innerHTML = `<p class="empty-state">No significant S/R zones detected yet for ${activeTab}.</p>`
+    chartedH1 = chartedH4 = chartedD1 = null
+    contentEl.innerHTML = `<p class="empty-state">No significant S/R zones detected yet.</p>`
     return
   }
 
-  const needsFreshChart = chartedResult !== result
+  const needsFreshChart = chartedH1 !== h1 || chartedH4 !== h4 || chartedD1 !== d1
   if (needsFreshChart) {
     disposeChart()
     contentEl.innerHTML = ''
@@ -481,19 +454,21 @@ function renderContent() {
     const chartContainer = document.createElement('div')
     chartContainer.className = 'zone-chart'
     contentEl.appendChild(chartContainer)
-    activeChart = renderZoneChart(chartContainer, result.series, result.zones)
-    chartedResult = result
+    activeChart = renderZoneChart(chartContainer, h1.series, allZones)
+    chartedH1 = h1
+    chartedH4 = h4
+    chartedD1 = d1
   } else {
-    // Same tab, same (unchanged) result object — leave the chart and its DOM alone,
-    // just drop the old zone/signal cards below it before rebuilding them fresh.
+    // Nothing actually refetched this tick — leave the chart and its DOM alone, just
+    // drop the old zone/signal cards below it before rebuilding them fresh.
     contentEl.querySelectorAll('.zones-grid, .signals-grid').forEach((el) => el.remove())
   }
 
   // Nearest-to-price first — the levels most likely to matter for the next move show
-  // up top (there's at most one Support/Resistance/SBR/RBS each, so this is a 0-2 sort).
+  // up top, across all three timeframes together.
   const byDistance = (a, b) => a.distanceFromPrice - b.distanceFromPrice
-  const resistances = result.zones.filter((z) => z.type === 'resistance').sort(byDistance)
-  const supports = result.zones.filter((z) => z.type === 'support').sort(byDistance)
+  const resistances = allZones.filter((z) => z.type === 'resistance').sort(byDistance)
+  const supports = allZones.filter((z) => z.type === 'support').sort(byDistance)
 
   const zonesGrid = document.createElement('div')
   zonesGrid.className = 'zones-grid'
@@ -512,8 +487,10 @@ function renderContent() {
   }
   contentEl.appendChild(zonesGrid)
 
-  // Signals go below the S/R zones they're derived from, not above.
-  const signals = result.signals ?? []
+  // Signals go below the S/R zones they're derived from, not above. H1 only — H4/D1
+  // zones are shown for context (and still get borrowed as H1's own TP candidates),
+  // but never become tradeable ideas of their own (see refreshData below).
+  const signals = h1.signals ?? []
   if (signals.length) {
     const signalsGrid = document.createElement('div')
     signalsGrid.className = 'signals-grid'
@@ -530,7 +507,9 @@ const CHECK_ICON =
 function buildSignalText(signal) {
   const label = `${signal.direction === 'buy' ? 'BUY' : 'SELL'} ${signal.orderType}`
   return [
-    `${label} — ${activeSymbol.label} ${activeTab}`,
+    // Signals are H1-only (see refreshData) — hardcoded rather than read off anything,
+    // since the signal object itself doesn't carry its own timeframe.
+    `${label} — ${activeSymbol.label} H1`,
     `Entry: ${formatPrice(signal.entry)}`,
     `SL: ${formatPrice(signal.sl)}`,
     ...signal.tp.map((t, i) => `TP${i + 1}: ${formatPrice(t.price)} (${formatPrice(t.rr)}R)`),
@@ -620,13 +599,9 @@ async function refreshData() {
 
   refreshing = true
   const myGeneration = refreshGeneration
-  // Only dim the visible cards when the *active* tab's own timeframe is actually
-  // among this tick's due list — dimming unconditionally implied a refresh was
-  // happening for whatever's on screen even when it wasn't (e.g. viewing D1 during an
-  // H1-only tick).
-  if (dueTimeframes.some((tf) => tf.key === activeTab)) {
-    contentEl.querySelectorAll('.zone-card, .signal-card').forEach((c) => (c.style.opacity = '0.6'))
-  }
+  // All three timeframes are always on screen together now (no tab to be "off"), so
+  // any due timeframe dims every visible card.
+  contentEl.querySelectorAll('.zone-card, .signal-card').forEach((c) => (c.style.opacity = '0.6'))
 
   const symbol = activeSymbol
 
@@ -662,20 +637,21 @@ async function refreshData() {
     if (!anySuccess) return
 
     // Golden Zone confluence needs every timeframe's levels at once, so it only runs
-    // once all of them are in — then signals are built per timeframe with it attached.
+    // once all of them are in.
     annotateGoldenZones(zonesByTimeframe)
-    for (const [tfKey, result] of Object.entries(zonesByTimeframe)) {
-      // TIMEFRAMES is ordered finest-to-broadest (H1, H4, D1) — everything after this
-      // timeframe's own index is "higher" and gets offered as extra TP candidates (see
-      // buildSignals). H1 can borrow H4/D1 structure; D1 has nothing above it to borrow.
-      const tfIndex = TIMEFRAMES.findIndex((tf) => tf.key === tfKey)
-      const higherTfZones = TIMEFRAMES.slice(tfIndex + 1).flatMap((tf) => zonesByTimeframe[tf.key]?.zones ?? [])
+    // Signals (actionable BUY/SELL LIMIT cards) are H1-only — H4/D1 zones are still
+    // shown (for context) and still get offered to H1 as higher-timeframe TP
+    // candidates just below, they just never become tradeable ideas of their own
+    // (matches the shared track record's own policy, see fetch-data.mjs).
+    const h1Result = zonesByTimeframe.H1
+    if (h1Result) {
+      const higherTfZones = TIMEFRAMES.slice(1).flatMap((tf) => zonesByTimeframe[tf.key]?.zones ?? [])
       // A stagnant timeframe (see isPriceStagnant) sizes its SL off an ATR computed
       // from near-frozen candles — even a genuinely old, real level ends up with a
       // razor-thin SL and an absurd R-multiple (e.g. 30R) that isn't a real trade idea.
       // Zones still render (the chart/zone cards stay informative), just no actionable
       // BUY/SELL LIMIT cards until price is actually moving again.
-      result.signals = isPriceStagnant(result.series) ? [] : buildSignals(result.zones, currentPrice, higherTfZones)
+      h1Result.signals = isPriceStagnant(h1Result.series) ? [] : buildSignals(h1Result.zones, currentPrice, higherTfZones)
     }
     checkZonesAndSignals(symbol.key, symbol.label, zonesByTimeframe, currentPrice)
 
@@ -724,7 +700,6 @@ window.addEventListener('appinstalled', () => {
 
 applySymbolTheme(activeSymbol)
 renderSymbolTabs()
-renderTabs()
 updateNotifyBtn()
 renderDashboard()
 refreshData()

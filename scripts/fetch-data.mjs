@@ -707,10 +707,15 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
     // buildSignals in srDetector.js). Kept in sync with the same logic in main.js.
     const tfIndex = TIMEFRAMES.findIndex((tf) => tf.key === tfKey)
     const higherTfZones = TIMEFRAMES.slice(tfIndex + 1).flatMap((tf) => zonesByTimeframe[tf.key]?.zones ?? [])
-    // Same reasoning as main.js: a stagnant timeframe's ATR is computed from
-    // near-frozen candles, so any signal built from it has a fabricated (razor-thin)
-    // SL and an absurd R-multiple — never record those into the shared track record.
-    const signals = isPriceStagnant(seriesByTf[tfKey]) ? [] : buildSignals(result.zones, currentPrice, higherTfZones)
+    // Signals (actionable BUY/SELL LIMIT ideas, and so the shared track record) are
+    // H1-only — the dashboard shows H4/D1 zones purely for context (and H1 still
+    // borrows them as extra TP candidates, see higherTfZones above), they just never
+    // become tradeable ideas of their own. Still runs recordSignals with an empty
+    // signal list for H4/D1 (rather than skipping the call outright) so any
+    // still-pending H4/D1 row from before this policy gets cleanly dropped instead of
+    // lingering forever — same reasoning as isPriceStagnant's own empty-signals path.
+    const signals =
+      tfKey === 'H1' && !isPriceStagnant(seriesByTf[tfKey]) ? buildSignals(result.zones, currentPrice, higherTfZones) : []
     for (const s of signals) signalByKey.set(keyFor(symbolKey, tfKey, s), s)
     const forTf = recordSignals(history, symbolKey, tfKey, signals, currentPrice)
     added.push(...forTf.added)

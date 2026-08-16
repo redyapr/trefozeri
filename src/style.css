@@ -38,9 +38,9 @@
   box-sizing: border-box;
 }
 
-/* Author `display` rules (e.g. `.tabs { display: flex }`) otherwise win over the
-   UA stylesheet's `[hidden] { display: none }`, since both are author-origin-adjacent
-   in specificity terms here — this keeps the `hidden` attribute authoritative. */
+/* Author `display` rules (e.g. `.symbol-tabs { display: flex }`) otherwise win over
+   the UA stylesheet's `[hidden] { display: none }`, since both are author-origin-
+   adjacent in specificity terms here — this keeps the `hidden` attribute authoritative. */
 [hidden] {
   display: none !important;
 }
@@ -341,34 +341,6 @@ body[data-symbol='btcusd'] {
   overflow-y: auto;
 }
 
-.history-tf-filter {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 14px;
-}
-
-.history-tf-btn {
-  padding: 4px 12px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--panel);
-  color: var(--text-dim);
-  cursor: pointer;
-  font-family: var(--font);
-  font-size: 0.72rem;
-  font-weight: 600;
-}
-
-.history-tf-btn:hover {
-  border-color: var(--accent);
-}
-
-.history-tf-btn.active {
-  color: #000;
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
 .history-stats {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -468,39 +440,6 @@ body[data-symbol='btcusd'] {
   color: var(--text-dim);
   font-size: 0.82rem;
   text-align: center;
-}
-
-.tabs {
-  display: flex;
-  gap: 22px;
-  overflow-x: auto;
-  padding: 18px 0 14px;
-  border-bottom: 1px solid var(--border-soft);
-  -webkit-overflow-scrolling: touch;
-}
-
-.tab-btn {
-  flex: 0 0 auto;
-  padding: 4px 2px 10px;
-  border: none;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  background: none;
-  color: var(--text-dim);
-  cursor: pointer;
-  font-family: var(--font);
-  font-size: 0.76rem;
-  font-weight: 600;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-/* The timeframe tab's active indicator is a fixed green (a selection-state color),
-   not accent-driven — it stays the same regardless of which symbol is active. */
-.tab-btn.active {
-  color: var(--support);
-  border-bottom-color: var(--support);
-  text-shadow: var(--glow-green-text);
 }
 
 .symbol-tabs {
