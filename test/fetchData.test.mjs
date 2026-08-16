@@ -133,6 +133,26 @@ function mockTelegram(otherHandler) {
   return { sent, restore: () => (global.fetch = original) }
 }
 
+// Forces telegramSendsAllowed() to false for the duration of `fn` — must clear BOTH
+// CI and ALLOW_TELEGRAM_SEND, not just the latter: a real GitHub Actions run has
+// CI='true' ambiently, so clearing only ALLOW_TELEGRAM_SEND still leaves sends allowed
+// there even though the exact same test correctly no-ops on a local machine (where CI
+// is normally unset) — this bit a real CI run once already (see git history).
+async function withTelegramSendsDisallowed(fn) {
+  const savedCi = process.env.CI
+  const savedAllow = process.env.ALLOW_TELEGRAM_SEND
+  delete process.env.CI
+  delete process.env.ALLOW_TELEGRAM_SEND
+  try {
+    return await fn()
+  } finally {
+    if (savedCi == null) delete process.env.CI
+    else process.env.CI = savedCi
+    if (savedAllow == null) delete process.env.ALLOW_TELEGRAM_SEND
+    else process.env.ALLOW_TELEGRAM_SEND = savedAllow
+  }
+}
+
 function candle(t, o, h, l, c) {
   return { time: t, open: o, high: h, low: l, close: c }
 }
@@ -446,17 +466,16 @@ test('telegramSendsAllowed', async (t) => {
 
 test('sendTelegramMessage', async (t) => {
   await t.test('no-ops (returns null, makes no request) when ALLOW_TELEGRAM_SEND/CI is not set, even with a valid token/chat id', async () => {
-    const savedAllow = process.env.ALLOW_TELEGRAM_SEND
-    delete process.env.ALLOW_TELEGRAM_SEND
-    const { sent, restore } = mockTelegram()
-    try {
-      const result = await sendTelegramMessage('hello')
-      assert.equal(result, null)
-      assert.equal(sent.length, 0)
-    } finally {
-      process.env.ALLOW_TELEGRAM_SEND = savedAllow
-      restore()
-    }
+    await withTelegramSendsDisallowed(async () => {
+      const { sent, restore } = mockTelegram()
+      try {
+        const result = await sendTelegramMessage('hello')
+        assert.equal(result, null)
+        assert.equal(sent.length, 0)
+      } finally {
+        restore()
+      }
+    })
   })
 
   await t.test('no-ops (returns null, makes no request) when the token/chat id are missing', async () => {
@@ -523,16 +542,15 @@ test('sendTelegramMessage', async (t) => {
 
 test('editTelegramMessage', async (t) => {
   await t.test('no-ops (returns false, makes no request) when ALLOW_TELEGRAM_SEND/CI is not set', async () => {
-    const savedAllow = process.env.ALLOW_TELEGRAM_SEND
-    delete process.env.ALLOW_TELEGRAM_SEND
-    const { sent, restore } = mockTelegram()
-    try {
-      assert.equal(await editTelegramMessage('hello', 1), false)
-      assert.equal(sent.length, 0)
-    } finally {
-      process.env.ALLOW_TELEGRAM_SEND = savedAllow
-      restore()
-    }
+    await withTelegramSendsDisallowed(async () => {
+      const { sent, restore } = mockTelegram()
+      try {
+        assert.equal(await editTelegramMessage('hello', 1), false)
+        assert.equal(sent.length, 0)
+      } finally {
+        restore()
+      }
+    })
   })
 
   await t.test('no-ops (returns false, makes no request) when the token/chat id/messageId are missing', async () => {
@@ -574,17 +592,16 @@ test('editTelegramMessage', async (t) => {
 
 test('sendTelegramPhoto', async (t) => {
   await t.test('no-ops (returns null, makes no request) when ALLOW_TELEGRAM_SEND/CI is not set', async () => {
-    const savedAllow = process.env.ALLOW_TELEGRAM_SEND
-    delete process.env.ALLOW_TELEGRAM_SEND
-    const { sent, restore } = mockTelegram()
-    try {
-      const result = await sendTelegramPhoto(Buffer.from('fake png'), 'chart.png')
-      assert.equal(result, null)
-      assert.equal(sent.length, 0)
-    } finally {
-      process.env.ALLOW_TELEGRAM_SEND = savedAllow
-      restore()
-    }
+    await withTelegramSendsDisallowed(async () => {
+      const { sent, restore } = mockTelegram()
+      try {
+        const result = await sendTelegramPhoto(Buffer.from('fake png'), 'chart.png')
+        assert.equal(result, null)
+        assert.equal(sent.length, 0)
+      } finally {
+        restore()
+      }
+    })
   })
 
   await t.test('no-ops (returns null, makes no request) when the token/chat id are missing', async () => {
@@ -641,17 +658,16 @@ test('sendTelegramPhoto', async (t) => {
 
 test('sendTelegramMediaGroupPhotos', async (t) => {
   await t.test('no-ops (returns []) when ALLOW_TELEGRAM_SEND/CI is not set', async () => {
-    const savedAllow = process.env.ALLOW_TELEGRAM_SEND
-    delete process.env.ALLOW_TELEGRAM_SEND
-    const { sent, restore } = mockTelegram()
-    try {
-      const result = await sendTelegramMediaGroupPhotos([{ buffer: Buffer.from('x'), filename: 'x.png' }])
-      assert.deepEqual(result, [])
-      assert.equal(sent.length, 0)
-    } finally {
-      process.env.ALLOW_TELEGRAM_SEND = savedAllow
-      restore()
-    }
+    await withTelegramSendsDisallowed(async () => {
+      const { sent, restore } = mockTelegram()
+      try {
+        const result = await sendTelegramMediaGroupPhotos([{ buffer: Buffer.from('x'), filename: 'x.png' }])
+        assert.deepEqual(result, [])
+        assert.equal(sent.length, 0)
+      } finally {
+        restore()
+      }
+    })
   })
 
   await t.test('no-ops (returns []) when the token/chat id are missing, or the item list is empty', async () => {
