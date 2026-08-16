@@ -124,6 +124,51 @@ test('detectLevels: pivot state machine', async (t) => {
   })
 })
 
+// Regression test for a real production bug: a data provider (Twelve Data) repeating
+// the last real tick with only sub-cent jitter while gold's market is closed (open
+// pinned, close wiggling by ~0.1 out of a series whose breakoutThreshold floor alone is
+// ~0.86 for this price range) produced a "Support" and a "Resistance" pivot barely 0.13
+// apart — visually overlapping on the chart — because findBodyPivots accepted a
+// candidate as a pivot even when it beat its neighbors by a razor-thin margin.
+test('detectLevels: does not fabricate zones from near-frozen (closed-market) data', async (t) => {
+  // Mirrors the real weekend XAUUSD feed: open pinned, close jittering by ~0.1 total —
+  // an order of magnitude below any sane breakout threshold for this price range.
+  function frozenCandles(base, count, startTime = 0) {
+    const candles = []
+    for (let i = 0; i < count; i++) {
+      const jitter = (i % 2 === 0 ? 1 : -1) * 0.05
+      candles.push(candle(startTime + i, base, base + 0.2, base - 0.2, base + jitter))
+    }
+    return candles
+  }
+
+  await t.test('a fully frozen series never fabricates a Support/Resistance pair out of noise', () => {
+    const candles = frozenCandles(4375, 40)
+    const zones = detectLevels(candles, candles.at(-1).close)
+    assert.deepEqual(zones, [])
+  })
+
+  await t.test('a real pivot followed by a frozen tail keeps the real pivot, not a noise pivot from the tail', () => {
+    const base = 4375
+    const real = seriesWithLowPivot(base)
+    const tail = frozenCandles(base + 3, 30, real.length)
+    const zones = detectLevels([...real, ...tail], tail.at(-1).close)
+    const support = zones.find((z) => z.category === 'Support')
+    assert.ok(support, 'the earlier real pivot should still be found')
+    assert.equal(support.price, base + 1, 'must not be a spurious pivot manufactured from the frozen tail\'s jitter')
+  })
+
+  await t.test('a real high pivot is likewise unaffected by a frozen tail (mirror of the Support case)', () => {
+    const base = 4375
+    const real = seriesWithHighPivot(base)
+    const tail = frozenCandles(base - 3, 30, real.length)
+    const zones = detectLevels([...real, ...tail], tail.at(-1).close)
+    const resistance = zones.find((z) => z.category === 'Resistance')
+    assert.ok(resistance, 'the earlier real pivot should still be found')
+    assert.equal(resistance.price, base - 1, 'must not be a spurious pivot manufactured from the frozen tail\'s jitter')
+  })
+})
+
 test('annotateGoldenZones', async (t) => {
   await t.test('flags matching same-category levels across timeframes', () => {
     const h1 = detectLevels(seriesWithLowPivot(4300), 4305)

@@ -67,7 +67,16 @@ function bodyLow(c) {
 }
 
 // Swing detection on the candle *body*, not the wick, so one long shadow can't fake a level.
-function findBodyPivots(candles, left, right) {
+// minAmplitude requires a candidate to stand out from *every* bar in its left/right
+// window by at least this much, not just be marginally more extreme — without it, a
+// stretch of near-frozen candles (e.g. a data provider repeating the last real tick
+// with sub-cent jitter while a market is closed) still always has *some* bar that's the
+// local max/min, however microscopic the difference, and that noise gets reported as a
+// real Support/Resistance pivot. Passing the same breakoutThreshold used elsewhere in
+// this module keeps this self-calibrated per timeframe/instrument rather than a fixed
+// magic number, and errs toward "no zone" over a fabricated one when price genuinely
+// isn't moving.
+function findBodyPivots(candles, left, right, minAmplitude = 0) {
   const highs = []
   const lows = []
 
@@ -78,12 +87,12 @@ function findBodyPivots(candles, left, right) {
     let isLow = true
 
     for (let w = 1; w <= left && (isHigh || isLow); w++) {
-      if (bodyHigh(candles[i - w]) >= hi) isHigh = false
-      if (bodyLow(candles[i - w]) <= lo) isLow = false
+      if (bodyHigh(candles[i - w]) >= hi - minAmplitude) isHigh = false
+      if (bodyLow(candles[i - w]) <= lo + minAmplitude) isLow = false
     }
     for (let w = 1; w <= right && (isHigh || isLow); w++) {
-      if (bodyHigh(candles[i + w]) >= hi) isHigh = false
-      if (bodyLow(candles[i + w]) <= lo) isLow = false
+      if (bodyHigh(candles[i + w]) >= hi - minAmplitude) isHigh = false
+      if (bodyLow(candles[i + w]) <= lo + minAmplitude) isLow = false
     }
 
     // wick: the candle's real high/low, kept alongside the body price so the SL logic
@@ -98,7 +107,7 @@ function findBodyPivots(candles, left, right) {
 // Replays the per-pivot state machine bar-by-bar over the full series, exactly as it
 // would evolve live, one candle at a time.
 function runStateMachine(candles, breakoutThreshold) {
-  const { highs, lows } = findBodyPivots(candles, PIVOT_LEFT, PIVOT_RIGHT)
+  const { highs, lows } = findBodyPivots(candles, PIVOT_LEFT, PIVOT_RIGHT, breakoutThreshold)
   const lowByPivotIndex = new Map(lows.map((p) => [p.index, p]))
   const highByPivotIndex = new Map(highs.map((p) => [p.index, p]))
 

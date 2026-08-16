@@ -114,13 +114,18 @@ function candle(t, o, h, l, c) {
   return { time: t, open: o, high: h, low: l, close: c }
 }
 
-function seriesWithLowPivot(base) {
+// unit scales the pivot's amplitude — needed at BTC price scale (~60000), where
+// detectLevels' breakoutThreshold floor (currentPrice * 0.0002 ≈ 12) is far bigger than
+// the fixed offsets below would give at their default XAUUSD-scale (~4300) amplitude
+// (see srDetector.js's minimum-pivot-amplitude check). Defaults to 1 so every existing
+// XAUUSD-scale call (and its exact-price assertions) is unaffected.
+function seriesWithLowPivot(base, unit = 1) {
   const candles = []
   let t = 0
-  for (let i = 0; i < 10; i++) candles.push(candle(t++, base + 5, base + 6, base + 4, base + 5))
-  candles.push(candle(t++, base + 1, base + 2, base - 5, base + 1))
-  for (let i = 0; i < 5; i++) candles.push(candle(t++, base + 3, base + 4, base + 2, base + 3))
-  for (let i = 0; i < 20; i++) candles.push(candle(t++, base + 3, base + 5, base + 2, base + 4))
+  for (let i = 0; i < 10; i++) candles.push(candle(t++, base + 5 * unit, base + 6 * unit, base + 4 * unit, base + 5 * unit))
+  candles.push(candle(t++, base + 1 * unit, base + 2 * unit, base - 5 * unit, base + 1 * unit))
+  for (let i = 0; i < 5; i++) candles.push(candle(t++, base + 3 * unit, base + 4 * unit, base + 2 * unit, base + 3 * unit))
+  for (let i = 0; i < 20; i++) candles.push(candle(t++, base + 3 * unit, base + 5 * unit, base + 2 * unit, base + 4 * unit))
   return candles
 }
 
@@ -592,7 +597,7 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
   await t.test('BTCUSD sends no new-signal message on a weekday, even for H1 (see the dedicated weekend-gating tests below)', async () => {
     const { sent, restore } = mockTelegram()
     try {
-      const base = seriesWithLowPivot(60000)
+      const base = seriesWithLowPivot(60000, 20)
       const weekday = Date.UTC(2026, 7, 12, 12, 0, 0) // Wednesday
       const seriesByTf = { H1: base.map((c, i) => ({ ...c, time: weekday - (base.length - i) * 3600000 })) }
       const history = []
@@ -744,7 +749,7 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
   await t.test('skips new-signal notifications for BTCUSD on a weekday (weekend-only, opposite of XAUUSD)', async () => {
     const { sent, restore } = mockTelegram()
     try {
-      const base = seriesWithLowPivot(60000)
+      const base = seriesWithLowPivot(60000, 20)
       const weekday = Date.UTC(2026, 7, 12, 12, 0, 0) // Wednesday
       const weekdaySeries = { H1: base.map((c, i) => ({ ...c, time: weekday - (base.length - i) * 3600000 })) }
       const history = []
@@ -759,7 +764,7 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
   await t.test('sends new-signal notifications for BTCUSD on the weekend', async () => {
     const { sent, restore } = mockTelegram()
     try {
-      const base = seriesWithLowPivot(60000)
+      const base = seriesWithLowPivot(60000, 20)
       const saturday = Date.UTC(2026, 7, 15, 12, 0, 0) // Saturday
       const weekendSeries = { H1: base.map((c, i) => ({ ...c, time: saturday - (base.length - i) * 3600000 })) }
       const history = []
@@ -773,7 +778,7 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
   await t.test('still notifies BTCUSD fills/closes on a weekday, even though new signals are weekend-only', async () => {
     const { sent, restore } = mockTelegram()
     try {
-      const base = seriesWithLowPivot(60000)
+      const base = seriesWithLowPivot(60000, 20)
       const saturday = Date.UTC(2026, 7, 15, 12, 0, 0)
       const openSeries = { H1: base.map((c, i) => ({ ...c, time: saturday - (base.length - i) * 3600000 })) }
       const history = []
