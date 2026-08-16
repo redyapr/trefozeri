@@ -1,6 +1,6 @@
 import { JSDOM } from 'jsdom'
 
-// offlineCache.js, uiState.js, and notifications.js all reach for `localStorage` (and
+// uiState.js and notifications.js both reach for `localStorage` (and
 // notifications.js also `Notification`/`navigator`) only inside their function bodies,
 // never at module-load time — so it's safe to import those modules normally and just
 // make sure these globals exist before actually *calling* anything, rather than before

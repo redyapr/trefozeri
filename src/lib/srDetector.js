@@ -319,10 +319,9 @@ function structuralSlDistance(zone, isSupport) {
   const effectiveAtr = zone.atr || zone.threshold / BREAKOUT_ATR_MULT
   const buffer = effectiveAtr * SL_STRUCTURE_BUFFER_RATIO
   const rawWickDistance = isSupport ? zone.price - zone.structureAnchor : zone.structureAnchor - zone.price
-  // zone.structureAnchor missing or corrupt (e.g. a zone shape from an incompatible
-  // cache slipping through, see offlineCache.js's versioned key) would otherwise
-  // poison the whole calculation with NaN — degrade to a pure volatility-based
-  // distance instead of failing outright.
+  // zone.structureAnchor missing or corrupt (e.g. an unexpected zone shape) would
+  // otherwise poison the whole calculation with NaN — degrade to a pure
+  // volatility-based distance instead of failing outright.
   const wickDistance = Number.isFinite(rawWickDistance) ? rawWickDistance : effectiveAtr
   const raw = wickDistance + buffer
   return Math.min(Math.max(raw, effectiveAtr * SL_ATR_FLOOR_MULT), effectiveAtr * SL_ATR_CAP_MULT)

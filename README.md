@@ -31,9 +31,9 @@ they happen.
   needed, more generous rate limit), and the news banner from a free ForexFactory-style
   calendar feed. See [Data & deployment](#data--deployment) below for how these reach
   the browser without exposing the Twelve Data API key.
-- **Offline-friendly**: last-known-good zones/price are cached to `localStorage`
-  (`src/lib/offlineCache.js`) and a PWA service worker precaches the app shell, so a
-  repeat visit still shows something useful without a network round-trip.
+- **PWA**: a service worker precaches the app shell (HTML/JS/CSS/icons), so the app
+  itself still opens without a network round-trip — zones/price/signals are always
+  fetched fresh, never shown from a stale local cache.
 - **Alerts**: `src/lib/notifications.js` fires a browser notification when price closes
   in on a zone or a new signal forms — opt-in via the bell icon (requests Notification
   permission, then toggles on/off without needing to touch browser settings again).
@@ -110,7 +110,7 @@ sizing, TP dedup), `signalHistoryCore.js` (record lifecycle, pip formatting),
 `marketHours.js`, and `fetch-data.mjs`'s Telegram message building / grouping /
 retry / admin-alert wiring (with `fetch` mocked, so it never touches the real network
 or a real chat) — plus the DOM-coupled browser modules (`notifications.js`,
-`offlineCache.js`, `uiState.js`) via `jsdom` (the one dev dependency the suite needs;
+`uiState.js`) via `jsdom` (the one dev dependency the suite needs;
 see `test-helpers/setupDom.mjs`, which also mocks the `Notification` API since jsdom
 itself doesn't implement it).
 
@@ -197,7 +197,6 @@ src/
     priceChart.js        lightweight-charts candle + zone rendering
     newsCalendar.js      Static-JSON calendar fetching + high-impact filtering
     notifications.js     Opt-in browser notifications for zone/signal alerts
-    offlineCache.js      localStorage last-known-good snapshot
     uiState.js           Persisted tab/symbol selection
     signalHistoryCore.js Pure record-keeping + pip/price-formatting logic, shared by
                          the browser and the cron script (also the source of PIP_SIZES)

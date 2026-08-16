@@ -2,7 +2,6 @@ import './style.css'
 import { TIMEFRAMES, SYMBOLS, fetchAllTimeframes } from './lib/twelveData.js'
 import { detectLevels, buildSignals, annotateGoldenZones } from './lib/srDetector.js'
 import { fetchNewsCalendar, findUpcomingHighImpact } from './lib/newsCalendar.js'
-import { saveLastKnown, loadLastKnown } from './lib/offlineCache.js'
 import { loadUiState, saveUiState } from './lib/uiState.js'
 import { renderZoneChart } from './lib/priceChart.js'
 import {
@@ -83,7 +82,6 @@ function renderSymbolTabs() {
       currentPrice = null
       priceEl.textContent = '—'
       renderSymbolTabs()
-      hydrateFromCache(activeSymbol)
       renderDashboard()
       // Force past the in-flight guard: any still-running fetch for the symbol we
       // just left will see `activeSymbol !== symbol` and discard itself harmlessly.
@@ -92,20 +90,6 @@ function renderSymbolTabs() {
     })
     symbolTabsEl.appendChild(btn)
   }
-}
-
-function hydrateFromCache(symbol) {
-  const cached = loadLastKnown(symbol.key)
-  if (!cached) return
-
-  zonesByTimeframe = cached.zonesByTimeframe
-  currentPrice = cached.currentPrice
-  // We only store one save time for the whole snapshot, not per timeframe, but that's
-  // a fine approximation — it stops the refresh that follows hydration from immediately
-  // re-fetching everything the cache just gave us for free.
-  lastFetchedAt = Object.fromEntries(Object.keys(cached.zonesByTimeframe).map((key) => [key, cached.savedAt]))
-  if (currentPrice != null) priceEl.textContent = formatPrice(currentPrice)
-  lastUpdateEl.textContent = `Showing cached data from ${new Date(cached.savedAt).toLocaleString('en-US')}`
 }
 
 function renderMarketStatusBanner() {
@@ -556,8 +540,8 @@ async function refreshData() {
     }
 
     // Every due timeframe failed (offline, or the whole API is down) — nothing
-    // actually changed, so leave whatever "Last updated" / "Showing cached data"
-    // message was already on screen rather than claiming a freshness that didn't happen.
+    // actually changed, so leave whatever "Last updated" message was already on
+    // screen rather than claiming a freshness that didn't happen.
     if (!anySuccess) return
 
     // Golden Zone confluence needs every timeframe's levels at once, so it only runs
@@ -572,7 +556,6 @@ async function refreshData() {
       result.signals = buildSignals(result.zones, currentPrice, higherTfZones)
     }
     checkZonesAndSignals(symbol.key, symbol.label, zonesByTimeframe, currentPrice)
-    saveLastKnown(symbol.key, zonesByTimeframe, currentPrice)
 
     lastUpdateEl.textContent = `Last updated: ${new Date().toLocaleTimeString('en-US')}`
   } catch (err) {
@@ -614,7 +597,6 @@ applySymbolTheme(activeSymbol)
 renderSymbolTabs()
 renderTabs()
 updateNotifyBtn()
-hydrateFromCache(activeSymbol)
 renderDashboard()
 refreshData()
 refreshNewsCalendar()
