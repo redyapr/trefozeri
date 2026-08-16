@@ -167,6 +167,32 @@ test('detectLevels: does not fabricate zones from near-frozen (closed-market) da
     assert.ok(resistance, 'the earlier real pivot should still be found')
     assert.equal(resistance.price, base - 1, 'must not be a spurious pivot manufactured from the frozen tail\'s jitter')
   })
+
+  // Regression test for a real production bug found the same day: an earlier version
+  // of the amplitude check required the candidate to clear *every individual neighbor*
+  // by minAmplitude — which rejected a genuine double-bottom (today's low landing a
+  // few cents above yesterday's close, a real retest) even though the rest of the
+  // window spanned nearly $100, because that one adjacent candle happened to be close.
+  // Checking the *whole window's* range instead of every neighbor individually fixes
+  // this while still rejecting the near-frozen case above.
+  await t.test('a real double-bottom (today\'s low lands just above yesterday\'s close/low) is still recognized', () => {
+    const base = 4300
+    const candles = []
+    let t = 0
+    // Wide chop well away from the eventual low pair — establishes plenty of genuine
+    // range across the window, unlike the frozen-market case above.
+    for (let i = 0; i < 5; i++) candles.push(candle(t++, base + 80, base + 90, base + 70, base + 85))
+    // Yesterday: closes right at the bottom of a selloff.
+    candles.push(candle(t++, base + 5, base + 10, base, base + 0.5))
+    // Today (the pivot candidate): opens almost exactly where yesterday closed, dips a
+    // hair lower intrabar, then rallies hard — a real retest, not noise.
+    candles.push(candle(t++, base + 0.4, base + 60, base - 1, base + 55))
+    for (let i = 0; i < 5; i++) candles.push(candle(t++, base + 50, base + 65, base + 40, base + 55))
+    const zones = detectLevels(candles, candles.at(-1).close)
+    const support = zones.find((z) => z.category === 'Support')
+    assert.ok(support, 'the retested low must still be recognized as a pivot')
+    assert.equal(support.price, base + 0.4)
+  })
 })
 
 // Root-cause detector shared by the market-status banner (main.js) and the cron's

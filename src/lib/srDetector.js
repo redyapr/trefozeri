@@ -101,16 +101,22 @@ export function isPriceStagnant(candles, lookback = STAGNANT_LOOKBACK) {
   return maxBody - minBody < currentPrice * STAGNANT_PRICE_RATIO
 }
 
-// Swing detection on the candle *body*, not the wick, so one long shadow can't fake a level.
-// minAmplitude requires a candidate to stand out from *every* bar in its left/right
-// window by at least this much, not just be marginally more extreme — without it, a
-// stretch of near-frozen candles (e.g. a data provider repeating the last real tick
-// with sub-cent jitter while a market is closed) still always has *some* bar that's the
-// local max/min, however microscopic the difference, and that noise gets reported as a
-// real Support/Resistance pivot. Passing the same breakoutThreshold used elsewhere in
-// this module keeps this self-calibrated per timeframe/instrument rather than a fixed
-// magic number, and errs toward "no zone" over a fabricated one when price genuinely
-// isn't moving.
+// Swing detection on the candle *body*, not the wick, so one long shadow can't fake a
+// level. minAmplitude requires the *whole* left+right window to span at least this much
+// (highest body high to lowest body low across all 2*window+1 bars), not just the
+// candidate itself — without some floor, a stretch of near-frozen candles (e.g. a data
+// provider repeating the last real tick with sub-cent jitter while a market is closed)
+// still always has *some* bar that's the local max/min, however microscopic the
+// difference, and that noise gets reported as a real Support/Resistance pivot.
+//
+// Checking the *whole window's* range rather than "the candidate must clear every
+// individual neighbor by minAmplitude" matters: an earlier version of this check did
+// the latter, and it rejected genuine pivots too — e.g. a real double-bottom, where
+// today's low lands a few cents above yesterday's close/low (a real retest, not noise)
+// even though the rest of the window spans hundreds of dollars. Passing the same
+// breakoutThreshold used elsewhere in this module keeps this self-calibrated per
+// timeframe/instrument rather than a fixed magic number, and errs toward "no zone" over
+// a fabricated one when price genuinely isn't moving at all.
 function findBodyPivots(candles, left, right, minAmplitude = 0) {
   const highs = []
   const lows = []
@@ -120,14 +126,29 @@ function findBodyPivots(candles, left, right, minAmplitude = 0) {
     const lo = bodyLow(candles[i])
     let isHigh = true
     let isLow = true
+    let windowMaxHigh = hi
+    let windowMinLow = lo
 
-    for (let w = 1; w <= left && (isHigh || isLow); w++) {
-      if (bodyHigh(candles[i - w]) >= hi - minAmplitude) isHigh = false
-      if (bodyLow(candles[i - w]) <= lo + minAmplitude) isLow = false
+    for (let w = 1; w <= left; w++) {
+      const nHigh = bodyHigh(candles[i - w])
+      const nLow = bodyLow(candles[i - w])
+      if (nHigh >= hi) isHigh = false
+      if (nLow <= lo) isLow = false
+      if (nHigh > windowMaxHigh) windowMaxHigh = nHigh
+      if (nLow < windowMinLow) windowMinLow = nLow
     }
-    for (let w = 1; w <= right && (isHigh || isLow); w++) {
-      if (bodyHigh(candles[i + w]) >= hi - minAmplitude) isHigh = false
-      if (bodyLow(candles[i + w]) <= lo + minAmplitude) isLow = false
+    for (let w = 1; w <= right; w++) {
+      const nHigh = bodyHigh(candles[i + w])
+      const nLow = bodyLow(candles[i + w])
+      if (nHigh >= hi) isHigh = false
+      if (nLow <= lo) isLow = false
+      if (nHigh > windowMaxHigh) windowMaxHigh = nHigh
+      if (nLow < windowMinLow) windowMinLow = nLow
+    }
+
+    if (windowMaxHigh - windowMinLow < minAmplitude) {
+      isHigh = false
+      isLow = false
     }
 
     // wick: the candle's real high/low, kept alongside the body price so the SL logic
