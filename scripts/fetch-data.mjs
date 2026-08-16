@@ -230,10 +230,12 @@ export async function sendTelegramMessage(text, replyToMessageId, chatId = proce
         // — without this, Telegram would attach a big preview card under every one of
         // them, dwarfing the actual <pre> content. Harmless when there's no link at all.
         link_preview_options: { is_disabled: true },
-        // allow_sending_without_reply: the original message could in principle have
-        // been deleted from the chat since — fall back to a plain message rather than
-        // failing the notification outright.
-        ...(replyToMessageId ? { reply_to_message_id: replyToMessageId, allow_sending_without_reply: true } : {}),
+        // allow_sending_without_reply: false — the original message could in principle
+        // have been deleted from the chat since (e.g. manually), in which case skip
+        // this notification entirely (the call below fails, json.ok is false, and the
+        // caller gets null) rather than posting it as a confusing orphaned standalone
+        // message with no context.
+        ...(replyToMessageId ? { reply_to_message_id: replyToMessageId, allow_sending_without_reply: false } : {}),
       }),
     })
     const json = await res.json()

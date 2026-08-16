@@ -399,16 +399,30 @@ test('sendTelegramMessage', async (t) => {
     }
   })
 
-  await t.test('includes reply_to_message_id + allow_sending_without_reply only when replying', async () => {
+  await t.test('includes reply_to_message_id only when replying, with allow_sending_without_reply false', async () => {
     const { sent, restore } = mockTelegram()
     try {
       await sendTelegramMessage('a fresh message')
       await sendTelegramMessage('a reply', 42)
       assert.equal(sent[0].reply_to_message_id, undefined)
       assert.equal(sent[1].reply_to_message_id, 42)
-      assert.equal(sent[1].allow_sending_without_reply, true)
+      // false, not true: if the message being replied to was deleted (e.g. manually),
+      // this notification should be skipped entirely, not posted as an orphaned
+      // standalone message with no context — see the next test.
+      assert.equal(sent[1].allow_sending_without_reply, false)
     } finally {
       restore()
+    }
+  })
+
+  await t.test('a reply to a since-deleted message is skipped entirely, not posted standalone', async () => {
+    const original = global.fetch
+    global.fetch = async () => ({ ok: true, json: async () => ({ ok: false, description: 'Bad Request: message to reply not found' }) })
+    try {
+      const result = await sendTelegramMessage('FILLED', 42)
+      assert.equal(result, null, 'no message_id — nothing was actually sent')
+    } finally {
+      global.fetch = original
     }
   })
 
