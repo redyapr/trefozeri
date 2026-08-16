@@ -20,6 +20,13 @@
     <meta name="robots" content="index, follow" />
     <link rel="canonical" href="https://redyapr.github.io/trefozeri/" />
 
+    <!-- This page is English; id/index.html is the Indonesian-language counterpart.
+         x-default covers everyone else (search engines that can't match a visitor's
+         language to either alternate). -->
+    <link rel="alternate" hreflang="en" href="https://redyapr.github.io/trefozeri/" />
+    <link rel="alternate" hreflang="id" href="https://redyapr.github.io/trefozeri/id/" />
+    <link rel="alternate" hreflang="x-default" href="https://redyapr.github.io/trefozeri/" />
+
     <!-- Open Graph -->
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="TREFOZERI" />
@@ -83,7 +90,9 @@
           </span>
           <div class="brand-text">
             <nav id="symbol-tabs" class="symbol-tabs" aria-label="Symbol"></nav>
-            <h1 class="brand-title">Support &amp; Resistance</h1>
+            <h1 class="brand-title">
+              Support &amp; Resistance<span class="visually-hidden"> — XAUUSD Gold &amp; BTCUSD Bitcoin Signals</span>
+            </h1>
           </div>
         </div>
         <div class="topbar-actions">
@@ -133,7 +142,14 @@
       <div id="news-banner" class="news-banner" hidden></div>
 
       <main id="content" class="content">
-        <p class="empty-state">Loading dashboard...</p>
+        <!-- Real content for crawlers/clients that don't execute JS (main.js replaces
+             this with the live dashboard on load) — describes what's actually here
+             instead of a generic "Loading..." placeholder that says nothing. -->
+        <p class="empty-state">
+          Loading live XAUUSD (Gold) and BTCUSD (Bitcoin) support &amp; resistance signals — multi-timeframe
+          S/R/SBR/RBS zones with entry, stop loss and take-profit levels, updated continuously across the H1, H4 and
+          D1 timeframes.
+        </p>
       </main>
 
       <p id="last-update" class="last-update"></p>

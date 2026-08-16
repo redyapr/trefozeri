@@ -14,6 +14,15 @@ export default defineConfig({
   base,
   build: {
     target: 'es2020',
+    rollupOptions: {
+      // id/index.html is a static Indonesian-language SEO landing page (see its own
+      // comments) — a second Vite entry so it gets the same base-path rewriting and
+      // asset bundling as the main app instead of being served unprocessed.
+      input: {
+        main: 'index.html',
+        id: 'id/index.html',
+      },
+    },
   },
   plugins: [
     VitePWA({

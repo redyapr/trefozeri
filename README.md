@@ -185,9 +185,19 @@ One-time setup for a fork or a new deploy target (the workflow's default
 `vite.config.js` bases the build at `/trefozeri/` (this repo's GitHub Pages project
 path) only when the workflow sets `GH_PAGES=true`; local dev still bases at `/`.
 
+`vite.config.js` also builds `id/index.html` as a second entry point (see
+`build.rollupOptions.input`) — a static, Indonesian-language SEO landing page at
+`/id/`. It's plain HTML (no `main.js`), links back to the live (English) dashboard,
+and is cross-linked with the root page via `hreflang` alternates. It's a deliberately
+separate page rather than a translation of the dashboard itself, which has no i18n
+system.
+
 ## Project structure
 
 ```
+index.html                English dashboard entry point (loads src/main.js)
+id/
+  index.html              Indonesian-language static SEO landing page (see above)
 src/
   main.js                UI wiring, render loop, refresh/cache orchestration
   style.css              All styling (light/dark theme via CSS custom properties)

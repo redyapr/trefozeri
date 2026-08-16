@@ -132,6 +132,82 @@ body[data-symbol='btcusd'] {
   white-space: nowrap;
 }
 
+/* Visually hidden but still readable by screen readers and search engine crawlers —
+   used to fold in the fuller "XAUUSD & BTCUSD" keyword phrase without lengthening the
+   short brand mark that's actually shown on screen. Standard sr-only recipe: clipped
+   to 1px rather than `display: none`/`visibility: hidden`, which assistive tech (and
+   crawlers) treat as "not content" and skip entirely. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* id/index.html only — a static Indonesian-language landing page, not the live
+   dashboard, so it needs its own (much simpler) content layout rather than any of
+   the zone-card/signal-card/chart styling used elsewhere in this file. */
+.landing {
+  padding: 24px 0 8px;
+}
+
+.landing-title {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 1.5rem;
+  line-height: 1.4;
+  margin: 0 0 16px;
+  color: var(--accent);
+  text-shadow: var(--accent-glow);
+}
+
+.landing-lede {
+  font-size: 0.95rem;
+  line-height: 1.7;
+  max-width: 720px;
+}
+
+.landing-features {
+  margin: 20px 0;
+  padding-left: 20px;
+  max-width: 720px;
+  line-height: 1.7;
+}
+
+.landing-features li + li {
+  margin-top: 8px;
+}
+
+.landing-cta {
+  display: inline-block;
+  margin: 8px 0 20px;
+  padding: 12px 20px;
+  border: 2px solid var(--accent);
+  border-radius: 8px;
+  color: var(--accent);
+  font-weight: 700;
+  text-decoration: none;
+  text-shadow: var(--accent-glow);
+  box-shadow: var(--accent-glow-box);
+}
+
+.landing-cta:hover {
+  background: var(--accent);
+  color: var(--bg);
+  text-shadow: none;
+}
+
+.landing-note {
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  max-width: 720px;
+}
+
 .topbar-actions {
   display: flex;
   align-items: center;
