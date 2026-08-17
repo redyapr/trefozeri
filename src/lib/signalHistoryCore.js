@@ -1,3 +1,5 @@
+import { BREAKOUT_ATR_MULT } from './srDetector.js'
+
 // Pure record-keeping logic for the signal track record — no localStorage, no fetch,
 // just plain array-in/array-out functions. This is the one copy shared between the
 // browser (read-only display, via signalHistory.js) and the Node cron script that
@@ -27,6 +29,16 @@ export const MAX_RECORDS = 300
 export const keyFor = (symbolKey, tf, signal) => `${symbolKey}-${tf}-${signal.category}-${signal.direction}`
 
 const isOpen = (r) => r.status === 'pending' || r.status === 'running'
+
+// 2026-08-17 win-rate review (see the matching comments in srDetector.js): a bare wick
+// touch used to be enough to fill a limit order. A disciplined S/R trader instead waits
+// for the retest candle to actually *close* holding the level before entering — not
+// just wick through it on the way to somewhere else — so a fill now requires both.
+// Also skips a candle whose own range is already an outsized volatility spike (see
+// FILL_CANDLE_SKIP_ATR_MULT below): that's a violent move already in progress, not a
+// controlled retest touch, and is exactly the shape of candle found blowing through
+// both entry and SL together in the same motion during the review.
+const FILL_CANDLE_SKIP_ATR_MULT = 2
 
 // Mutates `records`: drops stale unfilled orders whose level moved on without them,
 // syncs a still-open pending order's entry/SL/TP to the freshest recalculation, then
@@ -111,6 +123,13 @@ export function recordSignals(records, symbolKey, tf, signals, currentPrice, cur
       entry: signal.entry,
       sl: signal.sl,
       tp: signal.tp,
+      // A real pre-existing gap this uncovered: previously only ever set on a later
+      // sync tick (see `r.threshold = match.threshold` above), never at creation — a
+      // record that filled on its very first tick could reach evaluateSignals with no
+      // threshold at all, silently skipping the oversized-candle fill check below
+      // (which backs its effective ATR out of this field) for exactly the trades most
+      // likely to need it.
+      threshold: signal.threshold,
       openedAt: currentTime,
       status: 'pending',
     }
@@ -122,13 +141,14 @@ export function recordSignals(records, symbolKey, tf, signals, currentPrice, cur
 }
 
 // Advances every open record for this symbol: fills a 'pending' limit order once price
-// reaches its entry, then (whether just filled or already running) closes it out as a
-// 'win' or 'loss' once price plausibly hits its first take-profit or its stop-loss.
-// Mutates `records` in place; returns `{ filled, closed }` — the records that changed
-// state this call, e.g. so a caller can notify about them. A record that fills AND
-// closes within the same call (a fast move a coarse ~15-minute poll can't see the
-// middle of) only appears in `closed`, not `filled` — a "filled" notification would be
-// redundant noise immediately followed by the close.
+// reaches its entry *and* the same candle closes back confirming the retest held (see
+// FILL_CANDLE_SKIP_ATR_MULT above), then (whether just filled or already running)
+// closes it out as a 'win' or 'loss' once price plausibly hits its first take-profit or
+// its stop-loss. Mutates `records` in place; returns `{ filled, closed }` — the records
+// that changed state this call, e.g. so a caller can notify about them. A record that
+// fills AND closes within the same call (a fast move a coarse ~15-minute poll can't see
+// the middle of) only appears in `closed`, not `filled` — a "filled" notification would
+// be redundant noise immediately followed by the close.
 //
 // `candles` is the price series (ascending by time, full OHLC) fill/SL/TP are checked
 // against — NOT just the latest close. A real production bug: checking only the most
@@ -138,6 +158,11 @@ export function recordSignals(records, symbolKey, tf, signals, currentPrice, cur
 // ran, mis-recording a real win as a loss. Every candle since the record's own
 // openedAt/filledAt is scanned (not just the latest one) so a gap of more than one poll
 // — a skipped cron tick, a slow run — still can't hide a touch that happened in between.
+//
+// SL/TP themselves are still checked against a bare intrabar touch, deliberately not
+// close-confirmed the way the fill above is: once actually in a trade, a real stop/limit
+// order fires the instant price trades there regardless of where that candle later
+// closes. Only the *entry* is a discretionary "did the retest actually hold" decision.
 export function evaluateSignals(records, symbolKey, candles) {
   if (!candles?.length) return { filled: [], closed: [] }
   const filled = []
@@ -156,15 +181,35 @@ export function evaluateSignals(records, symbolKey, candles) {
     let justFilled = false
 
     if (r.status === 'pending') {
-      // A fade-the-level limit order: buy fills once price *trades* at or through
-      // entry (candle low reaches it), sell fills once price trades up to it (candle
-      // high reaches it) — not just if some later candle happens to close there.
-      const fillIndex = relevant.findIndex((c) => (isBuy ? c.low <= r.entry : c.high >= r.entry))
+      // effectiveAtr backs out of the level's own stored threshold (= atr *
+      // BREAKOUT_ATR_MULT, see srDetector.js) rather than needing the raw ATR passed
+      // through separately. Missing on very old records (from before `threshold` was
+      // recorded) — the oversized-candle check below simply doesn't apply to those.
+      const effectiveAtr = r.threshold ? r.threshold / BREAKOUT_ATR_MULT : null
+      const fillIndex = relevant.findIndex((c) => {
+        // A fade-the-level limit order: buy fills once price *trades* at or through
+        // entry (candle low reaches it), sell fills once price trades up to it (candle
+        // high reaches it).
+        const touched = isBuy ? c.low <= r.entry : c.high >= r.entry
+        if (!touched) return false
+        // Skip a candle that's already an outsized volatility spike relative to this
+        // level's own ATR — a violent move already in progress, not a controlled retest
+        // touch (see FILL_CANDLE_SKIP_ATR_MULT above). Wait for a calmer candle instead.
+        if (effectiveAtr && c.high - c.low > effectiveAtr * FILL_CANDLE_SKIP_ATR_MULT) return false
+        // A bare touch isn't enough — require this same candle to also *close* back on
+        // the favorable side of entry, confirming the retest actually held (support
+        // bought back up, resistance sold back down) rather than just wicking through.
+        return isBuy ? c.close >= r.entry : c.close <= r.entry
+      })
       if (fillIndex === -1) continue
       r.status = 'running'
       r.filledAt = relevant[fillIndex].time
       justFilled = true
-      searchFrom = fillIndex // fall through to check SL/TP starting on the same candle
+      // Starts checking SL/TP from the *next* candle, not this one: the confirming
+      // candle's own already-past range isn't live risk — a discretionary trader only
+      // actually enters once it closes, so its intrabar action before that close
+      // couldn't have stopped a position out that didn't exist yet.
+      searchFrom = fillIndex + 1
     }
 
     // Scan forward from the fill (or from the start of `relevant` if already running)

@@ -1,6 +1,6 @@
 import './style.css'
 import { TIMEFRAMES, SYMBOLS, fetchAllTimeframes } from './lib/twelveData.js'
-import { detectLevels, buildSignals, annotateGoldenZones, isPriceStagnant } from './lib/srDetector.js'
+import { detectLevels, buildSignals, annotateGoldenZones, isPriceStagnant, computeTrend } from './lib/srDetector.js'
 import { fetchNewsCalendar, findUpcomingHighImpact } from './lib/newsCalendar.js'
 import { loadUiState, saveUiState } from './lib/uiState.js'
 import { renderZoneChart } from './lib/priceChart.js'
@@ -756,7 +756,19 @@ async function refreshData() {
       // razor-thin SL and an absurd R-multiple (e.g. 30R) that isn't a real trade idea.
       // Zones still render (the chart/zone cards stay informative), just no actionable
       // BUY/SELL LIMIT cards until price is actually moving again.
-      h1Result.signals = isPriceStagnant(h1Result.series) ? [] : buildSignals(h1Result.zones, currentPrice, higherTfZones)
+      // H4 (falling back to D1) rather than H1 itself — same reasoning as
+      // updateSignalHistoryForSymbol in fetch-data.mjs: a trend read off the same
+      // fine-grained series a fade signal comes from would just describe its own recent
+      // noise, not an actual higher-timeframe direction. Kept in sync with that same
+      // logic — see computeTrend in srDetector.js. Not news-gated the way the recorded
+      // track record is (see isNearHighImpactNews in fetch-data.mjs): this is a live
+      // display refresh, not a record write, and threading calendar data through here
+      // just to skip briefly showing a signal card during a news window wasn't worth
+      // the added coupling — the shared history stays the source of truth regardless.
+      const trend = computeTrend(zonesByTimeframe.H4?.series?.length ? zonesByTimeframe.H4.series : zonesByTimeframe.D1?.series ?? [])
+      h1Result.signals = isPriceStagnant(h1Result.series)
+        ? []
+        : buildSignals(h1Result.zones, currentPrice, higherTfZones, trend)
     }
     checkZonesAndSignals(symbol.key, symbol.label, zonesByTimeframe, currentPrice)
 

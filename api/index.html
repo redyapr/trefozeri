@@ -109,7 +109,9 @@
           <p>
             <code>datetime</code> is UTC, <code>"YYYY-MM-DD HH:mm:ss"</code> (no offset — always treat it as UTC, not
             local time). Gold comes from Twelve Data; Bitcoin from Binance.US, reshaped into the same schema so both
-            symbols are consumable identically.
+            symbols are consumable identically. <code>BTCUSD</code> candles also carry a <code>volume</code> field
+            (real traded base-asset volume, from Binance.US); <code>XAUUSD</code> omits it entirely — Twelve Data's
+            spot feed has no volume data to report.
           </p>
         </section>
 

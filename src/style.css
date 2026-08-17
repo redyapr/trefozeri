@@ -206,21 +206,14 @@ body[data-symbol='btcusd'] {
 }
 
 /* api/index.html only — the public data API docs page. Reuses .landing's basic layout
-   (see above) plus its own code/table-ish elements .landing has no need for. Without
-   this, the lede paragraph and "Usage notes" list would run full-width like everything
-   else on this page (see .landing-lede/.landing-features above), reading wider than
-   the 820px .api-facts/.api-section content right below them in the same column — cap
-   just these two on this page to match. */
-.api-page .landing-lede,
-.api-page .landing-features {
-  max-width: 820px;
-}
-
+   (see above) plus its own code/table-ish elements .landing has no need for. No
+   max-width of its own, same as .landing-lede/.landing-features above — runs full-width
+   to #app's own container like id/index.html, rather than capping to some narrower
+   fixed column. */
 .api-facts {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 10px;
-  max-width: 820px;
   margin: 20px 0;
 }
 
@@ -245,7 +238,6 @@ body[data-symbol='btcusd'] {
 }
 
 .api-section {
-  max-width: 820px;
   margin: 32px 0;
 }
 

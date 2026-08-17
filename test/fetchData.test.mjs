@@ -40,6 +40,7 @@ const {
   buildWeeklyReportMessage,
   maybeSendDailyReport,
   maybeSendWeeklyReport,
+  isNearHighImpactNews,
   main,
 } = await import('../scripts/fetch-data.mjs')
 
@@ -1105,7 +1106,7 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
     }
   })
 
-  await t.test('a pending SELL that fills exactly as its own resistance breaks is promoted, not silently dropped', async () => {
+  await t.test('a pending SELL survives its own resistance breaking, and only fills once a later candle genuinely retests + closes confirming it', async () => {
     // Reproduces a real production bug: a SELL entry sits right at a resistance level,
     // so price reaching that entry (rallying up to it) and price breaking that same
     // resistance (closing above it) are, for a level right at the fill point, often
@@ -1115,7 +1116,14 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
     // a chance to mark the fill, silently vanishing a signal that, from the price
     // action, plainly did fill. recordSignals now takes currentPrice and skips that
     // drop for a pending record whose own entry currentPrice already shows was reached
-    // (see its own comment) — evaluateSignals then promotes it normally afterward.
+    // (see its own comment) — the record survives either way.
+    //
+    // What evaluateSignals then does with it changed in the 2026-08-17 win-rate review,
+    // though: a bare touch is no longer enough to fill (see FILL_CANDLE_SKIP_ATR_MULT /
+    // close-confirmation in signalHistoryCore.js) — a candle that closes decisively
+    // *through* the level is a breakout continuing, not a held retest, so it correctly
+    // stays pending rather than confirm-filling off it. Only a later candle that
+    // touches the entry and closes back on the favorable side actually fills it.
     const { restore } = mockTelegram()
     try {
       const base = seriesWithHighPivot(4300) // forms a Resistance pivot
@@ -1127,22 +1135,34 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
       const pending = history.find((r) => r.tf === 'H1' && r.direction === 'sell')
       assert.ok(pending, 'expected a pending SELL off the resistance pivot')
 
-      // Next tick: a strong close well above the resistance both breaks it (flips it
-      // to RBS in detectLevels' state machine, a different category/key entirely) and
-      // reaches the sell entry itself (breaking a resistance means closing above it).
+      // Two consecutive strong closes well above the resistance both break it (flips it
+      // to RBS in detectLevels' state machine — BREAKOUT_CONFIRM_BARS needs 2 consecutive
+      // closes beyond threshold, a different category/key entirely) and reach the sell
+      // entry itself (breaking a resistance means closing above it) — but neither closes
+      // back down, so this is a breakout continuing, not a held retest.
       const breakoutTime = weekday + openSeries.H1.length * 3600000
       const breakoutClose = pending.entry + 20
-      const breakoutSeries = {
-        H1: [
-          ...openSeries.H1,
-          candle(breakoutTime, breakoutClose - 2, breakoutClose + 3, breakoutClose - 3, breakoutClose),
-        ],
-      }
-      await updateSignalHistoryForSymbol(history, 'XAUUSD', breakoutSeries)
+      let series = [
+        ...openSeries.H1,
+        candle(breakoutTime, breakoutClose - 2, breakoutClose + 3, breakoutClose - 3, breakoutClose),
+        candle(breakoutTime + 3600000, breakoutClose, breakoutClose + 4, breakoutClose - 1, breakoutClose + 1),
+      ]
+      await updateSignalHistoryForSymbol(history, 'XAUUSD', { H1: series })
 
-      const record = history.find((r) => r.key === pending.key)
+      let record = history.find((r) => r.key === pending.key)
       assert.ok(record, 'the original record must still exist — not silently dropped')
-      assert.notEqual(record.status, 'pending', 'must have been evaluated (running, or fell straight through to a close), not left behind')
+      assert.equal(record.status, 'pending', 'a candle that closes through the level, not back down, is not a held retest yet')
+
+      // A later candle retests the level (touches above entry) and closes back down
+      // exactly on it — a genuine held retest, confirms the fill. Closing exactly on
+      // entry (not below) also keeps recordSignals' own "already reached" guard tested
+      // above satisfied (>= entry), so this candle alone covers both mechanisms.
+      const retestTime = breakoutTime + 2 * 3600000
+      series = [...series, candle(retestTime, pending.entry - 1, pending.entry + 1, pending.entry - 2, pending.entry)]
+      await updateSignalHistoryForSymbol(history, 'XAUUSD', { H1: series })
+
+      record = history.find((r) => r.key === pending.key)
+      assert.equal(record.status, 'running', 'a later candle that touches entry and closes back below it confirms the fill')
     } finally {
       restore()
     }
@@ -1240,6 +1260,50 @@ test('updateSignalHistoryForSymbol: never records/notifies a signal built on sta
   })
 })
 
+test('updateSignalHistoryForSymbol: withholds new signals in a window straddling high-impact USD news', async (t) => {
+  await t.test('a high-impact USD event at the data\'s own current time suppresses new signal formation', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const series = seriesWithLowPivot(4300) // a genuine Support pivot
+      const currentTime = series.at(-1).time
+      const calendar = [{ country: 'USD', impact: 'High', date: new Date(currentTime).toISOString() }]
+      const history = []
+      await updateSignalHistoryForSymbol(history, 'XAUUSD', { H1: series }, calendar)
+      assert.equal(sent.length, 0, 'no new-signal Telegram post during the news window')
+      assert.equal(history.length, 0, 'no pending record added during the news window')
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('omitting calendar entirely (the default) behaves exactly as before — no gate applied', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const history = []
+      await updateSignalHistoryForSymbol(history, 'XAUUSD', { H1: seriesWithLowPivot(4300) })
+      assert.equal(sent.length, 1)
+      assert.equal(history.length, 1)
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('a high-impact event well outside the window does not suppress anything', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const series = seriesWithLowPivot(4300)
+      const currentTime = series.at(-1).time
+      const calendar = [{ country: 'USD', impact: 'High', date: new Date(currentTime + 6 * 60 * 60 * 1000).toISOString() }]
+      const history = []
+      await updateSignalHistoryForSymbol(history, 'XAUUSD', { H1: series }, calendar)
+      assert.equal(sent.length, 1)
+      assert.equal(history.length, 1)
+    } finally {
+      restore()
+    }
+  })
+})
+
 test('toTwelveDataDatetime / parseUtc round-trip', async (t) => {
   await t.test('toTwelveDataDatetime formats a UTC epoch as "YYYY-MM-DD HH:mm:ss"', () => {
     const ms = Date.UTC(2026, 7, 15, 9, 5, 3) // 2026-08-15 09:05:03 UTC
@@ -1289,6 +1353,60 @@ test('toCandles', async (t) => {
     ]
     const candles = toCandles(values)
     assert.ok(candles[0].time < candles[1].time)
+  })
+
+  await t.test('parses a numeric/string volume when present (BTCUSD, via fetchBinance)', () => {
+    const values = [{ datetime: '2026-08-15 09:00:00', open: 1, high: 2, low: 0, close: 1, volume: '12.5' }]
+    assert.equal(toCandles(values)[0].volume, 12.5)
+  })
+
+  await t.test('leaves volume undefined (not NaN/0) when the source has none at all (XAUUSD, via Twelve Data)', () => {
+    const values = [{ datetime: '2026-08-15 09:00:00', open: 1, high: 2, low: 0, close: 1 }]
+    assert.equal(toCandles(values)[0].volume, undefined)
+  })
+})
+
+test('isNearHighImpactNews', async (t) => {
+  const now = Date.UTC(2026, 7, 15, 12, 0, 0)
+
+  await t.test('flags a high-impact USD event coming up shortly', () => {
+    const calendar = [{ country: 'USD', impact: 'High', date: new Date(now + 10 * 60 * 1000).toISOString() }]
+    assert.equal(isNearHighImpactNews(calendar, now), true)
+  })
+
+  await t.test('flags one that just happened, not only upcoming ones', () => {
+    const calendar = [{ country: 'USD', impact: 'High', date: new Date(now - 10 * 60 * 1000).toISOString() }]
+    assert.equal(isNearHighImpactNews(calendar, now), true)
+  })
+
+  await t.test('does not flag one outside the window either direction', () => {
+    const calendar = [{ country: 'USD', impact: 'High', date: new Date(now + 45 * 60 * 1000).toISOString() }]
+    assert.equal(isNearHighImpactNews(calendar, now), false)
+  })
+
+  await t.test('ignores a low/medium-impact event even inside the window', () => {
+    const calendar = [{ country: 'USD', impact: 'Medium', date: new Date(now).toISOString() }]
+    assert.equal(isNearHighImpactNews(calendar, now), false)
+  })
+
+  await t.test('ignores a high-impact event for a different country', () => {
+    const calendar = [{ country: 'EUR', impact: 'High', date: new Date(now).toISOString() }]
+    assert.equal(isNearHighImpactNews(calendar, now), false)
+  })
+
+  await t.test('case-insensitive on country/impact, matching findUpcomingHighImpact\'s own convention', () => {
+    const calendar = [{ country: 'usd', impact: 'high', date: new Date(now).toISOString() }]
+    assert.equal(isNearHighImpactNews(calendar, now), true)
+  })
+
+  await t.test('an unparseable date is skipped, not thrown', () => {
+    const calendar = [{ country: 'USD', impact: 'High', date: 'not-a-date' }]
+    assert.equal(isNearHighImpactNews(calendar, now), false)
+  })
+
+  await t.test('null/non-array calendar (fetch failed, no fallback available) reads as no news risk', () => {
+    assert.equal(isNearHighImpactNews(null, now), false)
+    assert.equal(isNearHighImpactNews(undefined, now), false)
   })
 })
 

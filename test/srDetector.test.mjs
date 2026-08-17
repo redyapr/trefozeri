@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { detectLevels, annotateGoldenZones, buildSignals, isPriceStagnant } from '../src/lib/srDetector.js'
+import { detectLevels, annotateGoldenZones, buildSignals, isPriceStagnant, computeTrend } from '../src/lib/srDetector.js'
 
 function candle(t, o, h, l, c) {
   return { time: t, open: o, high: h, low: l, close: c }
@@ -39,6 +39,19 @@ function seriesWithHighPivot(base, opts) {
   if (opts?.breakAbove) {
     candles.push(candle(t++, base + 20, base + 25, base + 19, base + 22))
     for (let i = 0; i < 10; i++) candles.push(candle(t++, base + 21, base + 24, base + 20, base + 22))
+  }
+  return candles
+}
+
+// A flat run at `base` for `count` bars, then `count` more drifting by `stepPerBar`
+// each bar — enough bars for computeTrend's 50-period SMA plus real ATR-scale movement
+// to clear its neutral band.
+function trendingSeries(base, stepPerBar, count = 60) {
+  const candles = []
+  for (let i = 0; i < count; i++) candles.push(candle(i, base, base + 1, base - 1, base))
+  for (let i = 0; i < count; i++) {
+    const price = base + stepPerBar * (i + 1)
+    candles.push(candle(count + i, price, price + 1, price - 1, price))
   }
   return candles
 }
@@ -275,6 +288,31 @@ test('annotateGoldenZones', async (t) => {
   })
 })
 
+test('computeTrend', async (t) => {
+  await t.test('a sustained climb well past the neutral band reads as up', () => {
+    assert.equal(computeTrend(trendingSeries(4300, 0.5)), 'up')
+  })
+
+  await t.test('a sustained decline well past the neutral band reads as down', () => {
+    assert.equal(computeTrend(trendingSeries(4300, -0.5)), 'down')
+  })
+
+  await t.test('flat chop (price near its own recent average) reads as neutral', () => {
+    const candles = []
+    for (let i = 0; i < 60; i++) candles.push(candle(i, 4300, 4300.2, 4299.8, 4300))
+    assert.equal(computeTrend(candles), 'neutral')
+  })
+
+  await t.test('fewer candles than the SMA period defaults to neutral rather than guessing', () => {
+    assert.equal(computeTrend(trendingSeries(4300, 0.5, 10)), 'neutral')
+  })
+
+  await t.test('no candles at all defaults to neutral', () => {
+    assert.equal(computeTrend(null), 'neutral')
+    assert.equal(computeTrend([]), 'neutral')
+  })
+})
+
 test('buildSignals', async (t) => {
   await t.test('rejects a resistance-type signal whose entry has fallen below current price', () => {
     // This reproduces a real bug found in production: an H4 SBR-sell zone at 4331.96
@@ -373,6 +411,69 @@ test('buildSignals', async (t) => {
     assert.equal(signals.length, 2)
     assert.equal(signals.find((s) => s.direction === 'buy').category, 'Support')
     assert.equal(signals.find((s) => s.direction === 'sell').category, 'Resistance')
+  })
+
+  function supportZone(overrides = {}) {
+    return {
+      category: 'Support',
+      type: 'support',
+      price: 4295,
+      mid: 4295,
+      threshold: 5,
+      atr: 10,
+      structureAnchor: 4290,
+      distanceFromPrice: 5,
+      isGolden: false,
+      confluence: [],
+      ...overrides,
+    }
+  }
+
+  function resistanceZone(overrides = {}) {
+    return {
+      category: 'Resistance',
+      type: 'resistance',
+      price: 4310,
+      mid: 4310,
+      threshold: 5,
+      atr: 10,
+      structureAnchor: 4315,
+      distanceFromPrice: 10,
+      isGolden: false,
+      confluence: [],
+      ...overrides,
+    }
+  }
+
+  await t.test('an "up" trend only offers the bullish (buy) side', () => {
+    const signals = buildSignals([supportZone(), resistanceZone()], 4300, [], 'up')
+    assert.equal(signals.length, 1)
+    assert.equal(signals[0].direction, 'buy')
+  })
+
+  await t.test('a "down" trend only offers the bearish (sell) side', () => {
+    const signals = buildSignals([supportZone(), resistanceZone()], 4300, [], 'down')
+    assert.equal(signals.length, 1)
+    assert.equal(signals[0].direction, 'sell')
+  })
+
+  await t.test('"neutral" (or omitting trend entirely) offers both sides, same as before trend filtering existed', () => {
+    assert.equal(buildSignals([supportZone(), resistanceZone()], 4300, [], 'neutral').length, 2)
+    assert.equal(buildSignals([supportZone(), resistanceZone()], 4300, []).length, 2)
+  })
+
+  await t.test('a zone flagged not-tradeable is excluded even though it would otherwise qualify', () => {
+    const signals = buildSignals([supportZone({ tradeable: false }), resistanceZone()], 4300)
+    assert.equal(signals.length, 1)
+    assert.equal(signals[0].direction, 'sell')
+  })
+
+  await t.test('a zone with no `tradeable` field at all (e.g. a never-broken Support/Resistance) is still offered', () => {
+    // toZone only sets tradeable=false for a broken level that fails its
+    // quality/pullback-extent check — a pure, never-broken level has no such field.
+    const { tradeable, ...withoutTradeable } = supportZone()
+    const signals = buildSignals([withoutTradeable, resistanceZone()], 4300)
+    assert.equal(signals.length, 2)
   })
 })
 
@@ -650,5 +751,193 @@ test('buildSignals: cross-timeframe TP borrowing (higher timeframes only)', asyn
     const zone = activeSupportZone()
     const [signal] = buildSignals([zone], 4300)
     assert.equal(signal.tp.length, 3, 'falls back to fixed R-multiples, unaffected by any higher-timeframe zone')
+  })
+})
+
+// 2026-08-17 win-rate review: the tests below cover the concrete behavior changes made
+// to runStateMachine/toZone off of that review — breakout persistence (a single
+// spike-and-reverse candle shouldn't permanently flip a level), level freshness
+// (testCount/strengthLabel), and breakout-quality gating (pullback extent, and
+// volume/body-ratio conviction) that decides whether a broken level is `tradeable`.
+
+test('breakout confirmation requires more than one consecutive closing bar', async (t) => {
+  await t.test('a single spike-and-reverse candle does not flip the level\'s state', () => {
+    const candles = seriesWithLowPivot(4300)
+    // One close well beyond threshold, immediately followed by a close back above —
+    // the spike never gets a second confirming bar.
+    let t2 = candles.length
+    candles.push(candle(t2++, 4278, 4279, 4275, 4278))
+    candles.push(candle(t2++, 4279, 4302, 4278, 4302))
+    const support = detectLevels(candles, candles.at(-1).close).find((z) => z.category === 'Support')
+    assert.ok(support, 'the level must still be a pure Support, not flipped to SBR')
+    assert.equal(support.broken, false)
+  })
+
+  await t.test('two consecutive closing bars beyond threshold does flip it', () => {
+    const candles = seriesWithLowPivot(4300, { breakBelow: true }) // holds below for many bars
+    const zones = detectLevels(candles, candles.at(-1).close)
+    assert.ok(zones.find((z) => z.category === 'SBR'), 'expected the level to have flipped')
+  })
+})
+
+test('detectLevels: level freshness (testCount)', async (t) => {
+  await t.test('a level nobody has come back to test yet has testCount 0', () => {
+    const candles = seriesWithLowPivot(4300)
+    const support = detectLevels(candles, candles.at(-1).close).find((z) => z.category === 'Support')
+    assert.equal(support.testCount, 0)
+  })
+
+  await t.test('price dipping back near the level (without breaking it) increases testCount', () => {
+    const base = seriesWithLowPivot(4300)
+    const before = detectLevels(base, base.at(-1).close).find((z) => z.category === 'Support')
+    let t2 = base.length
+    const dip = before.price - before.threshold * 0.5 // within threshold, not beyond it
+    const approach = [
+      candle(t2++, before.price + 3, before.price + 4, dip, before.price + 3),
+      candle(t2++, before.price + 8, before.price + 9, before.price + 7, before.price + 8), // pulls away
+    ]
+    const after = detectLevels([...base, ...approach], approach.at(-1).close).find((z) => z.category === 'Support')
+    assert.ok(after.testCount > before.testCount, 'a real approach that did not break the level should be counted')
+  })
+})
+
+test('strengthLabel reflects Golden Zone confluence and level freshness', async (t) => {
+  function zoneWithTestCount(testCount, overrides = {}) {
+    return {
+      category: 'Support',
+      type: 'support',
+      price: 4295,
+      mid: 4295,
+      threshold: 5,
+      atr: 10,
+      structureAnchor: 4290,
+      distanceFromPrice: 5,
+      isGolden: false,
+      confluence: [],
+      testCount,
+      ...overrides,
+    }
+  }
+
+  await t.test('a Golden Zone (isGolden) is Strong regardless of testCount', () => {
+    const [signal] = buildSignals([zoneWithTestCount(5, { isGolden: true, confluence: ['H4'] })], 4300)
+    assert.equal(signal.strengthLabel, 'Strong')
+  })
+
+  await t.test('a level tested 3+ times without breaking is downgraded to Weak', () => {
+    const [signal] = buildSignals([zoneWithTestCount(3)], 4300)
+    assert.equal(signal.strengthLabel, 'Weak')
+  })
+
+  await t.test('a fresh level (below the weaken threshold) stays Medium', () => {
+    const [signal] = buildSignals([zoneWithTestCount(1)], 4300)
+    assert.equal(signal.strengthLabel, 'Medium')
+  })
+
+  await t.test('a level with no testCount at all (e.g. pre-existing detectLevels output) defaults to Medium, not Weak', () => {
+    const { testCount, ...withoutTestCount } = zoneWithTestCount(0)
+    const [signal] = buildSignals([withoutTestCount], 4300)
+    assert.equal(signal.strengthLabel, 'Medium')
+  })
+})
+
+test('detectLevels: pullback extent gates whether a broken level is offered as tradeable', async (t) => {
+  // Both scenarios use a strong, full-bodied breakout candle (so the quality gate
+  // covered in the block below always passes) — isolating extent as the only thing
+  // that varies between them.
+  function strongBreakoutCandle(t, price) {
+    return candle(t, price + 1, price + 1.1, price - 0.1, price)
+  }
+
+  await t.test('a break that clearly runs well past the level is tradeable', () => {
+    const candles = seriesWithLowPivot(4300)
+    const support = detectLevels(candles, candles.at(-1).close).find((z) => z.category === 'Support')
+    let t2 = candles.length
+    const p = support.price - support.threshold - 5
+    const extra = [
+      strongBreakoutCandle(t2++, p),
+      strongBreakoutCandle(t2++, p - 1),
+      strongBreakoutCandle(t2++, p - 20), // plenty of follow-through
+    ]
+    const sbr = detectLevels([...candles, ...extra], extra.at(-1).close).find((z) => z.category === 'SBR')
+    assert.ok(sbr, 'expected the level to have flipped to SBR')
+    assert.equal(sbr.tradeable, true)
+  })
+
+  await t.test('a break that barely clears threshold and never extends further is not yet tradeable', () => {
+    const candles = seriesWithLowPivot(4300)
+    const support = detectLevels(candles, candles.at(-1).close).find((z) => z.category === 'Support')
+    let t2 = candles.length
+    // Just barely beyond the breakout threshold, held there for 2 confirming bars, but
+    // never actually extends any further in the breakout direction.
+    const p = support.price - support.threshold - 0.05
+    const extra = [strongBreakoutCandle(t2++, p), strongBreakoutCandle(t2++, p)]
+    const sbr = detectLevels([...candles, ...extra], extra.at(-1).close).find((z) => z.category === 'SBR')
+    assert.ok(sbr, 'expected the level to have flipped to SBR')
+    assert.equal(sbr.tradeable, false, 'not enough follow-through yet to count as a real pullback opportunity')
+  })
+})
+
+test('detectLevels: breakout-quality gating (volume where available, body-ratio proxy otherwise)', async (t) => {
+  await t.test('a low-volume breakout candle is not tradeable even with plenty of follow-through', () => {
+    const base = seriesWithLowPivot(4300).map((c) => ({ ...c, volume: 100 })) // steady trailing volume
+    const support = detectLevels(base, base.at(-1).close).find((z) => z.category === 'Support')
+    let t2 = base.length
+    const p = support.price - support.threshold - 5
+    const extra = [
+      { ...candle(t2++, p, p + 1, p - 1, p), volume: 10 }, // thin — well under 1.2x the ~100 trailing average
+      { ...candle(t2++, p - 1, p, p - 2, p - 1), volume: 100 },
+      { ...candle(t2++, p - 20, p - 19, p - 21, p - 20), volume: 100 }, // plenty of follow-through
+    ]
+    const sbr = detectLevels([...base, ...extra], extra.at(-1).close).find((z) => z.category === 'SBR')
+    assert.ok(sbr)
+    assert.equal(sbr.tradeable, false, 'a breakout candle with well-below-average volume should not confirm')
+  })
+
+  await t.test('a high-volume breakout candle with follow-through is tradeable', () => {
+    const base = seriesWithLowPivot(4300).map((c) => ({ ...c, volume: 100 }))
+    const support = detectLevels(base, base.at(-1).close).find((z) => z.category === 'Support')
+    let t2 = base.length
+    const p = support.price - support.threshold - 5
+    const extra = [
+      { ...candle(t2++, p, p + 1, p - 1, p), volume: 500 }, // well over 1.2x average
+      { ...candle(t2++, p - 1, p, p - 2, p - 1), volume: 100 },
+      { ...candle(t2++, p - 20, p - 19, p - 21, p - 20), volume: 100 },
+    ]
+    const sbr = detectLevels([...base, ...extra], extra.at(-1).close).find((z) => z.category === 'SBR')
+    assert.ok(sbr)
+    assert.equal(sbr.tradeable, true)
+  })
+
+  await t.test('with no volume data, a small-bodied (near-doji) breakout candle falls back to the body-ratio proxy and is not tradeable', () => {
+    const base = seriesWithLowPivot(4300) // no volume field anywhere
+    const support = detectLevels(base, base.at(-1).close).find((z) => z.category === 'Support')
+    let t2 = base.length
+    const p = support.price - support.threshold - 5
+    // Long wicks both ways, indecisive close near the open — a volume-less proxy for
+    // thin conviction.
+    const extra = [
+      candle(t2++, p, p + 10, p - 10, p + 0.5),
+      candle(t2++, p, p + 1, p - 1, p),
+      candle(t2++, p - 20, p - 19, p - 21, p - 20),
+    ]
+    const sbr = detectLevels([...base, ...extra], extra.at(-1).close).find((z) => z.category === 'SBR')
+    assert.ok(sbr)
+    assert.equal(sbr.tradeable, false)
+  })
+
+  await t.test('with no volume data, a strong full-bodied breakout candle is tradeable', () => {
+    const base = seriesWithLowPivot(4300)
+    const support = detectLevels(base, base.at(-1).close).find((z) => z.category === 'Support')
+    let t2 = base.length
+    const p = support.price - support.threshold - 5
+    const extra = [
+      candle(t2++, p + 1, p + 1.1, p - 0.1, p), // decisive, mostly-body candle
+      candle(t2++, p, p + 1, p - 1, p),
+      candle(t2++, p - 20, p - 19, p - 21, p - 20),
+    ]
+    const sbr = detectLevels([...base, ...extra], extra.at(-1).close).find((z) => z.category === 'SBR')
+    assert.ok(sbr)
+    assert.equal(sbr.tradeable, true)
   })
 })

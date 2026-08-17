@@ -10,8 +10,20 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
 ## <img src="https://readme-typing-svg.demolab.com?lines=Features" alt="Typing Features" />
 
 - **Levels** — `srDetector.js` detects pivots per timeframe and tracks each through 3
-  states: Support/Resistance → broken-once SBR/RBS → invalidated. Cross-timeframe
-  confluence is flagged as a "Golden Zone."
+  states: Support/Resistance → broken-once SBR/RBS → invalidated. A break needs 2
+  consecutive confirming closes (not one), so a single spike-and-reverse candle can't
+  permanently flip it. Cross-timeframe confluence is flagged as a "Golden Zone"; a level
+  tested 3+ times without breaking is downgraded to "Weak" instead of staying "Medium"
+  forever. A broken level (RBS/SBR) only becomes a tradeable idea once its own breakout
+  candle shows real conviction (volume where available, e.g. BTCUSD; body-to-range
+  ratio otherwise, e.g. XAUUSD) *and* price has run far enough past it for a retest to
+  actually mean something — still shown on the chart either way, just not offered as a
+  signal until then.
+- **Trend filter** — a fade strategy taken symmetrically in both directions regardless
+  of the prevailing trend fights itself on whichever side goes against it. A confirmed
+  H4 (falling back to D1) trend offers only the aligned side (buy in an uptrend, sell in
+  a downtrend); a genuinely range-bound read still offers both, same as before this
+  existed. See `computeTrend` in `srDetector.js`.
 - **Take-profits** — TPs come from opposite-side levels on the signal's own timeframe,
   plus qualifying levels from *higher* timeframes only. Shown between 0.5R–100R;
   near-duplicates merged. Falls back to fixed 1.5R/2.5R/3.5R if no structural level
@@ -31,10 +43,16 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
 - **Track record** — shared across every visitor. Each signal goes `pending` →
   `running` (filled) → `win`/`loss`, stored in `data/signal-history.json` and
   committed by CI. View it via the chart-icon button. Capped at 300 records per symbol.
-  Fill/SL/TP are checked against each candle's actual high/low range since the record's
-  own `openedAt`/`filledAt` — not just the latest close — so a genuine touch isn't
-  missed just because price later reverses before the next ~15-minute poll. See
-  `evaluateSignals` in `src/lib/signalHistoryCore.js`.
+  SL/TP are checked against each candle's actual high/low range since the record's own
+  `openedAt`/`filledAt` — not just the latest close — so a genuine touch isn't missed
+  just because price later reverses before the next ~15-minute poll. A fill itself needs
+  more than a bare wick touch, though: the touching candle also has to *close* back on
+  the favorable side of entry (confirming the retest actually held) and can't already be
+  an outsized volatility-spike candle relative to the level's own ATR — a violent move
+  already in progress isn't a controlled retest. See `evaluateSignals` in
+  `src/lib/signalHistoryCore.js`. New signals are also withheld in a window straddling a
+  high-impact USD calendar release, the kind of event most likely to produce exactly
+  that spike.
 - **Telegram notifications** — public channel, H1 only. Posts new signals, fills, and
   SL/TP results automatically. A still-pending signal's own message is edited in place
   whenever its entry/SL/TP recalculate, so it never shows stale numbers — once filled,

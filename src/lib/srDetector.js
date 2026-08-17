@@ -22,7 +22,10 @@ const MAX_KEEP = 40 // pivots retained per side/timeframe before the oldest is d
 // ATR — a volatility-scaled "how far counts as a real break" — rather than a fixed
 // pip value, so they self-calibrate per instrument and scale naturally with each
 // timeframe's own volatility instead of sharing one absolute threshold across D1/H4/H1.
-const BREAKOUT_ATR_MULT = 0.15
+// Exported so signalHistoryCore.js's fill-time oversized-candle check (see
+// evaluateSignals) can derive the same effective ATR back out of a record's own stored
+// `threshold` (= atr * BREAKOUT_ATR_MULT) without duplicating this constant.
+export const BREAKOUT_ATR_MULT = 0.15
 const GOLDEN_ZONE_ATR_MULT = 0.05
 const GOLDEN_ZONE_RATIO = GOLDEN_ZONE_ATR_MULT / BREAKOUT_ATR_MULT
 
@@ -47,6 +50,40 @@ const SL_ATR_FLOOR_MULT = 0.5 // never tighter than this even if the wick sat ri
 const SL_ATR_CAP_MULT = 1.5 // never wider than this even if the wick spiked hard
 const SL_STRUCTURE_BUFFER_RATIO = 0.15 // extra room beyond the wick itself, as a fraction of ATR
 
+// ----------------------------------------------------------------------------
+// 2026-08-17 win-rate review: the live track record hit 0/11 closed trades. Real
+// historical-candle verification (not just the recorded numbers) surfaced several
+// concrete, fixable gaps between how this module traded S/R and how a disciplined S/R
+// trader actually does — see the constants and their call sites below for each one.
+// ----------------------------------------------------------------------------
+
+// A single candle closing beyond a level used to flip its state immediately — a
+// one-candle spike that reverses the very next bar still permanently broke the level,
+// seeding a retest entry off what was really a fakeout. Requiring the close to hold for
+// more than one consecutive bar filters that out. Applies symmetrically to both the
+// original break (state 0 -> 1) and a later re-break that invalidates it (state 1 -> 2).
+const BREAKOUT_CONFIRM_BARS = 2
+
+// A level already tested (approached without breaking) this many times is real S/R
+// wisdom to treat as weaker than a fresh, never-touched one — each successful defense
+// makes the next attacker more likely to finally break it. Feeds strengthLabel below.
+const RETEST_WEAKEN_THRESHOLD = 3
+
+// A level that just flipped role needs to have actually traveled some real distance in
+// the breakout direction before its retest counts as a genuine pullback worth trading —
+// a "break" that's barely left home yet isn't a pullback, it's still forming. Scaled to
+// the same ATR as everything else here rather than a fixed distance.
+const MIN_PULLBACK_EXTENT_ATR_MULT = 0.5
+
+// Was the original breakout candle backed by real participation, or just a thin poke
+// through the level? Two independent, data-availability-dependent proxies (see
+// evaluateBreakoutQuality) — real trailing-average volume where the candle carries one
+// (BTCUSD, via Binance), or the candle's own body-to-range ratio as a volume-less
+// stand-in (XAUUSD's Twelve Data spot feed has no volume field at all).
+const VOLUME_LOOKBACK = 20
+const VOLUME_CONFIRM_MULT = 1.2
+const BODY_RATIO_CONFIRM_MIN = 0.5
+
 function computeATR(candles, period = 14) {
   const trs = []
   for (let i = 1; i < candles.length; i++) {
@@ -61,6 +98,37 @@ function computeATR(candles, period = 14) {
   }
   const period14 = trs.slice(-period)
   return period14.reduce((a, b) => a + b, 0) / (period14.length || 1)
+}
+
+const TREND_SMA_PERIOD = 50
+// Within this many ATRs of the SMA counts as "no clear trend" — a fixed % band would
+// treat XAUUSD and BTCUSD's very different volatility identically; this self-calibrates
+// the same way every other threshold in this module does.
+const TREND_NEUTRAL_ATR_MULT = 0.5
+
+function computeSMA(candles, period) {
+  const window = candles.slice(-period)
+  return window.reduce((sum, c) => sum + c.close, 0) / (window.length || 1)
+}
+
+// Coarse higher-timeframe direction read, used to decide which side of a fade pair
+// actually gets offered as a signal (see buildSignals) — a level-fade strategy applied
+// symmetrically in both directions regardless of the prevailing trend systematically
+// loses on whichever side fights it (confirmed against the 2026-08-17 review: even the
+// trend-*aligned* trades in that batch still lost, but the counter-trend ones made up
+// the majority of the losses). A 'neutral' read (price within TREND_NEUTRAL_ATR_MULT of
+// its own recent average — no clear direction either way) keeps offering both sides,
+// same as before this existed, since a fade strategy is arguably at its best exactly
+// when neither side is confirmed.
+export function computeTrend(candles, period = TREND_SMA_PERIOD) {
+  if (!candles || candles.length < period) return 'neutral'
+  const sma = computeSMA(candles, period)
+  const atr = computeATR(candles)
+  const band = atr * TREND_NEUTRAL_ATR_MULT
+  const price = candles[candles.length - 1].close
+  if (price > sma + band) return 'up'
+  if (price < sma - band) return 'down'
+  return 'neutral'
 }
 
 function bodyHigh(c) {
@@ -160,6 +228,33 @@ function findBodyPivots(candles, left, right, minAmplitude = 0) {
   return { highs, lows }
 }
 
+// Trailing-average volume as of (but not including) index i — VOLUME_LOOKBACK bars,
+// skipping any candle whose volume is missing. Returns null (not 0) when nothing usable
+// is available, so callers can tell "no data" apart from "a real zero".
+function avgVolumeBefore(candles, i) {
+  const from = Math.max(0, i - VOLUME_LOOKBACK)
+  const window = candles.slice(from, i).filter((c) => c.volume != null)
+  if (!window.length) return null
+  return window.reduce((sum, c) => sum + c.volume, 0) / window.length
+}
+
+// Was the candle that triggered a break backed by real conviction, or just a thin poke
+// through the level? Real volume (where the candle carries one) beats the proxy: a
+// low-volume push through the level reads as unconfirmed even with a decisive body,
+// since it might just be a stop-run in thin liquidity. No candle at all (shouldn't
+// happen once confirmed, but keeps this total) defaults to confirmed rather than
+// blocking every signal on a data gap.
+function evaluateBreakoutQuality(candle, avgVolume) {
+  if (!candle) return true
+  if (candle.volume != null && avgVolume != null && avgVolume > 0) {
+    return candle.volume >= avgVolume * VOLUME_CONFIRM_MULT
+  }
+  const range = candle.high - candle.low
+  if (!range) return true
+  const body = Math.abs(candle.close - candle.open)
+  return body / range >= BODY_RATIO_CONFIRM_MIN
+}
+
 // Replays the per-pivot state machine bar-by-bar over the full series, exactly as it
 // would evolve live, one candle at a time.
 function runStateMachine(candles, breakoutThreshold) {
@@ -171,6 +266,20 @@ function runStateMachine(candles, breakoutThreshold) {
   const supports = []
   const resistances = []
 
+  const freshLevel = (price, time, wick) => ({
+    price,
+    state: 0,
+    time,
+    roleExtreme: wick,
+    beyondStreak: 0, // consecutive bars closed beyond the level — see BREAKOUT_CONFIRM_BARS
+    breakoutCandle: null, // the bar that started the current beyondStreak, snapshotted for evaluateBreakoutQuality
+    breakoutAvgVolume: null,
+    farExtreme: null, // furthest point reached in the breakout direction once broken — see MIN_PULLBACK_EXTENT_ATR_MULT
+    touching: false, // edge-detects a prolonged approach as one test, not one per bar
+    testCount: 0, // approaches that didn't break — see RETEST_WEAKEN_THRESHOLD
+    tradeable: true, // set false at confirmation if evaluateBreakoutQuality rejects the breakout candle
+  })
+
   for (let i = 0; i < candles.length; i++) {
     // A pivot centered `PIVOT_RIGHT` bars back only becomes known as of this bar.
     const confirmedIndex = i - PIVOT_RIGHT
@@ -179,60 +288,93 @@ function runStateMachine(candles, breakoutThreshold) {
       // roleExtreme starts at the pivot's own wick — the low that already got bought up
       // once, which is the natural first reference for "how far below is this level
       // actually defended".
-      supports.unshift({ price: pl.price, state: 0, wasBeyond: false, time: pl.time, roleExtreme: pl.wick })
+      supports.unshift(freshLevel(pl.price, pl.time, pl.wick))
       if (supports.length > MAX_KEEP) supports.pop()
     }
     const ph = highByPivotIndex.get(confirmedIndex)
     if (ph) {
-      resistances.unshift({ price: ph.price, state: 0, wasBeyond: false, time: ph.time, roleExtreme: ph.wick })
+      resistances.unshift(freshLevel(ph.price, ph.time, ph.wick))
       if (resistances.length > MAX_KEEP) resistances.pop()
     }
 
-    const { close, high, low } = candles[i]
+    const candle = candles[i]
+    const { close, high, low } = candle
+    const avgVolNow = avgVolumeBefore(candles, i)
 
     for (const s of supports) {
       if (s.state === 0) {
         // Role = support, invalidated by a close below price — track the deepest low
         // wick seen while still acting as support (a real, already-tested downside).
         const beyond = close < s.price - breakoutThreshold
-        if (beyond && !s.wasBeyond) {
-          s.state = 1 // support broken -> becomes SBR
-          s.roleExtreme = high // fresh reference for the new (resistance) role: this bar's high
+        if (beyond) {
+          s.beyondStreak += 1
+          if (s.beyondStreak === 1) {
+            s.breakoutCandle = candle
+            s.breakoutAvgVolume = avgVolNow
+          }
+          if (s.beyondStreak === BREAKOUT_CONFIRM_BARS) {
+            s.state = 1 // support broken -> becomes SBR
+            s.roleExtreme = high // fresh reference for the new (resistance) role: this bar's high
+            s.farExtreme = low // breakout direction for a broken support is down
+            s.tradeable = evaluateBreakoutQuality(s.breakoutCandle, s.breakoutAvgVolume)
+          }
         } else {
+          s.beyondStreak = 0
+          s.breakoutCandle = null
           s.roleExtreme = Math.min(s.roleExtreme, low)
+          const touching = low <= s.price + breakoutThreshold
+          if (touching && !s.touching) s.testCount += 1
+          s.touching = touching
         }
-        s.wasBeyond = beyond
       } else if (s.state === 1) {
         // Role flipped to resistance (SBR) — now track the highest high seen while
-        // still holding as resistance.
+        // still holding as resistance, and how far price has run below (its breakout
+        // direction) since the flip.
         const beyond = close > s.price + breakoutThreshold
-        if (beyond && !s.wasBeyond) {
-          s.state = 2 // SBR broken again -> invalid
+        if (beyond) {
+          s.beyondStreak += 1
+          if (s.beyondStreak === BREAKOUT_CONFIRM_BARS) s.state = 2 // SBR broken again -> invalid
         } else {
+          s.beyondStreak = 0
           s.roleExtreme = Math.max(s.roleExtreme, high)
+          s.farExtreme = Math.min(s.farExtreme, low)
         }
-        s.wasBeyond = beyond
       }
     }
 
     for (const r of resistances) {
       if (r.state === 0) {
         const beyond = close > r.price + breakoutThreshold
-        if (beyond && !r.wasBeyond) {
-          r.state = 1 // resistance broken -> becomes RBS
-          r.roleExtreme = low // fresh reference for the new (support) role: this bar's low
+        if (beyond) {
+          r.beyondStreak += 1
+          if (r.beyondStreak === 1) {
+            r.breakoutCandle = candle
+            r.breakoutAvgVolume = avgVolNow
+          }
+          if (r.beyondStreak === BREAKOUT_CONFIRM_BARS) {
+            r.state = 1 // resistance broken -> becomes RBS
+            r.roleExtreme = low // fresh reference for the new (support) role: this bar's low
+            r.farExtreme = high // breakout direction for a broken resistance is up
+            r.tradeable = evaluateBreakoutQuality(r.breakoutCandle, r.breakoutAvgVolume)
+          }
         } else {
+          r.beyondStreak = 0
+          r.breakoutCandle = null
           r.roleExtreme = Math.max(r.roleExtreme, high)
+          const touching = high >= r.price - breakoutThreshold
+          if (touching && !r.touching) r.testCount += 1
+          r.touching = touching
         }
-        r.wasBeyond = beyond
       } else if (r.state === 1) {
         const beyond = close < r.price - breakoutThreshold
-        if (beyond && !r.wasBeyond) {
-          r.state = 2 // RBS broken again -> invalid
+        if (beyond) {
+          r.beyondStreak += 1
+          if (r.beyondStreak === BREAKOUT_CONFIRM_BARS) r.state = 2 // RBS broken again -> invalid
         } else {
+          r.beyondStreak = 0
           r.roleExtreme = Math.min(r.roleExtreme, low)
+          r.farExtreme = Math.max(r.farExtreme, high)
         }
-        r.wasBeyond = beyond
       }
     }
   }
@@ -255,6 +397,18 @@ function runStateMachine(candles, breakoutThreshold) {
 function toZone(level, category, type, currentPrice, breakoutThreshold, atr) {
   if (!level) return null
   const halfWidth = breakoutThreshold * ZONE_HALF_WIDTH_RATIO
+
+  // A broken level (RBS/SBR) additionally needs to have actually traveled some real
+  // distance in the breakout direction — farExtreme tracks that since the flip — before
+  // its retest counts as a genuine pullback rather than a break that's barely happened
+  // yet. Doesn't apply to a never-broken Support/Resistance: there's no "breakout" to
+  // have extended from.
+  let pullbackOk = true
+  if (level.state === 1 && level.farExtreme != null) {
+    const extent = type === 'support' ? level.farExtreme - level.price : level.price - level.farExtreme
+    pullbackOk = extent >= atr * MIN_PULLBACK_EXTENT_ATR_MULT
+  }
+
   return {
     category, // 'Support' | 'Resistance' | 'SBR' | 'RBS'
     type, // 'support' | 'resistance' — which side/color it renders as
@@ -270,6 +424,11 @@ function toZone(level, category, type, currentPrice, breakoutThreshold, atr) {
     distanceFromPrice: Math.abs(currentPrice - level.price),
     isGolden: false, // filled in later by annotateGoldenZones once every timeframe is in
     confluence: [],
+    testCount: level.testCount ?? 0,
+    // Still rendered as a zone either way (chart/cards stay informative) — only
+    // buildSignals actually excludes a non-tradeable zone from becoming a live idea,
+    // same "shown but not tradeable" treatment already given to H4/D1 zones.
+    tradeable: level.tradeable !== false && pullbackOk,
   }
 }
 
@@ -424,18 +583,28 @@ function buildSignalForZone(zone, allZones, higherTfZones = []) {
     sl,
     tp,
     threshold: zone.threshold, // lets the track record tell "same pivot, recalculated" apart from "replaced by a different one"
-    strengthLabel: zone.isGolden ? 'Strong' : 'Medium',
+    // Golden Zone confluence always wins (cross-timeframe agreement is the strongest
+    // signal this app has); otherwise a level tested RETEST_WEAKEN_THRESHOLD+ times
+    // without breaking is downgraded — each successful defense makes the next attacker
+    // more likely to finally break it, so a well-worn level is weaker, not equally
+    // "Medium", to a fresh one.
+    strengthLabel: zone.isGolden ? 'Strong' : zone.testCount >= RETEST_WEAKEN_THRESHOLD ? 'Weak' : 'Medium',
     confluence: zone.confluence,
   }
 }
 
 // One signal for the nearest qualifying bullish level (Support/RBS), one for the
-// nearest qualifying bearish level (Resistance/SBR) — both sides of price get an idea.
+// nearest qualifying bearish level (Resistance/SBR) — both sides of price get an idea,
+// *unless* a confirmed higher-timeframe trend picks a side (see below).
 // higherTfZones (optional): zones from timeframes higher than the one `zones` came
 // from, made available as extra TP candidates (see buildSignalForZone) — the caller
 // (main.js / fetch-data.mjs) is responsible for only ever passing *higher* timeframes'
 // zones here, never lower ones.
-export function buildSignals(zones, currentPrice, higherTfZones = []) {
+// trend (optional, see computeTrend): 'up' only offers the bullish side, 'down' only
+// the bearish side — a fade strategy taken symmetrically in both directions regardless
+// of the prevailing trend fights itself on whichever side goes against it. 'neutral'
+// (the default) offers both, same as before trend filtering existed.
+export function buildSignals(zones, currentPrice, higherTfZones = [], trend = 'neutral') {
   if (!zones.length || currentPrice == null) return []
 
   // A LIMIT order only makes sense on the correct side of current price: a sell
@@ -448,12 +617,18 @@ export function buildSignals(zones, currentPrice, higherTfZones = []) {
   // timeframe's more frequent candles, e.g. H1 feeding an H4/D1 zone) already shows.
   // Signaling it would just auto-fill nonsensically the instant it's created.
   const onCorrectSide = (z) => (z.type === 'support' ? z.price <= currentPrice : z.price >= currentPrice)
+  // A broken level that hasn't cleared the pullback-extent/breakout-quality bar (see
+  // toZone) is still shown on the chart, just not offered as a tradeable idea of its
+  // own — same treatment already given to H4/D1 zones.
+  const tradeable = (z) => z.tradeable !== false
 
   const byDistance = (a, b) => a.distanceFromPrice - b.distanceFromPrice
-  const nearestBullish = zones.filter((z) => z.type === 'support' && onCorrectSide(z)).sort(byDistance)[0]
-  const nearestBearish = zones.filter((z) => z.type === 'resistance' && onCorrectSide(z)).sort(byDistance)[0]
+  const nearestBullish = zones.filter((z) => z.type === 'support' && onCorrectSide(z) && tradeable(z)).sort(byDistance)[0]
+  const nearestBearish = zones.filter((z) => z.type === 'resistance' && onCorrectSide(z) && tradeable(z)).sort(byDistance)[0]
 
-  return [nearestBullish, nearestBearish]
-    .filter(Boolean)
-    .map((zone) => buildSignalForZone(zone, zones, higherTfZones))
+  let candidates = [nearestBullish, nearestBearish]
+  if (trend === 'up') candidates = [nearestBullish]
+  else if (trend === 'down') candidates = [nearestBearish]
+
+  return candidates.filter(Boolean).map((zone) => buildSignalForZone(zone, zones, higherTfZones))
 }

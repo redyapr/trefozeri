@@ -16,7 +16,7 @@
 // stateless CI runs and every visitor to the site fetches the same file.
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { detectLevels, buildSignals, annotateGoldenZones, isPriceStagnant } from '../src/lib/srDetector.js'
+import { detectLevels, buildSignals, annotateGoldenZones, isPriceStagnant, computeTrend } from '../src/lib/srDetector.js'
 import {
   recordSignals,
   evaluateSignals,
@@ -120,12 +120,17 @@ async function fetchBinance(tf) {
   if (!res.ok) throw new Error(`Binance.US error (${res.status})`)
 
   const klines = await res.json()
-  const values = klines.map(([openTime, open, high, low, close]) => ({
+  // volume (kline index 5) is real traded-base-asset volume — kept through so
+  // srDetector.js's breakout-quality check (see evaluateBreakoutQuality) can use it
+  // directly for BTCUSD, rather than falling back to the body-ratio proxy it needs for
+  // XAUUSD (Twelve Data's spot feed has no volume field at all).
+  const values = klines.map(([openTime, open, high, low, close, volume]) => ({
     datetime: toTwelveDataDatetime(openTime),
     open,
     high,
     low,
     close,
+    volume,
   }))
   return { status: 'ok', values }
 }
@@ -134,6 +139,29 @@ async function fetchCalendar() {
   const res = await fetch('https://nfs.faireconomy.media/ff_calendar_thisweek.json')
   if (!res.ok) throw new Error(`Calendar feed error (${res.status})`)
   return res.json()
+}
+
+// A high-impact USD release is exactly the kind of event that produces the
+// far-outsized-ATR spike candles found blowing through both entry and SL together in
+// the 2026-08-17 win-rate review — hold back opening brand-new signals in a window
+// straddling the release itself, the same way isGoldMarketClosed already holds back new
+// XAUUSD signals outside gold's own trading week. Existing open positions still
+// evaluate/close normally; this only withholds *new* signal formation. Checks both
+// before and after `now` (not just upcoming) since the spike risk spans the release
+// itself, not just its lead-up. Not imported from newsCalendar.js: that module reads
+// import.meta.env at its top level for its own fetch endpoint, a Vite/browser concern
+// this plain-Node script doesn't have — same reasoning parseUtc below is its own local
+// copy rather than importing twelveData.js's.
+const NEWS_GATE_MINUTES = 30
+
+export function isNearHighImpactNews(calendar, now, windowMinutes = NEWS_GATE_MINUTES) {
+  if (!Array.isArray(calendar)) return false
+  const windowMs = windowMinutes * 60 * 1000
+  return calendar.some((e) => {
+    if (String(e.country).toUpperCase() !== 'USD' || String(e.impact).toLowerCase() !== 'high') return false
+    const t = new Date(e.date).getTime()
+    return Number.isFinite(t) && Math.abs(t - now) <= windowMs
+  })
 }
 
 // A transient blip (rate limit, a momentary 5xx, a dropped connection) shouldn't
@@ -207,6 +235,10 @@ export function toCandles(values) {
     high: parseFloat(v.high),
     low: parseFloat(v.low),
     close: parseFloat(v.close),
+    // undefined (not NaN/0) when the source has no volume field at all (Twelve Data's
+    // XAUUSD feed) — srDetector.js treats that as "no data" and falls back to a
+    // volume-less proxy, rather than reading as a real, suspiciously-zero volume.
+    volume: v.volume != null ? parseFloat(v.volume) : undefined,
   }))
 }
 
@@ -761,14 +793,21 @@ async function loadSignalHistory() {
 // Golden Zones once every timeframe's in, turn each timeframe's zones into signals,
 // then fold those into the shared history. Mutates `history` in place, and (for
 // TELEGRAM_SYMBOLS) sends notifications for newly-opened, newly-filled, and
-// newly-closed signals.
-export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByTf) {
+// newly-closed signals. `calendar` (optional — the upstream economic calendar feed, see
+// fetchCalendar) gates *new* signal formation around high-impact USD news, same
+// reasoning as isNearHighImpactNews above; omitting it just skips that gate.
+export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByTf, calendar = null) {
   const currentPrice = seriesByTf.H1?.at(-1)?.close
   // The data's own timestamp, not wall-clock now — normally the same thing (this runs
   // every ~15 minutes), but ties "is the market closed" to what the candles actually
   // show rather than whenever the script happens to execute, and makes it deterministic
   // to test.
   const currentTime = seriesByTf.H1?.at(-1)?.time
+  // H4 (falling back to D1) rather than H1 itself — a trend read off the same
+  // fine-grained series a fade signal is generated from would just describe the most
+  // recent few candles' own noise, not an actual higher-timeframe direction to fade (or
+  // not fade) against. See computeTrend in srDetector.js.
+  const trend = computeTrend(seriesByTf.H4?.length ? seriesByTf.H4 : seriesByTf.D1 ?? [])
   const zonesByTimeframe = {}
 
   for (const [tfKey, series] of Object.entries(seriesByTf)) {
@@ -798,8 +837,13 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
     // signal list for H4/D1 (rather than skipping the call outright) so any
     // still-pending H4/D1 row from before this policy gets cleanly dropped instead of
     // lingering forever — same reasoning as isPriceStagnant's own empty-signals path.
+    // Also empty in a window straddling a high-impact USD release (see
+    // isNearHighImpactNews) — same "shows zones, withholds new tradeable ideas"
+    // treatment as a stagnant timeframe.
     const signals =
-      tfKey === 'H1' && !isPriceStagnant(seriesByTf[tfKey]) ? buildSignals(result.zones, currentPrice, higherTfZones) : []
+      tfKey === 'H1' && !isPriceStagnant(seriesByTf[tfKey]) && !isNearHighImpactNews(calendar, currentTime ?? Date.now())
+        ? buildSignals(result.zones, currentPrice, higherTfZones, trend)
+        : []
     for (const s of signals) signalByKey.set(keyFor(symbolKey, tfKey, s), s)
     const forTf = recordSignals(history, symbolKey, tfKey, signals, currentPrice, currentTime)
     added.push(...forTf.added)
@@ -874,8 +918,15 @@ export async function main() {
     }
   }
 
+  // Fetched before the signal-history loop below (not after, as it used to be) so
+  // updateSignalHistoryForSymbol can gate *new* signal formation on it (see
+  // isNearHighImpactNews) — the write to public/data/calendar.json itself doesn't care
+  // about ordering, only the gating does.
+  const calendar = await fetchWithFallback('calendar', fetchCalendar, 'calendar.json')
+  if (calendar) await writeJson('calendar.json', calendar)
+
   for (const [symbolKey, seriesByTf] of Object.entries(seriesByTfBySymbol)) {
-    await updateSignalHistoryForSymbol(history, symbolKey, seriesByTf)
+    await updateSignalHistoryForSymbol(history, symbolKey, seriesByTf, calendar)
   }
   const trimmed = trimRecords(history)
 
@@ -893,9 +944,6 @@ export async function main() {
   const dailySent = await maybeSendDailyReport(trimmed, Date.now(), reportState)
   const weeklySent = await maybeSendWeeklyReport(trimmed, Date.now(), reportState)
   if (dailySent || weeklySent) await saveReportState(reportState)
-
-  const calendar = await fetchWithFallback('calendar', fetchCalendar, 'calendar.json')
-  if (calendar) await writeJson('calendar.json', calendar)
 
   if (FAILURES.length) {
     // Keyed on which sources are failing, not the full message text — a persistent

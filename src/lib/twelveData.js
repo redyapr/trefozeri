@@ -79,6 +79,10 @@ async function fetchSeries(apiSymbol, tf) {
     high: parseFloat(v.high),
     low: parseFloat(v.low),
     close: parseFloat(v.close),
+    // undefined (not NaN/0) when the source has none at all (Twelve Data's XAUUSD feed
+    // never carries one; BTCUSD's does, see scripts/fetch-data.mjs's own toCandles) —
+    // srDetector.js treats that as "no data" and falls back to a volume-less proxy.
+    volume: v.volume != null ? parseFloat(v.volume) : undefined,
   }))
 }
 
