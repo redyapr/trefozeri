@@ -123,7 +123,32 @@ jobs:
       id-token: write
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url || steps.deployment-retry-1.outputs.page_url || steps.deployment-retry-2.outputs.page_url }}
     steps:
+      # actions/deploy-pages occasionally fails on a transient GitHub Pages API hiccup
+      # (observed a handful of isolated, self-resolving failures — gone again by the
+      # very next 15-minute cron tick). Retried up to 3 attempts total, each only
+      # running if every previous one failed, so a passing attempt publishes right away
+      # instead of waiting on the next tick.
       - id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+        continue-on-error: true
+
+      - name: Wait before retry 1
+        if: steps.deployment.outcome == 'failure'
+        run: sleep 15
+
+      - id: deployment-retry-1
+        if: steps.deployment.outcome == 'failure'
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+        continue-on-error: true
+
+      - name: Wait before retry 2
+        if: steps.deployment.outcome == 'failure' && steps.deployment-retry-1.outcome == 'failure'
+        run: sleep 15
+
+      # No continue-on-error here — if this last attempt also fails, the job should
+      # actually report failure rather than silently swallowing it.
+      - id: deployment-retry-2
+        if: steps.deployment.outcome == 'failure' && steps.deployment-retry-1.outcome == 'failure'
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5

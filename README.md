@@ -109,7 +109,8 @@ A failing test stops the run before anything else happens. CI is otherwise
 stateless — `data/signal-history.json` is the one exception: updated every run,
 committed back to `master` only when it actually changes (most ticks commit
 nothing). A rejected push (something else landed on `master` mid-run) rebases and
-retries up to 3 times.
+retries up to 3 times. The `deploy` job itself retries up to 3 times on a transient
+`actions/deploy-pages` failure before actually failing the run.
 
 **Ops alerting** — a data-source or fatal failure alerts `TELEGRAM_PERSONAL_CHAT_ID`
 (a private DM, separate from the public channel). De-duplicated via
