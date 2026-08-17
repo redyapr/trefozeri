@@ -34,8 +34,15 @@ const isOpen = (r) => r.status === 'pending' || r.status === 'running'
 // — the records newly appended, and the already-open pending ones whose numbers just
 // changed this call — so a caller can notify about each without re-notifying about
 // ones that didn't actually change. `currentPrice` is optional (see the
-// fill-in-progress guard below) — omitting it just skips that guard.
-export function recordSignals(records, symbolKey, tf, signals, currentPrice) {
+// fill-in-progress guard below) — omitting it just skips that guard. `currentTime`
+// (the data's own latest-candle time, not wall-clock Date.now()) becomes the new
+// record's `openedAt` — matters because evaluateSignals now scans actual candles from
+// openedAt forward to detect fills, so if openedAt used wall-clock time instead, it
+// would almost always land slightly *after* the very candle that just produced this
+// signal (that candle was already fetched and read before this call ran), excluding it
+// from the scan and delaying a genuine same-candle fill by a full tick. Defaults to
+// Date.now() so existing direct callers/tests that don't pass it keep working.
+export function recordSignals(records, symbolKey, tf, signals, currentPrice, currentTime = Date.now()) {
   const updated = []
 
   // A 'pending' (still unfilled) record whose key+price no longer matches any of this
@@ -104,7 +111,7 @@ export function recordSignals(records, symbolKey, tf, signals, currentPrice) {
       entry: signal.entry,
       sl: signal.sl,
       tp: signal.tp,
-      openedAt: Date.now(),
+      openedAt: currentTime,
       status: 'pending',
     }
     records.push(record)
@@ -122,55 +129,82 @@ export function recordSignals(records, symbolKey, tf, signals, currentPrice) {
 // closes within the same call (a fast move a coarse ~15-minute poll can't see the
 // middle of) only appears in `closed`, not `filled` — a "filled" notification would be
 // redundant noise immediately followed by the close.
-export function evaluateSignals(records, symbolKey, currentPrice) {
-  if (currentPrice == null) return { filled: [], closed: [] }
+//
+// `candles` is the price series (ascending by time, full OHLC) fill/SL/TP are checked
+// against — NOT just the latest close. A real production bug: checking only the most
+// recent close price meant a genuine TP touch (S/R levels are "wick and reverse" points
+// almost by definition — price touches, then reverses) went completely undetected
+// whenever price had already moved back past SL by the time the next ~15-minute poll
+// ran, mis-recording a real win as a loss. Every candle since the record's own
+// openedAt/filledAt is scanned (not just the latest one) so a gap of more than one poll
+// — a skipped cron tick, a slow run — still can't hide a touch that happened in between.
+export function evaluateSignals(records, symbolKey, candles) {
+  if (!candles?.length) return { filled: [], closed: [] }
   const filled = []
   const closed = []
 
   for (const r of records) {
     if (r.symbolKey !== symbolKey || !isOpen(r)) continue
     const isBuy = r.direction === 'buy'
+
+    // A still-pending order can't have filled on a candle from before it even existed;
+    // a running position's SL/TP can't have been touched before its own fill.
+    const sinceMs = r.status === 'pending' ? r.openedAt : r.filledAt
+    const relevant = candles.filter((c) => c.time >= sinceMs)
+
+    let searchFrom = 0
     let justFilled = false
 
     if (r.status === 'pending') {
-      // A fade-the-level limit order: buy fills on the way down to entry, sell fills
-      // on the way up to it.
-      const isFilled = isBuy ? currentPrice <= r.entry : currentPrice >= r.entry
-      if (!isFilled) continue
+      // A fade-the-level limit order: buy fills once price *trades* at or through
+      // entry (candle low reaches it), sell fills once price trades up to it (candle
+      // high reaches it) — not just if some later candle happens to close there.
+      const fillIndex = relevant.findIndex((c) => (isBuy ? c.low <= r.entry : c.high >= r.entry))
+      if (fillIndex === -1) continue
       r.status = 'running'
-      r.filledAt = Date.now()
+      r.filledAt = relevant[fillIndex].time
       justFilled = true
-      // Fall through to check SL/TP the same tick — a coarse ~15-minute poll can
-      // otherwise miss a fill-and-close that both happened between two checks.
+      searchFrom = fillIndex // fall through to check SL/TP starting on the same candle
     }
 
-    const hitSl = isBuy ? currentPrice <= r.sl : currentPrice >= r.sl
+    // Scan forward from the fill (or from the start of `relevant` if already running)
+    // for the first candle whose actual high/low range touches SL or TP — stops at the
+    // first one found, since the position is closed from that point on and anything
+    // later in the series no longer applies to it.
+    for (let i = searchFrom; i < relevant.length; i++) {
+      const c = relevant[i]
+      const hitSl = isBuy ? c.low <= r.sl : c.high >= r.sl
 
-    // Find the farthest TP price has already reached, not just the first — the same
-    // poll gap can miss a fast move that blew through more than one target, so a win
-    // gets credit for whichever level it actually reached.
-    let hitTpIndex = -1
-    for (let i = 0; i < r.tp.length; i++) {
-      const reached = isBuy ? currentPrice >= r.tp[i].price : currentPrice <= r.tp[i].price
-      if (reached) hitTpIndex = i
+      // Find the farthest TP this single candle's own range reached, not just the
+      // first — a fast candle can blow through more than one target, so a win gets
+      // credit for whichever level it actually reached.
+      let hitTpIndex = -1
+      for (let j = 0; j < r.tp.length; j++) {
+        const reached = isBuy ? c.high >= r.tp[j].price : c.low <= r.tp[j].price
+        if (reached) hitTpIndex = j
+      }
+
+      // Checked in this order so a single candle whose range plausibly covers both
+      // (an unusually large-range candle) is scored as a loss rather than assuming the
+      // better outcome — same conservative tie-break as before, just per-candle now
+      // instead of per-poll.
+      if (hitSl) {
+        r.status = 'loss'
+        r.closedAt = c.time
+        r.exitPrice = r.sl
+        closed.push(r)
+        break
+      } else if (hitTpIndex >= 0) {
+        r.status = 'win'
+        r.closedAt = c.time
+        r.exitPrice = r.tp[hitTpIndex].price
+        r.hitTpIndex = hitTpIndex
+        closed.push(r)
+        break
+      }
     }
 
-    // Checked in this order so an unseen path that plausibly crossed both between
-    // polls is scored as a loss rather than assuming the better outcome.
-    if (hitSl) {
-      r.status = 'loss'
-      r.closedAt = Date.now()
-      r.exitPrice = currentPrice
-      closed.push(r)
-    } else if (hitTpIndex >= 0) {
-      r.status = 'win'
-      r.closedAt = Date.now()
-      r.exitPrice = currentPrice
-      r.hitTpIndex = hitTpIndex
-      closed.push(r)
-    } else if (justFilled) {
-      filled.push(r)
-    }
+    if (justFilled && r.status === 'running') filled.push(r)
   }
 
   return { filled, closed }

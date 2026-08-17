@@ -31,6 +31,14 @@ function buySignal(overrides) {
   }
 }
 
+// A degenerate single-price "candle" (open=high=low=close) — most tests just want to
+// simulate "price is now X" without caring about intra-candle range; the tests that
+// specifically exercise range-based touch detection build a real {open,high,low,close}
+// object directly instead.
+function candle(time, price) {
+  return { time, open: price, high: price, low: price, close: price }
+}
+
 test('keyFor', () => {
   assert.equal(keyFor('XAUUSD', 'H1', { category: 'Support', direction: 'buy' }), 'XAUUSD-H1-Support-buy')
 })
@@ -71,8 +79,8 @@ test('recordSignals', async (t) => {
 
   await t.test('stops syncing once the record fills — a live position\'s risk stays fixed', () => {
     const history = []
-    recordSignals(history, 'XAUUSD', 'H1', [buySignal()])
-    evaluateSignals(history, 'XAUUSD', 100) // fills it -> running
+    recordSignals(history, 'XAUUSD', 'H1', [buySignal()], undefined, 1000)
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100)]) // fills it -> running
     const { updated } = recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 101, sl: 90 })])
     assert.equal(updated.length, 0, 'a running record is never among the updated ones')
     assert.equal(history[0].entry, 100, 'its entry/SL stay exactly what they were at fill time')
@@ -96,8 +104,8 @@ test('recordSignals', async (t) => {
 
   await t.test('never drops a running (already-filled) record this way', () => {
     const history = []
-    recordSignals(history, 'XAUUSD', 'H1', [buySignal()])
-    evaluateSignals(history, 'XAUUSD', 100) // fills it -> running
+    recordSignals(history, 'XAUUSD', 'H1', [buySignal()], undefined, 1000)
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100)]) // fills it -> running
     assert.equal(history[0].status, 'running')
     recordSignals(history, 'XAUUSD', 'H1', []) // category vanishes entirely
     assert.equal(history.length, 1)
@@ -160,71 +168,120 @@ test('recordSignals', async (t) => {
 })
 
 test('evaluateSignals', async (t) => {
-  await t.test('returns empty result and changes nothing when currentPrice is null', () => {
+  await t.test('returns empty result and changes nothing when there are no candles', () => {
     const history = []
     recordSignals(history, 'XAUUSD', 'H1', [buySignal()])
-    const result = evaluateSignals(history, 'XAUUSD', null)
+    const result = evaluateSignals(history, 'XAUUSD', [])
     assert.deepEqual(result, { filled: [], closed: [] })
     assert.equal(history[0].status, 'pending')
   })
 
-  await t.test('a buy fills when price drops to or below entry', () => {
+  await t.test('a buy fills once some candle\'s low reaches entry — not just its close', () => {
     const history = []
-    recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 100 })])
-    let result = evaluateSignals(history, 'XAUUSD', 105)
+    recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 100 })], undefined, 1000)
+    let result = evaluateSignals(history, 'XAUUSD', [candle(1000, 105)])
     assert.equal(history[0].status, 'pending', 'not filled yet — price is still above entry')
     assert.equal(result.filled.length, 0)
 
-    result = evaluateSignals(history, 'XAUUSD', 100)
+    result = evaluateSignals(history, 'XAUUSD', [candle(1000, 105), { time: 2000, open: 103, high: 104, low: 100, close: 102 }])
     assert.equal(history[0].status, 'running')
     assert.equal(result.filled.length, 1)
+    assert.equal(history[0].filledAt, 2000, 'stamped with the candle\'s own time, not wall-clock')
   })
 
-  await t.test('a sell fills when price rises to or above entry', () => {
+  await t.test('a sell fills once some candle\'s high reaches entry', () => {
     const history = []
-    recordSignals(history, 'XAUUSD', 'H1', [
-      { category: 'Resistance', direction: 'sell', entry: 100, sl: 105, tp: [{ price: 90, rr: 2 }], threshold: 2 },
-    ])
-    evaluateSignals(history, 'XAUUSD', 95)
+    recordSignals(
+      history,
+      'XAUUSD',
+      'H1',
+      [{ category: 'Resistance', direction: 'sell', entry: 100, sl: 105, tp: [{ price: 90, rr: 2 }], threshold: 2 }],
+      undefined,
+      1000
+    )
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 95)])
     assert.equal(history[0].status, 'pending')
-    evaluateSignals(history, 'XAUUSD', 100)
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 95), { time: 2000, open: 97, high: 100, low: 96, close: 98 }])
     assert.equal(history[0].status, 'running')
   })
 
-  await t.test('closes as a loss when price hits SL', () => {
+  await t.test('closes as a loss when a candle\'s low reaches SL', () => {
     const history = []
-    recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 100, sl: 95 })])
-    evaluateSignals(history, 'XAUUSD', 100) // fill
-    const { closed } = evaluateSignals(history, 'XAUUSD', 94)
+    recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 100, sl: 95 })], undefined, 1000)
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100)]) // fill
+    const { closed } = evaluateSignals(history, 'XAUUSD', [candle(1000, 100), { time: 2000, open: 98, high: 99, low: 94, close: 96 }])
     assert.equal(closed.length, 1)
     assert.equal(history[0].status, 'loss')
-    assert.equal(history[0].exitPrice, 94)
+    assert.equal(history[0].exitPrice, 95, 'exit is the SL level itself — a real stop fills there, not at whatever the candle closed at')
+    assert.equal(history[0].closedAt, 2000)
   })
 
-  await t.test('closes as a win at the farthest TP already reached, not just the first', () => {
+  await t.test('a genuine TP touch is credited even if a LATER candle goes on to also breach SL', () => {
+    // The real production bug this fixes: an S/R-based TP is a "wick and reverse"
+    // point almost by definition — the old close-only check could miss a touch that
+    // happened days ago if price has since moved on and the *current* close happens to
+    // be past SL. Scanning every candle since the fill means the earlier TP touch is
+    // found (and the position closed there) before the later candle is ever examined.
     const history = []
-    recordSignals(history, 'XAUUSD', 'H1', [
-      buySignal({
-        entry: 100,
-        sl: 95,
-        tp: [
-          { price: 110, rr: 2 },
-          { price: 120, rr: 4 },
-        ],
-      }),
+    recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 100, sl: 95, tp: [{ price: 110, rr: 2 }] })], undefined, 1000)
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100)]) // fill
+    const { closed } = evaluateSignals(history, 'XAUUSD', [
+      candle(1000, 100),
+      { time: 2000, open: 101, high: 111, low: 100, close: 105 }, // touches TP, closes back below it (but still above SL)
+      { time: 3000, open: 104, high: 105, low: 90, close: 92 }, // only now does price go on to breach SL
     ])
-    evaluateSignals(history, 'XAUUSD', 100) // fill
-    const { closed } = evaluateSignals(history, 'XAUUSD', 125) // blew straight through both targets
+    assert.equal(closed.length, 1)
+    assert.equal(history[0].status, 'win', 'TP was already touched at t=2000 — a position that already closed isn\'t re-checked against a later candle')
+    assert.equal(history[0].exitPrice, 110)
+    assert.equal(history[0].closedAt, 2000)
+  })
+
+  await t.test('a single candle whose range covers both SL and TP is conservatively scored a loss — OHLC alone can\'t say which came first', () => {
+    const history = []
+    recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 100, sl: 95, tp: [{ price: 110, rr: 2 }] })], undefined, 1000)
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100)]) // fill
+    const { closed } = evaluateSignals(history, 'XAUUSD', [
+      candle(1000, 100),
+      { time: 2000, open: 101, high: 111, low: 94, close: 94 }, // this one candle's own range reaches both levels
+    ])
+    assert.equal(closed.length, 1)
+    assert.equal(history[0].status, 'loss', 'same conservative tie-break as before, just scoped to one candle\'s range instead of one poll')
+  })
+
+  await t.test('closes as a win at the farthest TP a candle\'s range already reached, not just the first', () => {
+    const history = []
+    recordSignals(
+      history,
+      'XAUUSD',
+      'H1',
+      [
+        buySignal({
+          entry: 100,
+          sl: 95,
+          tp: [
+            { price: 110, rr: 2 },
+            { price: 120, rr: 4 },
+          ],
+        }),
+      ],
+      undefined,
+      1000
+    )
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100)]) // fill
+    const { closed } = evaluateSignals(history, 'XAUUSD', [
+      candle(1000, 100),
+      { time: 2000, open: 101, high: 125, low: 101, close: 125 }, // blew straight through both targets
+    ])
     assert.equal(closed.length, 1)
     assert.equal(history[0].status, 'win')
     assert.equal(history[0].hitTpIndex, 1, 'credited with TP2, the farthest one reached')
   })
 
-  await t.test('a fill-and-close within the same tick reports only as closed, not also as filled', () => {
+  await t.test('a fill-and-close within the same candle reports only as closed, not also as filled', () => {
     const history = []
-    recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 100, sl: 95 })])
-    // Price gaps straight down through entry AND stop-loss in one poll.
-    const result = evaluateSignals(history, 'XAUUSD', 94)
+    recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 100, sl: 95 })], undefined, 1000)
+    // Price gaps straight down through entry AND stop-loss within one candle.
+    const result = evaluateSignals(history, 'XAUUSD', [{ time: 1000, open: 102, high: 103, low: 94, close: 94 }])
     assert.equal(result.filled.length, 0, 'no separate fill notification for a trade that already closed')
     assert.equal(result.closed.length, 1)
     assert.equal(history[0].status, 'loss')
@@ -232,10 +289,10 @@ test('evaluateSignals', async (t) => {
 
   await t.test('a closed record is never re-evaluated', () => {
     const history = []
-    recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 100, sl: 95 })])
-    evaluateSignals(history, 'XAUUSD', 100)
-    evaluateSignals(history, 'XAUUSD', 94) // -> loss
-    const result = evaluateSignals(history, 'XAUUSD', 200) // would "win" if still open
+    recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 100, sl: 95 })], undefined, 1000)
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100)])
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100), candle(2000, 94)]) // -> loss
+    const result = evaluateSignals(history, 'XAUUSD', [candle(1000, 100), candle(2000, 94), candle(3000, 200)]) // would "win" if still open
     assert.equal(result.filled.length, 0)
     assert.equal(result.closed.length, 0)
     assert.equal(history[0].status, 'loss')
@@ -243,11 +300,26 @@ test('evaluateSignals', async (t) => {
 
   await t.test('only evaluates records for the given symbol', () => {
     const history = []
-    recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 100 })])
-    recordSignals(history, 'BTCUSD', 'H1', [buySignal({ entry: 100 })])
-    evaluateSignals(history, 'XAUUSD', 100)
+    recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 100 })], undefined, 1000)
+    recordSignals(history, 'BTCUSD', 'H1', [buySignal({ entry: 100 })], undefined, 1000)
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100)])
     assert.equal(history.find((r) => r.symbolKey === 'XAUUSD').status, 'running')
     assert.equal(history.find((r) => r.symbolKey === 'BTCUSD').status, 'pending')
+  })
+
+  await t.test('a poll gap spanning multiple candles still finds the fill — not just the latest one', () => {
+    const history = []
+    recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 100 })], undefined, 1000)
+    // Simulates a skipped/slow cron tick: several candles arrived since openedAt, and
+    // the fill happened in the middle of them, not the latest.
+    const result = evaluateSignals(history, 'XAUUSD', [
+      candle(1000, 105),
+      { time: 2000, open: 104, high: 105, low: 100, close: 103 }, // the actual fill candle
+      candle(3000, 106),
+    ])
+    assert.equal(history[0].status, 'running')
+    assert.equal(history[0].filledAt, 2000)
+    assert.equal(result.filled.length, 1)
   })
 })
 

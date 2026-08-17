@@ -28,7 +28,6 @@ const {
   sendTelegramMessage,
   editTelegramMessage,
   sendTelegramPhoto,
-  sendTelegramMediaGroupPhotos,
   telegramSendsAllowed,
   sendAdminAlert,
   sendAdminAlertDeduped,
@@ -104,11 +103,9 @@ function wibTime(year, month, day, hour = 0, minute = 0) {
 // Intercepts calls to api.telegram.org and records them instead of hitting the network.
 // Any other fetch() call (e.g. a real fallback snapshot fetch) is left to a caller-
 // supplied handler so each test controls exactly what "the network" does. A JSON body
-// (sendMessage/editMessageText) is parsed as before; sendPhoto/sendMediaGroup send a
-// multipart FormData body instead — recorded as-is (fields readable via .get()/.getAll())
-// rather than attempting to JSON.parse it. sendMediaGroup's response also needs to be an
-// array of results (one per attachment), not a single object, to match Telegram's own
-// API shape and keep sendTelegramMediaGroupPhotos's message-id bookkeeping correct.
+// (sendMessage/editMessageText) is parsed as before; sendPhoto sends a multipart
+// FormData body instead — recorded as-is (fields readable via .get()/.getAll()) rather
+// than attempting to JSON.parse it.
 function mockTelegram(otherHandler) {
   const sent = []
   const original = global.fetch
@@ -118,13 +115,6 @@ function mockTelegram(otherHandler) {
       const body = isForm ? opts.body : JSON.parse(opts.body)
       const messageId = sent.length + 1
       sent.push(body)
-      if (String(url).includes('sendMediaGroup')) {
-        const count = isForm ? JSON.parse(body.get('media')).length : 1
-        return {
-          ok: true,
-          json: async () => ({ ok: true, result: Array.from({ length: count }, (_, i) => ({ message_id: messageId + i })) }),
-        }
-      }
       return { ok: true, json: async () => ({ ok: true, result: { message_id: messageId } }) }
     }
     if (otherHandler) return otherHandler(url, opts)
@@ -618,15 +608,16 @@ test('sendTelegramPhoto', async (t) => {
     }
   })
 
-  await t.test('posts the buffer as a photo, with the given filename and optional caption', async () => {
+  await t.test('posts the buffer as a photo, with the given filename, caption, and HTML parse_mode', async () => {
     const { sent, restore } = mockTelegram()
     try {
       const buf = Buffer.from('fake png bytes')
-      const result = await sendTelegramPhoto(buf, 'weekly-performance.png', 'a caption')
+      const result = await sendTelegramPhoto(buf, 'weekly-performance.png', 'a <b>caption</b>')
       assert.equal(result, 1)
       const form = sent[0]
       assert.equal(form.get('chat_id'), '-100public')
-      assert.equal(form.get('caption'), 'a caption')
+      assert.equal(form.get('caption'), 'a <b>caption</b>')
+      assert.equal(form.get('parse_mode'), 'HTML')
       const file = form.get('photo')
       assert.equal(file.name, 'weekly-performance.png')
       assert.equal(await file.text(), 'fake png bytes')
@@ -635,11 +626,12 @@ test('sendTelegramPhoto', async (t) => {
     }
   })
 
-  await t.test('omits the caption field entirely when none is given', async () => {
+  await t.test('omits caption and parse_mode entirely when no caption is given', async () => {
     const { sent, restore } = mockTelegram()
     try {
       await sendTelegramPhoto(Buffer.from('x'), 'x.png')
       assert.equal(sent[0].get('caption'), null)
+      assert.equal(sent[0].get('parse_mode'), null)
     } finally {
       restore()
     }
@@ -650,101 +642,6 @@ test('sendTelegramPhoto', async (t) => {
     global.fetch = async () => ({ ok: true, json: async () => ({ ok: false, description: 'file too large' }) })
     try {
       assert.equal(await sendTelegramPhoto(Buffer.from('x'), 'x.png'), null)
-    } finally {
-      global.fetch = original
-    }
-  })
-})
-
-test('sendTelegramMediaGroupPhotos', async (t) => {
-  await t.test('no-ops (returns []) when ALLOW_TELEGRAM_SEND/CI is not set', async () => {
-    await withTelegramSendsDisallowed(async () => {
-      const { sent, restore } = mockTelegram()
-      try {
-        const result = await sendTelegramMediaGroupPhotos([{ buffer: Buffer.from('x'), filename: 'x.png' }])
-        assert.deepEqual(result, [])
-        assert.equal(sent.length, 0)
-      } finally {
-        restore()
-      }
-    })
-  })
-
-  await t.test('no-ops (returns []) when the token/chat id are missing, or the item list is empty', async () => {
-    const savedChat = process.env.TELEGRAM_CHAT_ID
-    delete process.env.TELEGRAM_CHAT_ID
-    const { sent, restore } = mockTelegram()
-    try {
-      const result = await sendTelegramMediaGroupPhotos([{ buffer: Buffer.from('x'), filename: 'x.png' }])
-      assert.deepEqual(result, [])
-      assert.equal(sent.length, 0)
-    } finally {
-      process.env.TELEGRAM_CHAT_ID = savedChat
-      restore()
-    }
-
-    const { sent: sent2, restore: restore2 } = mockTelegram()
-    try {
-      assert.deepEqual(await sendTelegramMediaGroupPhotos([]), [])
-      assert.equal(sent2.length, 0)
-    } finally {
-      restore2()
-    }
-  })
-
-  await t.test('sends every item as one album, each attached file distinct and readable back', async () => {
-    const { sent, restore } = mockTelegram()
-    try {
-      const items = [
-        { buffer: Buffer.from('chart one'), filename: 'a.png', caption: 'first' },
-        { buffer: Buffer.from('chart two'), filename: 'b.png' },
-      ]
-      const messageIds = await sendTelegramMediaGroupPhotos(items)
-      assert.equal(messageIds.length, 2)
-      const form = sent[0]
-      const media = JSON.parse(form.get('media'))
-      assert.equal(media.length, 2)
-      assert.equal(media[0].type, 'photo')
-      assert.equal(media[0].caption, 'first')
-      assert.equal(media[1].caption, undefined)
-      // Each media entry's attach:// key must resolve to the actual field carrying that
-      // item's own bytes — a shared/colliding key would silently attach the wrong file.
-      const file0 = form.get(media[0].media.replace('attach://', ''))
-      const file1 = form.get(media[1].media.replace('attach://', ''))
-      assert.equal(await file0.text(), 'chart one')
-      assert.equal(await file1.text(), 'chart two')
-    } finally {
-      restore()
-    }
-  })
-
-  await t.test('chunks into batches of 10 (Telegram\'s own per-request cap)', async () => {
-    const { sent, restore } = mockTelegram()
-    try {
-      const items = Array.from({ length: 12 }, (_, i) => ({ buffer: Buffer.from(`f${i}`), filename: `f${i}.png` }))
-      const messageIds = await sendTelegramMediaGroupPhotos(items)
-      assert.equal(sent.length, 2) // 10 + 2, split across two sendMediaGroup requests
-      assert.equal(JSON.parse(sent[0].get('media')).length, 10)
-      assert.equal(JSON.parse(sent[1].get('media')).length, 2)
-      assert.equal(messageIds.length, 12)
-    } finally {
-      restore()
-    }
-  })
-
-  await t.test('a failed chunk is skipped, not thrown — other chunks still send', async () => {
-    const original = global.fetch
-    let call = 0
-    global.fetch = async (url) => {
-      if (!String(url).includes('sendMediaGroup')) throw new Error(`unexpected fetch: ${url}`)
-      call += 1
-      if (call === 1) return { ok: true, json: async () => ({ ok: false, description: 'nope' }) }
-      return { ok: true, json: async () => ({ ok: true, result: [{ message_id: 99 }] }) }
-    }
-    try {
-      const items = Array.from({ length: 11 }, (_, i) => ({ buffer: Buffer.from(`f${i}`), filename: `f${i}.png` }))
-      const messageIds = await sendTelegramMediaGroupPhotos(items)
-      assert.deepEqual(messageIds, [99]) // only the second chunk's result survives
     } finally {
       global.fetch = original
     }
@@ -1047,7 +944,7 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
 
       // One extra wide-range candle shifts ATR (and so SL/TP) without moving price
       // anywhere near the entry — still pending, not filled.
-      const recalculated = { H1: [...base, candle(base.length, 4303, 4320, 4290, 4304)] }
+      const recalculated = { H1: [...base, candle(base.length, 4310, 4320, 4305, 4315)] }
       await updateSignalHistoryForSymbol(history, 'XAUUSD', recalculated)
 
       assert.equal(sent.length, 2, 'an edit, not a brand-new message')
@@ -1068,7 +965,7 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
       const base = seriesWithLowPivot(4300)
       const history = []
       await updateSignalHistoryForSymbol(history, 'XAUUSD', { H1: base })
-      const recalculated = { H1: [...base, candle(base.length, 4303, 4320, 4290, 4304)] }
+      const recalculated = { H1: [...base, candle(base.length, 4310, 4320, 4305, 4315)] }
       await updateSignalHistoryForSymbol(history, 'XAUUSD', recalculated)
       await updateSignalHistoryForSymbol(history, 'XAUUSD', recalculated) // identical again
       assert.equal(sent.length, 2, 'no further edit once nothing actually changed')
@@ -1090,7 +987,7 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
       const filledAndRecalculated = {
         H1: [
           ...base,
-          candle(base.length, 4303, 4320, 4290, 4304),
+          candle(base.length, 4310, 4320, 4305, 4315),
           candle(base.length + 1, h1.entry, h1.entry + 1, h1.entry - 1, h1.entry),
         ],
       }
@@ -1117,7 +1014,7 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
       assert.equal(h1.telegramMessageId, undefined)
       const originalSl = h1.sl
 
-      const recalculated = [...base, candle(base.length, 4303, 4320, 4290, 4304)]
+      const recalculated = [...base, candle(base.length, 4310, 4320, 4305, 4315)]
       await updateSignalHistoryForSymbol(history, 'XAUUSD', { H1: withTime(recalculated) })
 
       assert.equal(sent.length, 0, 'still nothing to send — there was never a message to edit')
@@ -1622,7 +1519,7 @@ test('maybeSendWeeklyReport', async (t) => {
     }
   })
 
-  await t.test('sends on Monday inside the window as ONE message: report text as the caption on the chart album', async () => {
+  await t.test('sends on Monday inside the window as ONE photo: report text as its caption', async () => {
     const { sent, restore } = mockTelegram()
     try {
       const state = {}
@@ -1640,19 +1537,16 @@ test('maybeSendWeeklyReport', async (t) => {
       assert.equal(result, true)
       assert.equal(state.lastWeeklyReportDate, '2026-08-10')
 
-      // ONE Telegram call, not a separate text message followed by a separate album —
-      // the report text is the caption on the first (performance chart) image.
+      // ONE Telegram call, not a separate text message followed by a separate image —
+      // the report text is the photo's own caption.
       assert.equal(sent.length, 1)
-      const media = JSON.parse(sent[0].get('media'))
-      assert.equal(media.length, 2) // 1 performance chart + 1 trade-log page (only one trade this week)
-      assert.ok(media.every((m) => m.type === 'photo'))
-      assert.match(media[0].caption, /Weekly Report/)
-      assert.match(media[0].caption, /BTCUSD/)
-      assert.match(media[0].caption, /\+1200/)
-      assert.equal(media[0].parse_mode, 'HTML')
-      assert.equal(media[1].caption, undefined, 'only the first item carries the caption')
+      const form = sent[0]
+      assert.match(form.get('caption'), /Weekly Report/)
+      assert.match(form.get('caption'), /BTCUSD/)
+      assert.match(form.get('caption'), /\+1200/)
+      assert.equal(form.get('parse_mode'), 'HTML')
 
-      const perfFile = sent[0].get(media[0].media.replace('attach://', ''))
+      const perfFile = form.get('photo')
       assert.equal(perfFile.name, 'weekly-performance.png')
       // A real PNG, not a placeholder — starts with the PNG magic bytes.
       const perfBytes = Buffer.from(await perfFile.arrayBuffer())
@@ -1662,7 +1556,7 @@ test('maybeSendWeeklyReport', async (t) => {
     }
   })
 
-  await t.test('sends nothing at all (no text, no charts) when nothing closed all week', async () => {
+  await t.test('sends nothing at all (no text, no chart) when nothing closed all week', async () => {
     const { sent, restore } = mockTelegram()
     try {
       const state = {}

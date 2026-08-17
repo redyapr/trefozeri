@@ -1,5 +1,5 @@
-// Renders the weekly performance report's chart images (bar chart + TP pie charts,
-// and a separate trade-log table) as PNG buffers, using @napi-rs/canvas — a
+// Renders the weekly performance report as ONE PNG buffer (bar chart + TP pie charts +
+// trade-log table, all on one canvas) using @napi-rs/canvas — a
 // Skia-backed canvas with prebuilt native bindings for every platform GitHub Actions'
 // hosted runners use (linux-x64-gnu included), so no system libcairo/apt-get step is
 // needed the way e.g. Python's cairosvg would require (see the design-preview session
@@ -92,10 +92,6 @@ const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 // per-signal TP count varies (see srDetector.js), but 3 covers the common case and
 // keeps the chart a fixed, glanceable size rather than growing unbounded.
 const TP_LEVELS = 3
-// Trade log images are paginated at this many rows each — "possible akan banyak" (could
-// get long over a busy week), and a single giant image would be unreadable in Telegram's
-// in-chat preview.
-const TRADE_LOG_PAGE_SIZE = 20
 
 // Pure data prep, independently testable from the canvas drawing below. `days` is 7
 // entries (Monday..Sunday, oldest first), each `{ label, startMs, endMs }` — the caller
@@ -263,9 +259,73 @@ function drawPie(ctx, { cx, cy, radius, pct, label }) {
   ctx.textAlign = 'left'
 }
 
-// Returns one PNG Buffer: title/summary, daily-pips-gained horizontal bars (XAUUSD
-// alongside BTCUSD, side by side), and the TP1->TP3 success-rate pies in a row below.
-export function renderWeeklyPerformanceChart(data, rangeLabel) {
+// Draws the trade-log table (DATE/TYPE/PAIR/HIT/P&L, justified across `w`) starting at
+// `y0`, returning the y position just past the last row. No pagination — the whole log
+// goes on this one canvas (see renderWeeklyReportImage below); a busy week for this
+// dashboard's own signal frequency is a handful of rows, not hundreds, so an unbounded
+// table just makes the one image taller rather than needing to be split up.
+function drawTradeLogTable(ctx, { trades, x0, y0, w }) {
+  const ROW_H = 30
+  const HEADER_H = 22
+  const COLUMN_COUNT = 5
+  const colStep = w / (COLUMN_COUNT - 1)
+  const colDate = x0
+  const colType = x0 + colStep
+  const colPair = x0 + colStep * 2
+  const colHit = x0 + colStep * 3
+  const colPlRight = x0 + w
+
+  let y = y0
+  ctx.fillStyle = COLORS.textDim
+  ctx.font = font(14, true)
+  ctx.fillText('DATE', colDate, y)
+  ctx.fillText('TYPE', colType, y)
+  ctx.fillText('PAIR', colPair, y)
+  ctx.fillText('HIT', colHit, y)
+  ctx.textAlign = 'right'
+  ctx.fillText('P/L', colPlRight, y)
+  ctx.textAlign = 'left'
+  y += HEADER_H
+  ctx.strokeStyle = COLORS.borderSoft
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(colDate, y)
+  ctx.lineTo(colPlRight, y)
+  ctx.stroke()
+  y += 16
+
+  for (const t of trades) {
+    const rowColor = t.isWin ? COLORS.win : COLORS.loss
+    const pairColor = t.pair === 'XAUUSD' ? COLORS.gold : COLORS.cyan
+    ctx.fillStyle = COLORS.textCol
+    ctx.font = font(14)
+    ctx.fillText(t.date, colDate, y)
+    ctx.fillText(t.type, colType, y)
+    ctx.fillStyle = pairColor
+    ctx.font = font(14, true)
+    ctx.fillText(t.pair, colPair, y)
+    ctx.fillStyle = rowColor
+    ctx.fillText(t.hit, colHit, y)
+    ctx.textAlign = 'right'
+    ctx.fillText(t.plText, colPlRight, y)
+    ctx.textAlign = 'left'
+    y += ROW_H
+    ctx.strokeStyle = COLORS.border
+    ctx.beginPath()
+    ctx.moveTo(colDate, y - 6)
+    ctx.lineTo(colPlRight, y - 6)
+    ctx.stroke()
+  }
+
+  return y
+}
+
+// Returns ONE PNG Buffer for the whole weekly report: title/summary, daily-pips-gained
+// horizontal bars (XAUUSD alongside BTCUSD, side by side), the TP1->TP3 success-rate
+// pies in a row, and the trade-log table — all on one canvas, rather than a separate
+// image per section (a design-review correction: "gabung image trade log jadi satu
+// dengan image utama").
+export function renderWeeklyReportImage(data, rangeLabel) {
   registerFonts()
   const W = 900
   const MARGIN = 30
@@ -274,14 +334,13 @@ export function renderWeeklyPerformanceChart(data, rangeLabel) {
   // Rendered onto a generously-tall scratch canvas first, then cropped to the actual
   // content height — the same "measure as we go, crop at the end" approach as the
   // design-preview prototype, since the exact height depends on how many days actually
-  // had a trade (quiet days are no longer shown at all) and how many lines the note
-  // wraps to.
-  const scratch = createCanvas(W * SCALE, 1400 * SCALE)
+  // had a trade, how many pie rows, and how many trade-log rows there are.
+  const scratch = createCanvas(W * SCALE, 2200 * SCALE)
   const ctx = scratch.getContext('2d')
   ctx.scale(SCALE, SCALE)
   ctx.textBaseline = 'top'
   ctx.fillStyle = COLORS.bg
-  ctx.fillRect(0, 0, W, 1400)
+  ctx.fillRect(0, 0, W, 2200)
 
   let y = 24
   ctx.fillStyle = COLORS.textCol
@@ -344,123 +403,25 @@ export function renderWeeklyPerformanceChart(data, rangeLabel) {
     const pieCx = MARGIN + colW * idx + colW / 2
     drawPie(ctx, { cx: pieCx, cy: pieCy, radius: pieRadius, pct: data.tpReachPct[idx], label: name })
   })
-  y = pieCy + pieRadius + 22 + 18 + 24
+  y = pieCy + pieRadius + 22 + 18 + 40
 
+  ctx.fillStyle = COLORS.textCol
+  ctx.font = font(16, true)
+  ctx.fillText('TRADE LOG', MARGIN, y)
+  y += 32
+
+  if (data.trades.length) {
+    y = drawTradeLogTable(ctx, { trades: data.trades, x0: MARGIN, y0: y, w: CW })
+  } else {
+    ctx.fillStyle = COLORS.textDim
+    ctx.font = font(14)
+    ctx.fillText('No signals closed this week.', MARGIN, y)
+    y += 24
+  }
+
+  y += 10
   const finalCanvas = createCanvas(W * SCALE, Math.round(y) * SCALE)
   const finalCtx = finalCanvas.getContext('2d')
   finalCtx.drawImage(scratch, 0, 0)
   return finalCanvas.toBuffer('image/png')
-}
-
-// Returns an ARRAY of PNG Buffers — one per page of up to TRADE_LOG_PAGE_SIZE rows —
-// rather than a single Buffer, since a busy week's trade count isn't bounded and a
-// single giant image would be unreadable in Telegram's in-chat preview.
-export function renderWeeklyTradeLogCharts(data, rangeLabel) {
-  registerFonts()
-  const MARGIN = 30
-  const ROW_H = 30
-  const HEADER_H = 22
-
-  if (data.trades.length === 0) {
-    return [renderTradeLogPage([], rangeLabel, 1, 1, data)]
-  }
-
-  const pages = []
-  for (let i = 0; i < data.trades.length; i += TRADE_LOG_PAGE_SIZE) {
-    pages.push(data.trades.slice(i, i + TRADE_LOG_PAGE_SIZE))
-  }
-  return pages.map((rows, i) => renderTradeLogPage(rows, rangeLabel, i + 1, pages.length, data))
-
-  function renderTradeLogPage(rows, rangeLabel, pageNum, pageCount, data) {
-    const pageSuffix = pageCount > 1 ? ` (${pageNum}/${pageCount})` : ''
-    const titleText = `Weekly Trade Log — ${rangeLabel}${pageSuffix}`
-
-    // Fixed page width, same as the performance chart (visual consistency within the
-    // album), with the 5 columns "justified" across it — evenly spaced from the left
-    // margin to the right margin (DATE flush left, P/L flush right, the rest spaced
-    // equally between) — rather than either bunched together with dead space on the
-    // right, or stretched with one huge gap before the last column.
-    const W = 900
-    const CW = 840
-    const COLUMN_COUNT = 5
-    const colStep = CW / (COLUMN_COUNT - 1)
-    const colDate = MARGIN
-    const colType = MARGIN + colStep
-    const colPair = MARGIN + colStep * 2
-    const colHit = MARGIN + colStep * 3
-    const colPlRight = MARGIN + CW
-
-    const H = 24 + 40 + 30 + HEADER_H + 20 + ROW_H * Math.max(rows.length, 1) + 24
-    const canvas = createCanvas(W * SCALE, H * SCALE)
-    const ctx = canvas.getContext('2d')
-    ctx.scale(SCALE, SCALE)
-    ctx.textBaseline = 'top'
-    ctx.fillStyle = COLORS.bg
-    ctx.fillRect(0, 0, W, H)
-
-    let y = 24
-    ctx.fillStyle = COLORS.textCol
-    ctx.font = font(24, true)
-    ctx.fillText(titleText, MARGIN, y)
-    drawLogoBadge(ctx, W - MARGIN, y - 5, 34, 'right')
-    y += 40
-
-    ctx.fillStyle = COLORS.textDim
-    ctx.font = font(15, true)
-    const summary = data.totalClosed
-      ? `${data.totalClosed} closed  ·  Win rate ${data.winRate}% (${data.wins}W / ${data.losses}L)`
-      : 'No trades closed this week'
-    ctx.fillText(summary, MARGIN, y)
-    y += 44
-
-    ctx.fillStyle = COLORS.textDim
-    ctx.font = font(14, true)
-    ctx.fillText('DATE', colDate, y)
-    ctx.fillText('TYPE', colType, y)
-    ctx.fillText('PAIR', colPair, y)
-    ctx.fillText('HIT', colHit, y)
-    ctx.textAlign = 'right'
-    ctx.fillText('P/L', colPlRight, y)
-    ctx.textAlign = 'left'
-    y += HEADER_H
-    ctx.strokeStyle = COLORS.borderSoft
-    ctx.lineWidth = 1
-    ctx.beginPath()
-    ctx.moveTo(colDate, y)
-    ctx.lineTo(colPlRight, y)
-    ctx.stroke()
-    y += 16
-
-    if (rows.length === 0) {
-      ctx.fillStyle = COLORS.textDim
-      ctx.font = font(14)
-      ctx.fillText('No signals closed this week.', colDate, y)
-      y += ROW_H
-    }
-
-    for (const t of rows) {
-      const rowColor = t.isWin ? COLORS.win : COLORS.loss
-      const pairColor = t.pair === 'XAUUSD' ? COLORS.gold : COLORS.cyan
-      ctx.fillStyle = COLORS.textCol
-      ctx.font = font(14)
-      ctx.fillText(t.date, colDate, y)
-      ctx.fillText(t.type, colType, y)
-      ctx.fillStyle = pairColor
-      ctx.font = font(14, true)
-      ctx.fillText(t.pair, colPair, y)
-      ctx.fillStyle = rowColor
-      ctx.fillText(t.hit, colHit, y)
-      ctx.textAlign = 'right'
-      ctx.fillText(t.plText, colPlRight, y)
-      ctx.textAlign = 'left'
-      y += ROW_H
-      ctx.strokeStyle = COLORS.border
-      ctx.beginPath()
-      ctx.moveTo(colDate, y - 6)
-      ctx.lineTo(colPlRight, y - 6)
-      ctx.stroke()
-    }
-
-    return canvas.toBuffer('image/png')
-  }
 }

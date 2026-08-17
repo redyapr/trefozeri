@@ -31,6 +31,10 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
 - **Track record** — shared across every visitor. Each signal goes `pending` →
   `running` (filled) → `win`/`loss`, stored in `data/signal-history.json` and
   committed by CI. View it via the chart-icon button. Capped at 300 records per symbol.
+  Fill/SL/TP are checked against each candle's actual high/low range since the record's
+  own `openedAt`/`filledAt` — not just the latest close — so a genuine touch isn't
+  missed just because price later reverses before the next ~15-minute poll. See
+  `evaluateSignals` in `src/lib/signalHistoryCore.js`.
 - **Telegram notifications** — public channel, H1 only. Posts new signals, fills, and
   SL/TP results automatically. A still-pending signal's own message is edited in place
   whenever its entry/SL/TP recalculate, so it never shows stale numbers — once filled,
@@ -45,14 +49,14 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
   week, or the whole report when literally nothing closed, is omitted rather than
   padded out with "No signals closed" placeholder lines. De-duplicated via
   `data/last-report.json`.
-- **Weekly performance charts** — the report text and its charts go out as ONE Telegram
-  message (the text is the caption on the first image), not a separate text message
-  followed by a separate album. Rendered at 2x scale with
-  [@napi-rs/canvas](https://github.com/Brooooooklyn/canvas), sent via `sendPhoto`/
-  `sendMediaGroup`: daily pips gained per symbol (horizontal bars, red = loss), TP1–TP3
-  success rate as descending pie charts (cumulative — a TP2 hit also counts toward
-  TP1), and a separate trade-log image (paginated at 20 rows) listing every closed
-  trade's date, side, pair, result, and P/L. See `scripts/weeklyChart.mjs`.
+- **Weekly performance chart** — the report text and its chart go out as ONE Telegram
+  photo message (the text is the image's own caption), not a separate text message and
+  a separate image. Rendered at 2x scale with
+  [@napi-rs/canvas](https://github.com/Brooooooklyn/canvas), sent via `sendPhoto`: daily
+  pips gained per symbol (horizontal bars, red = loss), TP1–TP3 success rate as
+  horizontal pie charts (cumulative — a TP2 hit also counts toward TP1), and a trade-log
+  table on the same canvas listing every closed trade's date, side, pair, result, and
+  P/L. See `scripts/weeklyChart.mjs`.
 - **Market status** — a banner during gold's closed hours (Fri 22:00 UTC → Sun 22:00
   UTC); also gates new XAUUSD signals during that window.
 - **Install prompt** — a custom "add to home screen" button in the header, in place of

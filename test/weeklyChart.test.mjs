@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { computeWeeklyChartData, renderWeeklyPerformanceChart, renderWeeklyTradeLogCharts } from '../scripts/weeklyChart.mjs'
+import { computeWeeklyChartData, renderWeeklyReportImage } from '../scripts/weeklyChart.mjs'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const WIB_OFFSET_MS = 7 * 60 * 60 * 1000
@@ -153,48 +153,35 @@ test('computeWeeklyChartData', async (t) => {
   })
 })
 
-test('renderWeeklyPerformanceChart', async (t) => {
-  await t.test('returns a valid PNG buffer for a populated week', () => {
+test('renderWeeklyReportImage', async (t) => {
+  await t.test('returns a valid, single PNG buffer for a populated week', () => {
     const history = [closedRecord({ entry: 4300, exitPrice: 4312 })]
     const data = computeWeeklyChartData(history, makeDays())
-    const buf = renderWeeklyPerformanceChart(data, '10 – 16 Aug 2026')
+    const buf = renderWeeklyReportImage(data, '10 – 16 Aug 2026')
     assert.ok(Buffer.isBuffer(buf))
     assert.deepEqual(buf.subarray(0, 8), PNG_MAGIC)
     assert.ok(buf.length > 1000, 'a real rendered chart is well over 1KB, not a blank canvas')
   })
 
-  await t.test('does not throw for an empty week (no trades closed)', () => {
+  await t.test('does not throw for an empty week (no trades closed) — bars, pies, and an empty trade-log note all render', () => {
     const data = computeWeeklyChartData([], makeDays())
-    const buf = renderWeeklyPerformanceChart(data, '10 – 16 Aug 2026')
+    const buf = renderWeeklyReportImage(data, '10 – 16 Aug 2026')
     assert.deepEqual(buf.subarray(0, 8), PNG_MAGIC)
   })
-})
 
-test('renderWeeklyTradeLogCharts', async (t) => {
-  await t.test('a week with no closed trades still returns exactly one (empty) page', () => {
-    const data = computeWeeklyChartData([], makeDays())
-    const pages = renderWeeklyTradeLogCharts(data, '10 – 16 Aug 2026')
-    assert.equal(pages.length, 1)
-    assert.deepEqual(pages[0].subarray(0, 8), PNG_MAGIC)
-  })
-
-  await t.test('paginates at 20 rows per image — 25 trades makes 2 pages', () => {
-    const history = Array.from({ length: 25 }, (_, i) =>
+  await t.test('grows taller as more trade-log rows are added — the log is on the same canvas, not a separate image', () => {
+    const few = [closedRecord({ entry: 4300, exitPrice: 4312 })]
+    const many = Array.from({ length: 25 }, (_, i) =>
       closedRecord({ key: `k${i}`, closedAt: WEEK_START_MS + (i % 7) * DAY_MS + 3600000 })
     )
-    const data = computeWeeklyChartData(history, makeDays())
-    assert.equal(data.totalClosed, 25)
-    const pages = renderWeeklyTradeLogCharts(data, '10 – 16 Aug 2026')
-    assert.equal(pages.length, 2)
-    for (const page of pages) assert.deepEqual(page.subarray(0, 8), PNG_MAGIC)
-  })
+    const shortBuf = renderWeeklyReportImage(computeWeeklyChartData(few, makeDays()), '10 – 16 Aug 2026')
+    const tallBuf = renderWeeklyReportImage(computeWeeklyChartData(many, makeDays()), '10 – 16 Aug 2026')
 
-  await t.test('exactly 20 trades still fits on one page', () => {
-    const history = Array.from({ length: 20 }, (_, i) =>
-      closedRecord({ key: `k${i}`, closedAt: WEEK_START_MS + (i % 7) * DAY_MS + 3600000 })
-    )
-    const data = computeWeeklyChartData(history, makeDays())
-    const pages = renderWeeklyTradeLogCharts(data, '10 – 16 Aug 2026')
-    assert.equal(pages.length, 1)
+    function pngHeight(buf) {
+      // IHDR is always the first chunk, right after the 8-byte signature: 4-byte
+      // length, 4-byte type, then width (4 bytes) and height (4 bytes), big-endian.
+      return buf.readUInt32BE(8 + 4 + 4 + 4)
+    }
+    assert.ok(pngHeight(tallBuf) > pngHeight(shortBuf), '25 trade-log rows must make the image taller than 1 row does')
   })
 })

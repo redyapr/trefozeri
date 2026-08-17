@@ -31,7 +31,7 @@ import {
   formatPrice,
 } from '../src/lib/signalHistoryCore.js'
 import { isGoldMarketClosed } from '../src/lib/marketHours.js'
-import { computeWeeklyChartData, renderWeeklyPerformanceChart, renderWeeklyTradeLogCharts } from './weeklyChart.mjs'
+import { computeWeeklyChartData, renderWeeklyReportImage } from './weeklyChart.mjs'
 
 const OUT_DIR = path.join(process.cwd(), 'public', 'data')
 const HISTORY_PATH = path.join(process.cwd(), 'data', 'signal-history.json')
@@ -312,7 +312,13 @@ export async function sendTelegramPhoto(buffer, filename, caption, chatId = proc
   try {
     const form = new FormData()
     form.append('chat_id', chatId)
-    if (caption) form.append('caption', caption)
+    // HTML parse_mode only matters when there's a caption to render — the weekly
+    // report's own HTML (<b>...</b>) is passed as the caption here (see
+    // sendWeeklyReport), same as sendTelegramMessage's own HTML captions elsewhere.
+    if (caption) {
+      form.append('caption', caption)
+      form.append('parse_mode', 'HTML')
+    }
     form.append('photo', new Blob([buffer], { type: 'image/png' }), filename)
     const res = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, { method: 'POST', body: form })
     const json = await res.json()
@@ -325,48 +331,6 @@ export async function sendTelegramPhoto(buffer, filename, caption, chatId = proc
     console.warn(`[telegram] sendPhoto error: ${err.message}`)
     return null
   }
-}
-
-// Same reasoning as sendTelegramPhoto, but posts every item as one album (a single "N
-// images" notification instead of N separate ones) — chunked into batches of 10 since
-// that's Telegram's own per-request cap for sendMediaGroup. Returns the message ids
-// actually sent (fewer than `items.length` if a chunk's request fails).
-export async function sendTelegramMediaGroupPhotos(items, chatId = process.env.TELEGRAM_CHAT_ID) {
-  const token = process.env.TELEGRAM_BOT_TOKEN
-  if (!token || !chatId || !items.length || !telegramSendsAllowed()) return []
-
-  const messageIds = []
-  for (let i = 0; i < items.length; i += 10) {
-    const chunk = items.slice(i, i + 10)
-    try {
-      const form = new FormData()
-      form.append('chat_id', chatId)
-      const media = chunk.map((item, idx) => {
-        const attachKey = `file${i}_${idx}`
-        form.append(attachKey, new Blob([item.buffer], { type: 'image/png' }), item.filename)
-        // parse_mode only matters when there's a caption to render — the weekly
-        // report's own HTML (<b>...</b>) is passed as one item's caption (see
-        // sendWeeklyReport) so it needs the same HTML parsing sendTelegramMessage uses,
-        // or the tags would show up literally instead of rendering.
-        return {
-          type: 'photo',
-          media: `attach://${attachKey}`,
-          ...(item.caption ? { caption: item.caption, parse_mode: 'HTML' } : {}),
-        }
-      })
-      form.append('media', JSON.stringify(media))
-      const res = await fetch(`https://api.telegram.org/bot${token}/sendMediaGroup`, { method: 'POST', body: form })
-      const json = await res.json()
-      if (!json.ok) {
-        console.warn(`[telegram] sendMediaGroup failed: ${json.description}`)
-        continue
-      }
-      messageIds.push(...json.result.map((m) => m.message_id))
-    } catch (err) {
-      console.warn(`[telegram] sendMediaGroup error: ${err.message}`)
-    }
-  }
-  return messageIds
 }
 
 // Ops alert to the personal chat — never the public channel. Best-effort like
@@ -739,13 +703,13 @@ export async function maybeSendDailyReport(history, now, state) {
 
 const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
-// Builds the 7 day buckets (Monday..Sunday, WIB) the chart images are computed over,
-// then sends the whole weekly report — reportText and both chart images — as ONE
-// Telegram message: reportText becomes the caption on the first (performance chart)
-// image in a single sendMediaGroup album, rather than a separate text message followed
-// by a separate image album (two chat bubbles for what's conceptually one report).
-// Best-effort like every other Telegram notification here: a rendering or send failure
-// is logged and swallowed, never allowed to fail the whole cron run.
+// Builds the 7 day buckets (Monday..Sunday, WIB) the chart image is computed over,
+// then sends the whole weekly report — reportText and the one combined chart image
+// (bars + pies + trade log, see renderWeeklyReportImage) — as ONE Telegram message:
+// reportText becomes the image's caption, rather than a separate text message followed
+// by a separate image (two chat bubbles for what's conceptually one report). Best-effort
+// like every other Telegram notification here: a rendering or send failure is logged
+// and swallowed, never allowed to fail the whole cron run.
 async function sendWeeklyReport(reportText, history, weekStartMs) {
   try {
     const days = Array.from({ length: 7 }, (_, i) => {
@@ -757,14 +721,8 @@ async function sendWeeklyReport(reportText, history, weekStartMs) {
     const rangeLabel = `${formatWibDayNum(weekStartMs)} – ${formatWibDateNoWeekday(weekEndMs)}`
 
     const data = computeWeeklyChartData(history, days)
-    const performanceBuffer = renderWeeklyPerformanceChart(data, rangeLabel)
-    const tradeLogBuffers = renderWeeklyTradeLogCharts(data, rangeLabel)
-
-    const items = [
-      { buffer: performanceBuffer, filename: 'weekly-performance.png', caption: reportText },
-      ...tradeLogBuffers.map((buffer, i) => ({ buffer, filename: `weekly-trade-log-${i + 1}.png` })),
-    ]
-    await sendTelegramMediaGroupPhotos(items)
+    const buffer = renderWeeklyReportImage(data, rangeLabel)
+    await sendTelegramPhoto(buffer, 'weekly-performance.png', reportText)
   } catch (err) {
     console.warn(`[fetch-data] weekly performance chart generation failed: ${err.message}`)
   }
@@ -843,12 +801,20 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
     const signals =
       tfKey === 'H1' && !isPriceStagnant(seriesByTf[tfKey]) ? buildSignals(result.zones, currentPrice, higherTfZones) : []
     for (const s of signals) signalByKey.set(keyFor(symbolKey, tfKey, s), s)
-    const forTf = recordSignals(history, symbolKey, tfKey, signals, currentPrice)
+    const forTf = recordSignals(history, symbolKey, tfKey, signals, currentPrice, currentTime)
     added.push(...forTf.added)
     updated.push(...forTf.updated)
   }
 
-  const { filled, closed } = evaluateSignals(history, symbolKey, currentPrice)
+  // The H1 series specifically (not just its latest close) — evaluateSignals now scans
+  // every candle's actual high/low since a record's own openedAt/filledAt, not just a
+  // single snapshotted price, so a genuine intra-candle TP touch is no longer missed
+  // just because price later reversed past SL before the next ~15-minute poll (see
+  // evaluateSignals' own comment in signalHistoryCore.js for the production bug this
+  // fixes). H1 is used regardless of which timeframe a record's own signal came from —
+  // it's the finest-grained series actually fetched, equally valid as the shared price
+  // reference for H4/D1 records too.
+  const { filled, closed } = evaluateSignals(history, symbolKey, seriesByTf.H1 ?? [])
 
   if (TELEGRAM_SYMBOLS.has(symbolKey)) {
     // Filtered to H1 before grouping, not after — an H4/D1 confluence partner should
