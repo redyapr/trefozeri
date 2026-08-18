@@ -11,10 +11,12 @@ import { BREAKOUT_ATR_MULT } from './srDetector.js'
 //   'win' / 'loss' -> closed once price plausibly reached its first take-profit or SL
 // There's no 'invalidated' status: if a still-'pending' (unfilled) record's underlying
 // level disappears or gets replaced by a different pivot before ever filling, it's
-// simply dropped — it was never a real trade, just an order that never triggered. A
-// 'running' record is never dropped this way; once filled it's a real trade and stays
-// until SL/TP closes it, the same way price crossing the zone's own invalidation
-// threshold naturally becomes the eventual loss.
+// simply dropped — it was never a real trade, just an order that never triggered.
+// recordSignals still hands the dropped record back to the caller (see `invalidated`
+// below) so a Telegram reply can be sent before it's gone. A 'running' record is never
+// dropped this way; once filled it's a real trade and stays until SL/TP closes it, the
+// same way price crossing the zone's own invalidation threshold naturally becomes the
+// eventual loss.
 
 // Caps growth — old records are dropped oldest-first once this many have accumulated
 // across all symbols.
@@ -42,10 +44,11 @@ const FILL_CANDLE_SKIP_ATR_MULT = 2
 
 // Mutates `records`: drops stale unfilled orders whose level moved on without them,
 // syncs a still-open pending order's entry/SL/TP to the freshest recalculation, then
-// appends any newly-seen signal as a fresh 'pending' row. Returns `{ added, updated }`
-// — the records newly appended, and the already-open pending ones whose numbers just
-// changed this call — so a caller can notify about each without re-notifying about
-// ones that didn't actually change. `currentPrice` is optional (see the
+// appends any newly-seen signal as a fresh 'pending' row. Returns
+// `{ added, updated, invalidated }` — the records newly appended, the already-open
+// pending ones whose numbers just changed this call, and the ones just dropped as
+// stale — so a caller can notify about each without re-notifying about ones that didn't
+// actually change. `currentPrice` is optional (see the
 // fill-in-progress guard below) — omitting it just skips that guard. `currentTime`
 // (the data's own latest-candle time, not wall-clock Date.now()) becomes the new
 // record's `openedAt` — matters because evaluateSignals now scans actual candles from
@@ -56,6 +59,7 @@ const FILL_CANDLE_SKIP_ATR_MULT = 2
 // Date.now() so existing direct callers/tests that don't pass it keep working.
 export function recordSignals(records, symbolKey, tf, signals, currentPrice, currentTime = Date.now()) {
   const updated = []
+  const invalidated = []
 
   // A 'pending' (still unfilled) record whose key+price no longer matches any of this
   // tick's fresh signals had its level either fully invalidated or replaced by a
@@ -79,9 +83,23 @@ export function recordSignals(records, symbolKey, tf, signals, currentPrice, cur
     // running/Telegram-fill ever recorded for it. So: don't drop a pending record that
     // currentPrice already shows has reached its own entry, even if its level didn't
     // survive the same tick — let evaluateSignals promote it normally afterward.
+    //
+    // A second real production bug this guard used to cause: it had no upper bound, so
+    // a price that blew straight through entry AND kept going past SL — without ever
+    // closing back on the favorable side (evaluateSignals' own fill requirement, see
+    // its comment) — stayed "already filled" forever, since currentPrice remains on the
+    // entry side of a falling/rising market indefinitely. evaluateSignals never fills
+    // it (no confirmed retest close) and this guard never lets go of it either: a stale
+    // pending order sits in the track record permanently, quoting an entry the market
+    // left behind bars ago. Once price has also passed the record's own SL without ever
+    // confirming a fill, the order is unambiguously dead — same as if it had simply
+    // never triggered — so the guard now stops protecting it there.
     const isBuy = r.direction === 'buy'
-    const alreadyFilled = currentPrice != null && (isBuy ? currentPrice <= r.entry : currentPrice >= r.entry)
+    const alreadyFilled =
+      currentPrice != null &&
+      (isBuy ? currentPrice <= r.entry && currentPrice > r.sl : currentPrice >= r.entry && currentPrice < r.sl)
     if (!match && !alreadyFilled) {
+      invalidated.push(r)
       records.splice(i, 1)
       continue
     }
@@ -145,7 +163,7 @@ export function recordSignals(records, symbolKey, tf, signals, currentPrice, cur
     added.push(record)
   }
 
-  return { added, updated }
+  return { added, updated, invalidated }
 }
 
 // Advances every open record for this symbol: fills a 'pending' limit order once price

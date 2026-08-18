@@ -133,16 +133,19 @@ test('recordSignals', async (t) => {
   await t.test('drops a still-pending signal whose level got replaced by a materially different pivot', () => {
     const history = []
     recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 100, threshold: 2 })])
-    recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 80, threshold: 2 })]) // way outside tolerance
+    const { invalidated } = recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 80, threshold: 2 })]) // way outside tolerance
     assert.equal(history.length, 1)
     assert.equal(history[0].entry, 80, 'old one discarded, new one opened in its place')
+    assert.equal(invalidated.length, 1, 'the discarded record is handed back so a caller can notify about it')
+    assert.equal(invalidated[0].entry, 100, 'the dropped record, not the newly-opened one')
   })
 
   await t.test('drops a still-pending signal whose category vanished entirely', () => {
     const history = []
     recordSignals(history, 'XAUUSD', 'H1', [buySignal()])
-    recordSignals(history, 'XAUUSD', 'H1', [])
+    const { invalidated } = recordSignals(history, 'XAUUSD', 'H1', [])
     assert.deepEqual(history, [])
+    assert.equal(invalidated.length, 1)
   })
 
   await t.test('never drops a running (already-filled) record this way', () => {
@@ -150,9 +153,10 @@ test('recordSignals', async (t) => {
     recordSignals(history, 'XAUUSD', 'H1', [buySignal()], undefined, 1000)
     evaluateSignals(history, 'XAUUSD', [candle(1000, 100)]) // fills it -> running
     assert.equal(history[0].status, 'running')
-    recordSignals(history, 'XAUUSD', 'H1', []) // category vanishes entirely
+    const { invalidated } = recordSignals(history, 'XAUUSD', 'H1', []) // category vanishes entirely
     assert.equal(history.length, 1)
     assert.equal(history[0].status, 'running', 'running records survive even when the signal disappears')
+    assert.equal(invalidated.length, 0, 'a running record is never reported as invalidated')
   })
 
   await t.test('a category change (e.g. Support -> RBS) opens a fresh row instead of reusing the old one', () => {
@@ -186,9 +190,31 @@ test('recordSignals', async (t) => {
     ])
     // This tick's fresh signals no longer include a Resistance near 100 at all (the
     // level broke) — normally this would drop the pending record.
-    recordSignals(history, 'XAUUSD', 'H1', [], 100) // currentPrice has reached the sell's entry
+    const { invalidated } = recordSignals(history, 'XAUUSD', 'H1', [], 100) // currentPrice has reached the sell's entry
     assert.equal(history.length, 1, 'kept alive since currentPrice shows it already reached its entry')
     assert.equal(history[0].status, 'pending', 'still pending — promoting it is evaluateSignals\' job, not recordSignals\'')
+    assert.equal(invalidated.length, 0, 'not invalidated — it just filled, not dropped')
+  })
+
+  await t.test('drops a pending record once currentPrice has blown past its own SL without ever confirming a fill', () => {
+    // A second real production bug in the same guard as above: its condition
+    // (currentPrice on the fill side of entry) had no upper bound, so a price that
+    // rockets straight through entry AND its own SL — without ever closing back on the
+    // favorable side (evaluateSignals' own fill requirement, see its comment) — used to
+    // stay "already filled" forever, since currentPrice remains past entry indefinitely
+    // as the market keeps moving away. evaluateSignals never fills it (no confirmed
+    // retest close) and this guard never let go of it either: a stale pending row,
+    // quoting an entry the market left far behind, sat in the track record permanently.
+    const history = []
+    recordSignals(history, 'XAUUSD', 'H1', [
+      { category: 'Resistance', direction: 'sell', entry: 100, sl: 105, tp: [], threshold: 2 },
+    ])
+    // Level's gone (broke further and moved on) AND price has already blown past the
+    // record's own SL (110 > 105) without it ever being promoted to 'running' — this
+    // order is unambiguously dead, not "still waiting to fill".
+    const { invalidated } = recordSignals(history, 'XAUUSD', 'H1', [], 110)
+    assert.deepEqual(history, [], 'no longer protected once price is past its own SL')
+    assert.equal(invalidated.length, 1)
   })
 
   await t.test('still drops a pending record whose level vanished AND currentPrice has not reached its entry', () => {
@@ -196,8 +222,9 @@ test('recordSignals', async (t) => {
     recordSignals(history, 'XAUUSD', 'H1', [
       { category: 'Resistance', direction: 'sell', entry: 100, sl: 105, tp: [], threshold: 2 },
     ])
-    recordSignals(history, 'XAUUSD', 'H1', [], 90) // level gone, price nowhere near the entry
+    const { invalidated } = recordSignals(history, 'XAUUSD', 'H1', [], 90) // level gone, price nowhere near the entry
     assert.deepEqual(history, [])
+    assert.equal(invalidated.length, 1)
   })
 
   await t.test('the currentPrice guard is opt-in — omitting it behaves exactly as before (drops on any level change)', () => {

@@ -428,18 +428,21 @@ export function buildNewSignalMessage(symbolKey, group) {
   const isBuy = primary.direction === 'buy'
   const isGolden = primary.strengthLabel === 'Strong'
   const title = `${isBuy ? '🔵' : '🔴'} ${isBuy ? 'BUY' : 'SELL'} LIMIT — ${symbolKey}${isGolden ? ' ⭐ Golden Zone' : ''}`
-  // Each TP's whole "price (rr R)" value is right-aligned within its own column — a
-  // shorter one (fewer price/rr digits than the widest TP row) gets leading spaces, so
-  // every "(...R)" ends at the same column regardless of how many digits it has
-  // (Zone/Price/SL have no "(...)" suffix, so they're not part of this — only the TP
-  // rows need it).
-  const tpValues = primary.tp.map((t) => `${formatPrice(t.price)} (${formatPrice(t.rr)}R)`)
-  const tpValueWidth = Math.max(...tpValues.map((v) => v.length))
+  // Each TP row has two independently-aligned columns: the price stays left-aligned
+  // (padded out to the widest price with trailing spaces) and "(rr R)" is right-aligned
+  // (padded to the widest one with leading spaces), the two joined by a single space.
+  // Net effect: the price always starts right after "TPn   : " like every other row,
+  // while "(...R)" always ENDS in the same column regardless of how many price/rr
+  // digits it has (Zone/Price/SL have no "(...)" suffix, so they're not part of this).
+  const tpPrices = primary.tp.map((t) => formatPrice(t.price))
+  const tpPriceWidth = Math.max(...tpPrices.map((p) => p.length))
+  const tpParens = primary.tp.map((t) => `(${formatPrice(t.rr)}R)`)
+  const tpParenWidth = Math.max(...tpParens.map((p) => p.length))
   const rows = [
     ['Zone', `${primary.category} (${primary.strengthLabel})`],
     ['Price', formatPrice(primary.entry)],
     ['SL', formatPrice(primary.sl)],
-    ...tpValues.map((v, i) => [`TP${i + 1}`, v.padStart(tpValueWidth)]),
+    ...tpPrices.map((p, i) => [`TP${i + 1}`, `${p.padEnd(tpPriceWidth)} ${tpParens[i].padStart(tpParenWidth)}`]),
   ]
   // <code> (Telegram's "Monospace" formatting, plain fixed-width text), not <pre>
   // (a boxed "code snippet" with its own background and a copy button) — the goal is
@@ -464,6 +467,14 @@ export function buildCloseMessage(symbolKey, record) {
   const label = isWin ? `TP${(record.hitTpIndex ?? 0) + 1} HIT` : 'SL HIT'
   const move = formatMove(PIP_SIZES[symbolKey], record.entry, record.exitPrice, isBuy)
   return `<code>${isWin ? '✅' : '❌'} ${label} ${move}</code>`
+}
+
+// Reply to a signal whose own level got invalidated (or replaced by a different pivot)
+// before it ever filled — see the `invalidated` array from recordSignals in
+// signalHistoryCore.js. No price/move here, same reasoning as buildFillMessage: it's
+// just marking the already-posted order as dead, not stating a result.
+export function buildInvalidatedMessage() {
+  return '<code>❌ INVALIDATED</code>'
 }
 
 // Sends one Telegram message per newly-added signal, EXCEPT when the same level also
@@ -525,6 +536,16 @@ export async function notifyFilledSignals(filled) {
 export async function notifyClosedSignals(symbolKey, closed) {
   for (const record of closed) {
     await sendTelegramMessage(buildCloseMessage(symbolKey, record), record.telegramMessageId)
+  }
+}
+
+// A record with no telegramMessageId (never posted — e.g. it never survived long
+// enough, or formed on a symbol/day new signals were withheld for) has nothing to
+// reply to; skipped silently, same as notifyUpdatedSignals.
+export async function notifyInvalidatedSignals(invalidated) {
+  for (const record of invalidated) {
+    if (!record.telegramMessageId) continue
+    await sendTelegramMessage(buildInvalidatedMessage(), record.telegramMessageId)
   }
 }
 
@@ -893,6 +914,7 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
   const signalByKey = new Map()
   const added = []
   const updated = []
+  const invalidated = []
   for (const [tfKey, result] of Object.entries(zonesByTimeframe)) {
     // TIMEFRAMES is ordered finest-to-broadest (H1, H4, D1) — everything after this
     // timeframe's own index is "higher" and gets offered as extra TP candidates (see
@@ -917,6 +939,7 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
     const forTf = recordSignals(history, symbolKey, tfKey, signals, currentPrice, currentTime)
     added.push(...forTf.added)
     updated.push(...forTf.updated)
+    invalidated.push(...forTf.invalidated)
   }
 
   // The H1 series specifically (not just its latest close) — evaluateSignals now scans
@@ -959,6 +982,9 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
     await notifyUpdatedSignals(symbolKey, updated.filter(onlyH1).filter((r) => r.status === 'pending'), signalByKey)
     await notifyFilledSignals(filled.filter(onlyH1))
     await notifyClosedSignals(symbolKey, closed.filter(onlyH1))
+    // Not gated by skipNewSignals either — same reasoning as fills/closes: this is
+    // closing out an order already posted, not opening a new one.
+    await notifyInvalidatedSignals(invalidated.filter(onlyH1))
   }
 }
 

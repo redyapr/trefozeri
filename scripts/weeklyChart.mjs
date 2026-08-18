@@ -461,6 +461,13 @@ export function renderWeeklyReportImage(data, rangeLabel) {
   }
 
   y += 10
+  ctx.fillStyle = COLORS.textDim
+  ctx.font = font(11)
+  ctx.textAlign = 'right'
+  ctx.fillText('P/L is in pips.', W - MARGIN, y)
+  ctx.textAlign = 'left'
+  y += 20
+
   const finalCanvas = createCanvas(W * SCALE, Math.round(y) * SCALE)
   const finalCtx = finalCanvas.getContext('2d')
   finalCtx.drawImage(scratch, 0, 0)
@@ -565,6 +572,13 @@ export function renderDailyReportImage(data, dayLabel) {
   }
 
   y += 4
+  ctx.fillStyle = COLORS.textDim
+  ctx.font = font(11)
+  ctx.textAlign = 'right'
+  ctx.fillText('P/L is in pips.', W - MARGIN, y)
+  ctx.textAlign = 'left'
+  y += 20
+
   const finalCanvas = createCanvas(W * SCALE, Math.round(y) * SCALE)
   const finalCtx = finalCanvas.getContext('2d')
   finalCtx.drawImage(scratch, 0, 0)

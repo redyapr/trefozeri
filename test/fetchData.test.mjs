@@ -19,10 +19,12 @@ const {
   buildNewSignalMessage,
   buildFillMessage,
   buildCloseMessage,
+  buildInvalidatedMessage,
   updateSignalHistoryForSymbol,
   notifyNewSignals,
   notifyFilledSignals,
   notifyClosedSignals,
+  notifyInvalidatedSignals,
   withRetry,
   fetchWithFallback,
   sendTelegramMessage,
@@ -228,7 +230,7 @@ test('buildNewSignalMessage', async (t) => {
     assert.match(msg, /TP2   : 4312\.3 \(2\.5R\)/)
   })
 
-  await t.test('each TP\'s "price (rr R)" value is right-aligned (leading spaces) so "(...R)" ends in the same column', () => {
+  await t.test('TP price is left-aligned (trailing spaces), "(rr R)" is right-aligned (leading spaces) — the price column and the paren column are sized independently', () => {
     const signal = {
       tf: 'H1',
       direction: 'sell',
@@ -236,9 +238,9 @@ test('buildNewSignalMessage', async (t) => {
       entry: 4391.5,
       sl: 4398.1,
       tp: [
-        { price: 4342.3, rr: 7.5 }, // "4342.3 (7.5R)" — 13 chars
-        { price: 4314, rr: 11.9 }, // "4314 (11.9R)" — 12 chars, needs 2 leading spaces
-        { price: 4028.6, rr: 55.6 }, // "4028.6 (55.6R)" — 14 chars, the widest
+        { price: 4342.3, rr: 7.5 }, // price 6 chars (widest), "(7.5R)" 6 chars
+        { price: 4314, rr: 11.9 }, // price 4 chars, "(11.9R)" 7 chars (widest)
+        { price: 4028.6, rr: 55.6 }, // price 6 chars (widest), "(55.6R)" 7 chars (widest)
       ],
       strengthLabel: 'Medium',
     }
@@ -253,7 +255,9 @@ test('buildNewSignalMessage', async (t) => {
     // column for every row despite their differing price/rr digit counts.
     const lineLengths = tpLines.map((line) => line.length)
     assert.ok(lineLengths.every((len) => len === lineLengths[0]), 'every TP line ends at the same column — "(...R)" is right-aligned')
-    assert.match(msg, /TP2   :   4314 \(11\.9R\)/, 'the shorter value gets 2 leading spaces to match the widest one')
+    assert.match(msg, /TP1   : 4342\.3  \(7\.5R\)/, 'the widest price, joined to a shorter paren, gets extra leading spaces before "("')
+    assert.match(msg, /TP2   : 4314   \(11\.9R\)/, 'the shortest price is padded out (trailing spaces) to match the widest price')
+    assert.match(msg, /TP3   : 4028\.6 \(55\.6R\)/, 'both columns at their own widest — exactly one space in between')
   })
 
   await t.test('flags a Golden Zone (Strong) confluence level in the title and zone line', () => {
@@ -300,6 +304,10 @@ test('buildNewSignalMessage', async (t) => {
 
 test('buildFillMessage', () => {
   assert.equal(buildFillMessage(), '<code>🟡 ENTRY FILLED</code>')
+})
+
+test('buildInvalidatedMessage', () => {
+  assert.equal(buildInvalidatedMessage(), '<code>❌ INVALIDATED</code>')
 })
 
 test('buildCloseMessage', async (t) => {
@@ -1097,6 +1105,28 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
     }
   })
 
+  await t.test('notifyInvalidatedSignals replies "INVALIDATED" to each record\'s own message', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      await notifyInvalidatedSignals([{ telegramMessageId: 7 }, { telegramMessageId: 9 }])
+      assert.equal(sent.length, 2)
+      assert.ok(sent.every((m) => m.text === '<code>❌ INVALIDATED</code>'))
+      assert.deepEqual(sent.map((m) => m.reply_to_message_id), [7, 9])
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('notifyInvalidatedSignals skips a record that never got posted (no telegramMessageId)', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      await notifyInvalidatedSignals([{ telegramMessageId: undefined }])
+      assert.equal(sent.length, 0)
+    } finally {
+      restore()
+    }
+  })
+
   await t.test('skips new-signal notifications for XAUUSD while the gold market is closed', async () => {
     const { sent, restore } = mockTelegram()
     try {
@@ -1163,13 +1193,18 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
       const pending = history.find((r) => r.tf === 'H1' && r.direction === 'sell')
       assert.ok(pending, 'expected a pending SELL off the resistance pivot')
 
-      // Two consecutive strong closes well above the resistance both break it (flips it
-      // to RBS in detectLevels' state machine — BREAKOUT_CONFIRM_BARS needs 2 consecutive
-      // closes beyond threshold, a different category/key entirely) and reach the sell
-      // entry itself (breaking a resistance means closing above it) — but neither closes
-      // back down, so this is a breakout continuing, not a held retest.
+      // Two consecutive closes above the resistance both break it (flips it to RBS in
+      // detectLevels' state machine — BREAKOUT_CONFIRM_BARS needs 2 consecutive closes
+      // beyond threshold, a different category/key entirely) and reach the sell entry
+      // itself (breaking a resistance means closing above it) — but neither closes back
+      // down, so this is a breakout continuing, not a held retest. Kept within the
+      // pending record's own SL (a few points above entry) rather than blowing past it —
+      // once price is past its own SL without ever confirming a fill, the record is
+      // correctly dropped as invalidated instead (see the SL-guard test in
+      // signalHistoryCore.test.mjs); this test is specifically about the narrower,
+      // still-in-play case.
       const breakoutTime = weekday + openSeries.H1.length * 3600000
-      const breakoutClose = pending.entry + 20
+      const breakoutClose = pending.entry + 2
       let series = [
         ...openSeries.H1,
         candle(breakoutTime, breakoutClose - 2, breakoutClose + 3, breakoutClose - 3, breakoutClose),
