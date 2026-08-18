@@ -436,13 +436,18 @@ export function buildNewSignalMessage(symbolKey, group) {
     ['SL', formatPrice(primary.sl)],
     ...primary.tp.map((t, i) => [`TP${i + 1}`, `${formatPrice(t.price)} (${formatPrice(t.rr)}R)`]),
   ]
-  return `<a href="${SITE_URL}">${title}</a>\n<pre>${alignRows(rows)}</pre>`
+  // <code> (Telegram's "Monospace" formatting, plain fixed-width text), not <pre>
+  // (a boxed "code snippet" with its own background and a copy button) — the goal is
+  // a monospace *font*, not a code-block look. Both silently drop any tag nested
+  // inside them (verified against the real Bot API), so the title link stays on its
+  // own separate line outside this block rather than losing its clickability.
+  return `<a href="${SITE_URL}">${title}</a>\n<code>${alignRows(rows)}</code>`
 }
 
 // No symbol/direction/price here either, same reasoning as buildCloseMessage — it's a
 // reply to the signal that already states all of that.
 export function buildFillMessage() {
-  return '🟡 ENTRY FILLED'
+  return '<code>🟡 ENTRY FILLED</code>'
 }
 
 // No exit price here — it's a reply to the signal that already states its SL/TP
@@ -453,7 +458,7 @@ export function buildCloseMessage(symbolKey, record) {
   const isWin = record.status === 'win'
   const label = isWin ? `TP${(record.hitTpIndex ?? 0) + 1} HIT` : 'SL HIT'
   const move = formatMove(PIP_SIZES[symbolKey], record.entry, record.exitPrice, isBuy)
-  return `${isWin ? '✅' : '❌'} ${label} ${move}`
+  return `<code>${isWin ? '✅' : '❌'} ${label} ${move}</code>`
 }
 
 // Sends one Telegram message per newly-added signal, EXCEPT when the same level also
@@ -624,14 +629,17 @@ function buildSymbolDailySection(symbolKey, history, dayStartMs, dayEndMs) {
   const closedList = getClosedBetween(history, symbolKey, REPORT_TF, dayStartMs, dayEndMs)
   if (!running.length && !closedList.length) return null
 
-  const lines = [`<b>${symbolKey}</b>`]
+  // Symbol header stays bold on its own line (like buildNewSignalMessage's title) —
+  // <code> silently drops any tag nested inside it, so the header can't live inside
+  // the same block as the monospace body below and keep its bold.
+  const lines = []
   if (running.length) {
     lines.push(`Running (${running.length}):`)
     for (const r of running) lines.push(`• ${directionLabel(r)} ${r.category} @ ${formatPrice(r.entry)}`)
   }
 
   if (closedList.length) {
-    if (lines.length > 1) lines.push('') // blank separator only if the Running block precedes this
+    if (lines.length) lines.push('') // blank separator only if the Running block precedes this
     lines.push(`Closed today (${closedList.length}):`)
     for (const r of closedList) lines.push(reportExitLine(symbolKey, r))
     const wins = closedList.filter((r) => r.status === 'win').length
@@ -642,7 +650,7 @@ function buildSymbolDailySection(symbolKey, history, dayStartMs, dayEndMs) {
     lines.push('', `Win rate today: ${winRate}% (${wins}W / ${losses}L) · Net: ${formatAmount(pipSize, net)}`)
   }
 
-  return lines.join('\n')
+  return `<b>${symbolKey}</b>\n<code>${lines.join('\n')}</code>`
 }
 
 // Builds the message for the WIB calendar day starting at dayStartMs (dayEndMs is
@@ -667,7 +675,9 @@ export function buildDailyReportMessage(history, dayStartMs) {
 // section that just says "No trades closed this week."
 function buildSymbolWeeklySection(symbolKey, history, weekStartMs) {
   const pipSize = PIP_SIZES[symbolKey]
-  const lines = [`<b>${symbolKey}</b>`]
+  // Header stays bold and outside the <code> block below — same reasoning as
+  // buildSymbolDailySection.
+  const lines = []
   let totalNet = 0
   let totalWins = 0
   let totalLosses = 0
@@ -692,7 +702,7 @@ function buildSymbolWeeklySection(symbolKey, history, weekStartMs) {
   if (!totalClosed) return null
 
   lines.push('', `Total: ${formatAmount(pipSize, totalNet)} · Win rate: ${Math.round((totalWins / totalClosed) * 100)}% (${totalWins}W / ${totalLosses}L)`)
-  return lines.join('\n')
+  return `<b>${symbolKey}</b>\n<code>${lines.join('\n')}</code>`
 }
 
 // weekStartMs is the Monday 00:00 WIB that starts the week being recapped (the report

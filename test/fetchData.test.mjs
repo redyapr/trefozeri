@@ -199,10 +199,10 @@ test('buildNewSignalMessage', async (t) => {
     assert.match(msg, new RegExp(`^<a href="${url.replace(/\//g, '\\/')}">`))
   })
 
-  await t.test('the body is wrapped in <pre> so the columns render fixed-width', () => {
+  await t.test('the body is wrapped in <code> (Monospace) so the columns render fixed-width', () => {
     const signal = { tf: 'H1', direction: 'buy', category: 'Support', entry: 4301, sl: 4296.5, tp: [], strengthLabel: 'Medium' }
     const msg = buildNewSignalMessage('XAUUSD', [signal])
-    assert.match(msg, /<pre>[\s\S]*<\/pre>$/)
+    assert.match(msg, /<code>[\s\S]*<\/code>$/)
   })
 
   await t.test('labels are padded so every ":" lines up in the same column', () => {
@@ -271,36 +271,36 @@ test('buildNewSignalMessage', async (t) => {
 })
 
 test('buildFillMessage', () => {
-  assert.equal(buildFillMessage(), '🟡 ENTRY FILLED')
+  assert.equal(buildFillMessage(), '<code>🟡 ENTRY FILLED</code>')
 })
 
 test('buildCloseMessage', async (t) => {
-  await t.test('a win: green check, TP index + 1, pips, single line, no bold/price/symbol', () => {
+  await t.test('a win: green check, TP index + 1, pips, single line, wrapped in <code> (Monospace)', () => {
     const record = { direction: 'buy', status: 'win', hitTpIndex: 0, entry: 4301, exitPrice: 4307.75 }
     const msg = buildCloseMessage('XAUUSD', record)
-    assert.equal(msg, '✅ TP1 HIT +68 pips')
+    assert.equal(msg, '<code>✅ TP1 HIT +68 pips</code>')
   })
 
   await t.test('a win crediting a farther TP shows the right index', () => {
     const record = { direction: 'buy', status: 'win', hitTpIndex: 1, entry: 4301, exitPrice: 4312.25 }
     const msg = buildCloseMessage('XAUUSD', record)
-    assert.match(msg, /^✅ TP2 HIT/)
+    assert.match(msg, /^<code>✅ TP2 HIT/)
   })
 
   await t.test('a loss: red cross, negative pips', () => {
     const record = { direction: 'buy', status: 'loss', entry: 4301, exitPrice: 4296.5 }
     const msg = buildCloseMessage('XAUUSD', record)
-    assert.equal(msg, '❌ SL HIT -45 pips')
+    assert.equal(msg, '<code>❌ SL HIT -45 pips</code>')
   })
 
   await t.test('a sell result flips the sign correctly', () => {
     const win = { direction: 'sell', status: 'win', hitTpIndex: 0, entry: 4400, exitPrice: 4359 }
-    assert.match(buildCloseMessage('XAUUSD', win), /^✅ TP1 HIT \+410 pips$/)
+    assert.match(buildCloseMessage('XAUUSD', win), /^<code>✅ TP1 HIT \+410 pips<\/code>$/)
   })
 
   await t.test('BTCUSD (no pip convention) shows a raw $ move', () => {
     const record = { direction: 'buy', status: 'win', hitTpIndex: 0, entry: 65000, exitPrice: 66200 }
-    assert.equal(buildCloseMessage('BTCUSD', record), '✅ TP1 HIT +1200')
+    assert.equal(buildCloseMessage('BTCUSD', record), '<code>✅ TP1 HIT +1200</code>')
   })
 })
 
@@ -995,7 +995,7 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
       await updateSignalHistoryForSymbol(history, 'XAUUSD', filledAndRecalculated)
 
       assert.equal(sent.length, 2, 'new-signal + FILLED reply only — no separate edit')
-      assert.equal(sent[1].text, '🟡 ENTRY FILLED')
+      assert.equal(sent[1].text, '<code>🟡 ENTRY FILLED</code>')
       assert.equal(h1.status, 'running')
     } finally {
       restore()
@@ -1041,8 +1041,8 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
 
       assert.equal(sent.length, 3)
       assert.match(sent[0].text, /BUY LIMIT/)
-      assert.equal(sent[1].text, '🟡 ENTRY FILLED')
-      assert.match(sent[2].text, /^✅ TP1 HIT/)
+      assert.equal(sent[1].text, '<code>🟡 ENTRY FILLED</code>')
+      assert.match(sent[2].text, /^<code>✅ TP1 HIT/)
       assert.equal(sent[1].reply_to_message_id, 1)
       assert.equal(sent[2].reply_to_message_id, 1)
     } finally {
@@ -1062,7 +1062,7 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
       await notifyFilledSignals([]) // nothing filled this tick
       await notifyClosedSignals('XAUUSD', [record]) // only closed
       assert.equal(sent.length, 1)
-      assert.match(sent[0].text, /^❌ SL HIT/)
+      assert.match(sent[0].text, /^<code>❌ SL HIT/)
       assert.equal(sent[0].reply_to_message_id, 7)
     } finally {
       restore()
@@ -1100,7 +1100,7 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
       await updateSignalHistoryForSymbol(history, 'XAUUSD', filledOnSaturday)
 
       assert.equal(sent.length, 2, 'open + fill — fills are never suppressed by market-closed, only new signals')
-      assert.equal(sent[1].text, '🟡 ENTRY FILLED')
+      assert.equal(sent[1].text, '<code>🟡 ENTRY FILLED</code>')
     } finally {
       restore()
     }
@@ -1211,7 +1211,7 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
       await updateSignalHistoryForSymbol(history, 'BTCUSD', filledOnMonday)
 
       assert.equal(sent.length, 2, 'open (weekend) + fill (weekday)')
-      assert.equal(sent[1].text, '🟡 ENTRY FILLED')
+      assert.equal(sent[1].text, '<code>🟡 ENTRY FILLED</code>')
     } finally {
       restore()
     }
