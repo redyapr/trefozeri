@@ -11,19 +11,16 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
 
 - **Levels** — `srDetector.js` detects pivots per timeframe and tracks each through 3
   states: Support/Resistance → broken-once SBR/RBS → invalidated. A break needs 2
-  consecutive confirming closes (not one), so a single spike-and-reverse candle can't
-  permanently flip it. Cross-timeframe confluence is flagged as a "Golden Zone"; a level
-  tested 3+ times without breaking is downgraded to "Weak" instead of staying "Medium"
-  forever. A broken level (RBS/SBR) only becomes a tradeable idea once its own breakout
-  candle shows real conviction (volume where available, e.g. BTCUSD; body-to-range
-  ratio otherwise, e.g. XAUUSD) *and* price has run far enough past it for a retest to
-  actually mean something — still shown on the chart either way, just not offered as a
-  signal until then.
-- **Trend filter** — a fade strategy taken symmetrically in both directions regardless
-  of the prevailing trend fights itself on whichever side goes against it. A confirmed
-  H4 (falling back to D1) trend offers only the aligned side (buy in an uptrend, sell in
-  a downtrend); a genuinely range-bound read still offers both, same as before this
-  existed. See `computeTrend` in `srDetector.js`.
+  consecutive confirming closes, so one spike-and-reverse candle can't flip it.
+  Cross-timeframe confluence is flagged as a "Golden Zone". A level tested 3+ times
+  without breaking downgrades from "Medium" to "Weak". A broken level (RBS/SBR) becomes
+  a tradeable idea only once its breakout candle shows real conviction (volume for
+  BTCUSD, body-to-range ratio for XAUUSD) and price has run far enough past it for a
+  retest to matter. Until then it's shown on the chart but not offered as a signal.
+- **Trend filter** — a fade strategy that takes both directions symmetrically fights
+  itself against the prevailing trend. A confirmed H4 (falling back to D1) trend offers
+  only the aligned side: buy in an uptrend, sell in a downtrend. A range-bound read
+  still offers both. See `computeTrend` in `srDetector.js`.
 - **Take-profits** — TPs come from opposite-side levels on the signal's own timeframe,
   plus qualifying levels from *higher* timeframes only. Shown between 0.5R–100R;
   near-duplicates merged. Falls back to fixed 1.5R/2.5R/3.5R if no structural level
@@ -43,16 +40,12 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
 - **Track record** — shared across every visitor. Each signal goes `pending` →
   `running` (filled) → `win`/`loss`, stored in `data/signal-history.json` and
   committed by CI. View it via the chart-icon button. Capped at 300 records per symbol.
-  SL/TP are checked against each candle's actual high/low range since the record's own
-  `openedAt`/`filledAt` — not just the latest close — so a genuine touch isn't missed
-  just because price later reverses before the next ~15-minute poll. A fill itself needs
-  more than a bare wick touch, though: the touching candle also has to *close* back on
-  the favorable side of entry (confirming the retest actually held) and can't already be
-  an outsized volatility-spike candle relative to the level's own ATR — a violent move
-  already in progress isn't a controlled retest. See `evaluateSignals` in
-  `src/lib/signalHistoryCore.js`. New signals are also withheld in a window straddling a
-  high-impact USD calendar release, the kind of event most likely to produce exactly
-  that spike.
+  SL/TP are checked against each candle's actual high/low range, not just its close, so
+  a touch isn't missed if price reverses before the next ~15-minute poll. A fill needs
+  more than a wick touch: the candle must also close back on the favorable side of
+  entry, and can't be an outsized volatility spike relative to the level's own ATR. See
+  `evaluateSignals` in `src/lib/signalHistoryCore.js`. New signals are also withheld
+  around high-impact USD news releases, which tend to cause exactly that kind of spike.
 - **Telegram notifications** — public channel, H1 only. Posts new signals, fills, and
   SL/TP results automatically. A still-pending signal's own message is edited in place
   whenever its entry/SL/TP recalculate, so it never shows stale numbers — once filled,
@@ -61,20 +54,19 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
   Optional — no-ops without `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`. Real sends are also
   opt-in: only CI (`CI=true`, set automatically) or an explicit local
   `ALLOW_TELEGRAM_SEND=true` actually posts — see [Local development](#local-development).
-- **Daily/weekly report** — same channel, also H1-only. Daily sends just after
-  midnight WIB, recapping the day just ended; weekly sends every Monday. Both cover
-  whichever symbols/days actually had activity — a quiet symbol, a quiet day within the
-  week, or the whole report when literally nothing closed, is omitted rather than
-  padded out with "No signals closed" placeholder lines. De-duplicated via
-  `data/last-report.json`.
-- **Weekly performance chart** — the report text and its chart go out as ONE Telegram
-  photo message (the text is the image's own caption), not a separate text message and
-  a separate image. Rendered at 2x scale with
-  [@napi-rs/canvas](https://github.com/Brooooooklyn/canvas), sent via `sendPhoto`: daily
-  pips gained per symbol (horizontal bars, red = loss), TP1–TP3 success rate as
-  horizontal pie charts (cumulative — a TP2 hit also counts toward TP1), and a trade-log
-  table on the same canvas listing every closed trade's date, side, pair, result, and
-  P/L. See `scripts/weeklyChart.mjs`.
+- **Daily/weekly report** — same channel, H1-only, closed trades only: a still-open
+  signal already has its own live message, so it isn't repeated here. Daily sends just
+  after midnight WIB for the day just ended; weekly sends every Monday. A quiet symbol,
+  a quiet day, or an entirely quiet report is skipped rather than padded out with "No
+  signals closed" placeholder lines. De-duplicated via `data/last-report.json`.
+- **Performance charts** — both reports go out as one Telegram photo message, with the
+  report text as the caption, not a separate text and image. Rendered at 2x scale with
+  [@napi-rs/canvas](https://github.com/Brooooooklyn/canvas), sent via `sendPhoto`.
+  Daily: one horizontal-bar panel per symbol that closed a trade that day, one bar per
+  trade (red = loss), labeled by entry price. Weekly: per-day P/L bars, TP-success-rate
+  pie charts (as many rungs as any trade that week reached — a TP2 hit counts toward
+  TP1 too), and a trade-log table of every closed trade's date, side, symbol, result,
+  and P/L. Whole numbers throughout, no "pips" unit. See `scripts/weeklyChart.mjs`.
 - **Market status** — a banner during gold's closed hours (Fri 22:00 UTC → Sun 22:00
   UTC); also gates new XAUUSD signals during that window.
 - **Install prompt** — a custom "add to home screen" button in the header, in place of
@@ -123,12 +115,11 @@ code.
 - every 15 minutes (cron — matches the app's own refresh cadence)
 - on manual `workflow_dispatch`
 
-A failing test stops the run before anything else happens. CI is otherwise
-stateless — `data/signal-history.json` is the one exception: updated every run,
-committed back to `master` only when it actually changes (most ticks commit
-nothing). A rejected push (something else landed on `master` mid-run) rebases and
-retries up to 3 times. The `deploy` job itself retries up to 3 times on a transient
-`actions/deploy-pages` failure before actually failing the run.
+A failing test stops the run before anything else happens. CI is otherwise stateless.
+`data/signal-history.json` is the one exception — updated every run, committed back to
+`master` only when it changes (most ticks commit nothing). A rejected push (something
+else landed on `master` mid-run) rebases and retries up to 3 times. The `deploy` job
+itself retries up to 3 times on a transient `actions/deploy-pages` failure.
 
 **Ops alerting** — a data-source or fatal failure alerts `TELEGRAM_PERSONAL_CHAT_ID`
 (a private DM, separate from the public channel). De-duplicated via

@@ -1,6 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { computeWeeklyChartData, renderWeeklyReportImage } from '../scripts/weeklyChart.mjs'
+import {
+  computeWeeklyChartData,
+  renderWeeklyReportImage,
+  countReachedTpStages,
+  computeDailyChartData,
+  renderDailyReportImage,
+} from '../scripts/weeklyChart.mjs'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const WIB_OFFSET_MS = 7 * 60 * 60 * 1000
@@ -51,7 +57,7 @@ test('computeWeeklyChartData', async (t) => {
     assert.equal(data.wins, 0)
     assert.equal(data.losses, 0)
     assert.equal(data.winRate, null)
-    assert.deepEqual(data.tpReachPct, [0, 0, 0])
+    assert.deepEqual(data.tpReachPct, [], 'no ladder length to derive from an empty week — no pies, not a padded default')
   })
 
   await t.test('buckets a win into the right weekday and daily-net array, XAUUSD in pips', () => {
@@ -64,7 +70,7 @@ test('computeWeeklyChartData', async (t) => {
     assert.equal(data.trades[0].type, 'BUY')
     assert.equal(data.trades[0].pair, 'XAUUSD')
     assert.equal(data.trades[0].hit, 'TP1')
-    assert.equal(data.trades[0].plText, '+120 pips')
+    assert.equal(data.trades[0].plText, '+120', 'no "pips" suffix — the chart is a report, same convention as the text reports')
     assert.equal(data.trades[0].isWin, true)
   })
 
@@ -99,7 +105,15 @@ test('computeWeeklyChartData', async (t) => {
     const history = [closedRecord({ direction: 'sell', entry: 4300, exitPrice: 4288 })] // price fell 120 -> a sell wins +120
     const data = computeWeeklyChartData(history, makeDays())
     assert.equal(data.trades[0].type, 'SELL')
-    assert.equal(data.trades[0].plText, '+120 pips')
+    assert.equal(data.trades[0].plText, '+120')
+  })
+
+  await t.test('plText is always a whole number, even when the underlying $ move has cents', () => {
+    const history = [
+      closedRecord({ symbolKey: 'BTCUSD', direction: 'buy', entry: 62000, exitPrice: 62850.34 }),
+    ]
+    const data = computeWeeklyChartData(history, makeDays())
+    assert.equal(data.trades[0].plText, '+850')
   })
 
   await t.test('ignores non-H1 timeframes and still-open (pending/running) records', () => {
@@ -131,19 +145,28 @@ test('computeWeeklyChartData', async (t) => {
     )
   })
 
+  // A 3-level ladder — long enough to represent a TP3 win/an unreached TP3.
+  const threeLevelTp = [{ price: 4310, rr: 1 }, { price: 4320, rr: 2 }, { price: 4330, rr: 3 }]
+
   await t.test('cascading TP reach: a TP3 win counts toward TP1 and TP2 as well, not just TP3', () => {
-    const history = [closedRecord({ status: 'win', hitTpIndex: 2 })] // hit TP3
+    const history = [closedRecord({ status: 'win', hitTpIndex: 2, tp: threeLevelTp })] // hit TP3
     const data = computeWeeklyChartData(history, makeDays())
     assert.deepEqual(data.tpReachCount, [1, 1, 1]) // TP1, TP2, TP3 all credited
     assert.deepEqual(data.tpReachPct, [100, 100, 100])
   })
 
+  await t.test('the pie ladder only goes as far as the longest TP array any trade this week actually had', () => {
+    const history = [closedRecord({ status: 'win', hitTpIndex: 0, tp: [{ price: 4310, rr: 1 }] })] // a 1-level signal
+    const data = computeWeeklyChartData(history, makeDays())
+    assert.deepEqual(data.tpReachPct, [100], 'one rung only — this signal never offered a TP2/TP3 to begin with')
+  })
+
   await t.test('TP success rate is a share of ALL closed trades, wins and losses alike', () => {
     const history = [
-      closedRecord({ status: 'win', hitTpIndex: 0 }), // TP1 only
-      closedRecord({ status: 'win', hitTpIndex: 1 }), // TP1 + TP2
-      closedRecord({ status: 'loss', hitTpIndex: undefined }),
-      closedRecord({ status: 'loss', hitTpIndex: undefined }),
+      closedRecord({ status: 'win', hitTpIndex: 0, tp: threeLevelTp }), // TP1 only
+      closedRecord({ status: 'win', hitTpIndex: 1, tp: threeLevelTp }), // TP1 + TP2
+      closedRecord({ status: 'loss', hitTpIndex: undefined, tp: threeLevelTp }),
+      closedRecord({ status: 'loss', hitTpIndex: undefined, tp: threeLevelTp }),
     ]
     const data = computeWeeklyChartData(history, makeDays())
     assert.equal(data.totalClosed, 4)
@@ -163,10 +186,27 @@ test('renderWeeklyReportImage', async (t) => {
     assert.ok(buf.length > 1000, 'a real rendered chart is well over 1KB, not a blank canvas')
   })
 
-  await t.test('does not throw for an empty week (no trades closed) — bars, pies, and an empty trade-log note all render', () => {
+  await t.test('does not throw for an empty week (no trades closed) — bars and an empty trade-log note render, no pie row', () => {
     const data = computeWeeklyChartData([], makeDays())
     const buf = renderWeeklyReportImage(data, '10 – 16 Aug 2026')
     assert.deepEqual(buf.subarray(0, 8), PNG_MAGIC)
+  })
+
+  function pngHeight(buf) {
+    // IHDR is always the first chunk, right after the 8-byte signature: 4-byte length,
+    // 4-byte type, then width (4 bytes) and height (4 bytes), big-endian.
+    return buf.readUInt32BE(8 + 4 + 4 + 4)
+  }
+
+  await t.test('skips the whole TP success-rate pie row when nothing this week ever reached a TP', () => {
+    const lossOnly = [closedRecord({ status: 'loss', hitTpIndex: undefined })]
+    const withAWin = [closedRecord({ status: 'win', hitTpIndex: 0 })]
+    const lossOnlyBuf = renderWeeklyReportImage(computeWeeklyChartData(lossOnly, makeDays()), '10 – 16 Aug 2026')
+    const withAWinBuf = renderWeeklyReportImage(computeWeeklyChartData(withAWin, makeDays()), '10 – 16 Aug 2026')
+    assert.ok(
+      pngHeight(lossOnlyBuf) < pngHeight(withAWinBuf),
+      'a loss-only week (no pie row) renders shorter than one with a win (pie row present)'
+    )
   })
 
   await t.test('grows taller as more trade-log rows are added — the log is on the same canvas, not a separate image', () => {
@@ -176,12 +216,105 @@ test('renderWeeklyReportImage', async (t) => {
     )
     const shortBuf = renderWeeklyReportImage(computeWeeklyChartData(few, makeDays()), '10 – 16 Aug 2026')
     const tallBuf = renderWeeklyReportImage(computeWeeklyChartData(many, makeDays()), '10 – 16 Aug 2026')
+    assert.ok(pngHeight(tallBuf) > pngHeight(shortBuf), '25 trade-log rows must make the image taller than 1 row does')
+  })
+})
 
+test('countReachedTpStages', async (t) => {
+  await t.test('trims a trailing run of zero-reach stages, not just the very last one', () => {
+    assert.equal(countReachedTpStages([2, 1, 0, 0, 0]), 2)
+  })
+
+  await t.test('keeps every stage when all of them were reached at least once', () => {
+    assert.equal(countReachedTpStages([3, 2, 1]), 3)
+  })
+
+  await t.test('an all-zero ladder (no wins at all) counts as zero stages', () => {
+    assert.equal(countReachedTpStages([0, 0, 0]), 0)
+  })
+
+  await t.test('an empty ladder (no data) counts as zero stages', () => {
+    assert.equal(countReachedTpStages([]), 0)
+  })
+})
+
+const DAY_START_MS = WEEK_START_MS // reuse the same fixed Monday for daily tests too
+const DAY_END_MS = DAY_START_MS + DAY_MS
+
+test('computeDailyChartData', async (t) => {
+  await t.test('an empty day: no symbols at all, not a 0%/$0 placeholder for either', () => {
+    const data = computeDailyChartData([], DAY_START_MS, DAY_END_MS)
+    assert.deepEqual(data, {})
+  })
+
+  await t.test('only includes a symbol that actually closed something that day', () => {
+    const history = [closedRecord({ symbolKey: 'XAUUSD' })]
+    const data = computeDailyChartData(history, DAY_START_MS, DAY_END_MS)
+    assert.ok(data.XAUUSD)
+    assert.equal(data.BTCUSD, undefined)
+  })
+
+  await t.test('one bar entry per trade, labeled by direction + (rounded) entry price, "@" padded to align BUY/SELL', () => {
+    const history = [
+      closedRecord({ entry: 4300, exitPrice: 4320 }), // +200 pips
+      closedRecord({ entry: 4310.6, direction: 'sell', status: 'loss', exitPrice: 4315 }), // a loss
+    ]
+    const data = computeDailyChartData(history, DAY_START_MS, DAY_END_MS)
+    assert.deepEqual(data.XAUUSD.entries, [
+      { label: 'BUY  @ 4300', value: 200 },
+      { label: 'SELL @ 4311', value: -44 },
+    ])
+  })
+
+  await t.test('wins/losses/net/winRate are computed the same way the weekly data is', () => {
+    const history = [
+      closedRecord({ entry: 4300, exitPrice: 4320 }), // win, +200
+      closedRecord({ status: 'loss', entry: 4300, exitPrice: 4290 }), // loss, -100
+    ]
+    const data = computeDailyChartData(history, DAY_START_MS, DAY_END_MS)
+    assert.equal(data.XAUUSD.wins, 1)
+    assert.equal(data.XAUUSD.losses, 1)
+    assert.equal(data.XAUUSD.net, 100)
+    assert.equal(data.XAUUSD.winRate, 50)
+  })
+
+  await t.test('excludes trades outside the day window and from other timeframes', () => {
+    const history = [
+      closedRecord({ closedAt: DAY_START_MS - 1 }), // just before the window
+      closedRecord({ closedAt: DAY_END_MS }), // the exclusive end
+      closedRecord({ tf: 'H4', closedAt: DAY_START_MS + 1000 }), // wrong timeframe
+    ]
+    assert.deepEqual(computeDailyChartData(history, DAY_START_MS, DAY_END_MS), {})
+  })
+})
+
+test('renderDailyReportImage', async (t) => {
+  await t.test('returns a valid PNG buffer for a day with a closed trade', () => {
+    const data = computeDailyChartData([closedRecord({ entry: 4300, exitPrice: 4320 })], DAY_START_MS, DAY_END_MS)
+    const buf = renderDailyReportImage(data, 'Monday, 10 Aug 2026')
+    assert.ok(Buffer.isBuffer(buf))
+    assert.deepEqual(buf.subarray(0, 8), PNG_MAGIC)
+    assert.ok(buf.length > 500, 'a real rendered chart is well over 500 bytes, not a blank canvas')
+  })
+
+  await t.test('does not throw for a day with no activity at all', () => {
+    const data = computeDailyChartData([], DAY_START_MS, DAY_END_MS)
+    const buf = renderDailyReportImage(data, 'Monday, 10 Aug 2026')
+    assert.deepEqual(buf.subarray(0, 8), PNG_MAGIC)
+  })
+
+  await t.test('grows taller with a second symbol\'s panel than with just one', () => {
     function pngHeight(buf) {
-      // IHDR is always the first chunk, right after the 8-byte signature: 4-byte
-      // length, 4-byte type, then width (4 bytes) and height (4 bytes), big-endian.
       return buf.readUInt32BE(8 + 4 + 4 + 4)
     }
-    assert.ok(pngHeight(tallBuf) > pngHeight(shortBuf), '25 trade-log rows must make the image taller than 1 row does')
+    const oneSymbol = computeDailyChartData([closedRecord({ symbolKey: 'XAUUSD' })], DAY_START_MS, DAY_END_MS)
+    const bothSymbols = computeDailyChartData(
+      [closedRecord({ symbolKey: 'XAUUSD' }), closedRecord({ symbolKey: 'BTCUSD' })],
+      DAY_START_MS,
+      DAY_END_MS
+    )
+    const oneBuf = renderDailyReportImage(oneSymbol, 'Monday, 10 Aug 2026')
+    const bothBuf = renderDailyReportImage(bothSymbols, 'Monday, 10 Aug 2026')
+    assert.ok(pngHeight(bothBuf) > pngHeight(oneBuf), 'a second symbol panel must make the image taller')
   })
 })

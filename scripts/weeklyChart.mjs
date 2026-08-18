@@ -1,5 +1,7 @@
-// Renders the weekly performance report as ONE PNG buffer (bar chart + TP pie charts +
-// trade-log table, all on one canvas) using @napi-rs/canvas — a
+// Renders the weekly AND daily performance reports, each as ONE PNG buffer — weekly:
+// bar chart + TP pie charts + trade-log table, all on one canvas; daily: one bar-chart
+// panel per symbol with a trade that closed that day (see renderDailyReportImage
+// below) — using @napi-rs/canvas, a
 // Skia-backed canvas with prebuilt native bindings for every platform GitHub Actions'
 // hosted runners use (linux-x64-gnu included), so no system libcairo/apt-get step is
 // needed the way e.g. Python's cairosvg would require (see the design-preview session
@@ -11,7 +13,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createCanvas, GlobalFonts, Image } from '@napi-rs/canvas'
-import { getClosedBetween, PIP_SIZES, favorableMove, formatMove } from '../src/lib/signalHistoryCore.js'
+import { getClosedBetween, PIP_SIZES, favorableMove } from '../src/lib/signalHistoryCore.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const FONT_FAMILY = 'JetBrains Mono'
@@ -87,11 +89,34 @@ function font(px, bold = false) {
   return `${bold ? 'bold ' : ''}${px}px "${FONT_FAMILY}"`
 }
 
+// This image is a report, same as the daily/weekly text (see reportAmount in
+// fetch-data.mjs) — a chart is glanced at, not read closely, so it shows a
+// consolidated whole number rather than per-pip/per-cent precision, and drops the
+// "pips" unit entirely (XAUUSD's own convention; BTCUSD never had one) rather than
+// mixing a labeled unit for one symbol with a bare number for the other.
+function reportAmount(amount) {
+  const rounded = Math.round(amount)
+  return `${rounded >= 0 ? '+' : ''}${rounded}`
+}
+
+// Padded to "SELL"'s own length (the longer of the only two possible values) so "@"
+// lands in the same column whether a row says BUY or SELL — same convention as
+// paddedDirectionLabel in fetch-data.mjs's own text report.
+function paddedDirectionLabel(record) {
+  return (record.direction === 'buy' ? 'BUY' : 'SELL').padEnd(4)
+}
+
 const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-// How many rungs of the TP ladder to break out in the success-rate pies — the real
-// per-signal TP count varies (see srDetector.js), but 3 covers the common case and
-// keeps the chart a fixed, glanceable size rather than growing unbounded.
-const TP_LEVELS = 3
+
+// How many of the (cascading, so non-increasing — TP1 >= TP2 >= TP3...) reach counts
+// are actually non-zero. Once a stage reaches zero, every stage after it does too, so
+// trimming that trailing run drops every TP nobody reached this week, not just the
+// last one — a pie chart guaranteed to read 0% says nothing worth a glance.
+export function countReachedTpStages(tpReachCount) {
+  let count = tpReachCount.length
+  while (count > 0 && tpReachCount[count - 1] === 0) count--
+  return count
+}
 
 // Pure data prep, independently testable from the canvas drawing below. `days` is 7
 // entries (Monday..Sunday, oldest first), each `{ label, startMs, endMs }` — the caller
@@ -102,6 +127,11 @@ export function computeWeeklyChartData(history, days) {
   const symbols = ['XAUUSD', 'BTCUSD']
   const dailyBySymbol = { XAUUSD: [], BTCUSD: [] }
   const allTrades = []
+  // The farthest TP rung actually offered by any trade this week — the pie row shows
+  // every rung up to this (0 if nothing closed at all), not a fixed count, so a signal
+  // with a long TP ladder (e.g. 5 targets) isn't silently truncated to the first 3, and
+  // a quiet week isn't padded out with rungs no trade this week ever had.
+  let maxTpLevels = 0
 
   for (const symbolKey of symbols) {
     const pipSize = PIP_SIZES[symbolKey]
@@ -111,6 +141,7 @@ export function computeWeeklyChartData(history, days) {
       dailyBySymbol[symbolKey].push(net)
       for (const r of closedList) {
         const isWin = r.status === 'win'
+        maxTpLevels = Math.max(maxTpLevels, r.tp?.length ?? 0)
         allTrades.push({
           date: day.label,
           closedAt: r.closedAt,
@@ -118,7 +149,7 @@ export function computeWeeklyChartData(history, days) {
           pair: symbolKey,
           hit: isWin ? `TP${(r.hitTpIndex ?? 0) + 1}` : 'SL',
           hitTpIndex: isWin ? r.hitTpIndex ?? 0 : null,
-          plText: formatMove(pipSize, r.entry, r.exitPrice, r.direction === 'buy'),
+          plText: reportAmount(favorableMove(pipSize, r.entry, r.exitPrice, r.direction === 'buy')),
           isWin,
         })
       }
@@ -135,7 +166,7 @@ export function computeWeeklyChartData(history, days) {
   // Cascading TP reach count: reaching TP2 implies TP1 was cleared too (one ladder, the
   // record just keeps the farthest level price actually reached), so TP1's count is
   // every win, not just the ones that stopped exactly at TP1.
-  const tpReachCount = Array.from({ length: TP_LEVELS }, (_, idx) => allTrades.filter((t) => t.isWin && t.hitTpIndex >= idx).length)
+  const tpReachCount = Array.from({ length: maxTpLevels }, (_, idx) => allTrades.filter((t) => t.isWin && t.hitTpIndex >= idx).length)
   const tpReachPct = tpReachCount.map((count) => (totalClosed ? Math.round((count / totalClosed) * 100) : 0))
 
   return {
@@ -154,12 +185,14 @@ export function computeWeeklyChartData(history, days) {
   }
 }
 
-// `entries` is already filtered down to the days that actually had a closed trade (see
-// activeDayEntries below) — a quiet day isn't shown as an empty "—" row at all anymore,
-// rather than every one of the 7 calendar days always appearing.
-function drawHBarPanel(ctx, { label, unitSuffix, total, entries, color, x0, y0, w }) {
+// One horizontal bar per entry — the weekly report feeds one row per day (already
+// filtered down to the days that actually had a closed trade, see activeDayEntries
+// below, so a quiet day isn't shown as an empty "—" row at all), the daily report (see
+// renderDailyReportImage) feeds one row per individual closed trade instead.
+// labelW/emptyMessage are overridable since the two callers' row labels are a
+// different shape (short weekday names vs. entry prices).
+function drawHBarPanel(ctx, { label, total, entries, color, x0, y0, w, labelW = 62, emptyMessage = 'No trades closed this week.' }) {
   const rowH = 24
-  const labelW = 62
   const valueW = 78
   const barX0 = x0 + labelW
   const barW = w - labelW - valueW
@@ -167,8 +200,7 @@ function drawHBarPanel(ctx, { label, unitSuffix, total, entries, color, x0, y0, 
   ctx.fillStyle = color
   ctx.font = font(18, true)
   ctx.fillText(label, x0, y0)
-  const sign = total >= 0 ? '+' : ''
-  const totalText = `${sign}${total}${unitSuffix}`
+  const totalText = reportAmount(total)
   ctx.textAlign = 'right'
   ctx.fillText(totalText, x0 + w, y0)
   ctx.textAlign = 'left'
@@ -178,7 +210,7 @@ function drawHBarPanel(ctx, { label, unitSuffix, total, entries, color, x0, y0, 
   if (entries.length === 0) {
     ctx.fillStyle = COLORS.textDim
     ctx.font = font(13)
-    ctx.fillText('No trades closed this week.', x0, top + rowH / 2 - 6)
+    ctx.fillText(emptyMessage, x0, top + rowH / 2 - 6)
     return top + rowH
   }
 
@@ -212,9 +244,13 @@ function drawHBarPanel(ctx, { label, unitSuffix, total, entries, color, x0, y0, 
       ctx.fillStyle = barColor
       ctx.fillRect(left, ry + 4, right - left, rowH - 10)
     }
-    const vtext = `${v > 0 ? '+' : ''}${v}`
+    const vtext = reportAmount(v)
     ctx.fillStyle = barColor
-    ctx.fillText(vtext, barX0 + barW + 8, ry + rowH / 2 - 6)
+    // Right-aligned at the panel's own right edge — same edge the header total above
+    // uses — so every day's number lines up regardless of digit count.
+    ctx.textAlign = 'right'
+    ctx.fillText(vtext, x0 + w, ry + rowH / 2 - 6)
+    ctx.textAlign = 'left'
   })
 
   return top + rowH * entries.length
@@ -259,7 +295,7 @@ function drawPie(ctx, { cx, cy, radius, pct, label }) {
   ctx.textAlign = 'left'
 }
 
-// Draws the trade-log table (DATE/TYPE/PAIR/HIT/P&L, justified across `w`) starting at
+// Draws the trade-log table (DATE/TYPE/SYMBOL/HIT/P&L, justified across `w`) starting at
 // `y0`, returning the y position just past the last row. No pagination — the whole log
 // goes on this one canvas (see renderWeeklyReportImage below); a busy week for this
 // dashboard's own signal frequency is a handful of rows, not hundreds, so an unbounded
@@ -271,7 +307,7 @@ function drawTradeLogTable(ctx, { trades, x0, y0, w }) {
   const colStep = w / (COLUMN_COUNT - 1)
   const colDate = x0
   const colType = x0 + colStep
-  const colPair = x0 + colStep * 2
+  const colSymbol = x0 + colStep * 2
   const colHit = x0 + colStep * 3
   const colPlRight = x0 + w
 
@@ -280,7 +316,7 @@ function drawTradeLogTable(ctx, { trades, x0, y0, w }) {
   ctx.font = font(14, true)
   ctx.fillText('DATE', colDate, y)
   ctx.fillText('TYPE', colType, y)
-  ctx.fillText('PAIR', colPair, y)
+  ctx.fillText('SYMBOL', colSymbol, y)
   ctx.fillText('HIT', colHit, y)
   ctx.textAlign = 'right'
   ctx.fillText('P/L', colPlRight, y)
@@ -303,7 +339,7 @@ function drawTradeLogTable(ctx, { trades, x0, y0, w }) {
     ctx.fillText(t.type, colType, y)
     ctx.fillStyle = pairColor
     ctx.font = font(14, true)
-    ctx.fillText(t.pair, colPair, y)
+    ctx.fillText(t.pair, colSymbol, y)
     ctx.fillStyle = rowColor
     ctx.fillText(t.hit, colHit, y)
     ctx.textAlign = 'right'
@@ -345,19 +381,19 @@ export function renderWeeklyReportImage(data, rangeLabel) {
   let y = 24
   ctx.fillStyle = COLORS.textCol
   ctx.font = font(24, true)
-  ctx.fillText(`Weekly Performance — ${rangeLabel}`, MARGIN, y)
+  ctx.fillText(`Weekly Performance (${rangeLabel})`, MARGIN, y)
   drawLogoBadge(ctx, W - MARGIN, y - 5, 34, 'right')
   y += 40
 
   ctx.fillStyle = COLORS.textDim
   ctx.font = font(15, true)
-  const winRateText = data.totalClosed ? `${data.winRate}% (${data.wins}W / ${data.losses}L)` : 'No trades closed this week'
-  ctx.fillText(`XAUUSD ${data.xauTotal >= 0 ? '+' : ''}${data.xauTotal} pips  ·  BTCUSD ${data.btcTotal >= 0 ? '+' : ''}${data.btcTotal}  ·  Win rate ${winRateText}`, MARGIN, y)
+  const winRateText = data.totalClosed ? `${data.winRate}%` : 'No trades closed this week'
+  ctx.fillText(`XAUUSD ${reportAmount(data.xauTotal)}  ·  BTCUSD ${reportAmount(data.btcTotal)}  ·  Win rate ${winRateText}`, MARGIN, y)
   y += 44
 
   ctx.fillStyle = COLORS.textCol
   ctx.font = font(16, true)
-  ctx.fillText('DAILY PIPS GAINED', MARGIN, y)
+  ctx.fillText('DAILY P/L', MARGIN, y)
   y += 32
   const panelsTop = y
 
@@ -368,7 +404,6 @@ export function renderWeeklyReportImage(data, rangeLabel) {
 
   const yAfterXau = drawHBarPanel(ctx, {
     label: 'XAUUSD',
-    unitSuffix: ' pips',
     total: data.xauTotal,
     entries: activeDayEntries(data.days, data.xauDaily, data.trades, 'XAUUSD'),
     color: COLORS.gold,
@@ -378,7 +413,6 @@ export function renderWeeklyReportImage(data, rangeLabel) {
   })
   const yAfterBtc = drawHBarPanel(ctx, {
     label: 'BTCUSD',
-    unitSuffix: '',
     total: data.btcTotal,
     entries: activeDayEntries(data.days, data.btcDaily, data.trades, 'BTCUSD'),
     color: COLORS.cyan,
@@ -388,22 +422,29 @@ export function renderWeeklyReportImage(data, rangeLabel) {
   })
   y = Math.max(yAfterXau, yAfterBtc) + 40
 
-  ctx.fillStyle = COLORS.textCol
-  ctx.font = font(16, true)
-  ctx.fillText('TP SUCCESS RATE', MARGIN, y)
-  y += 40
+  // No pies at all when nothing this week ever reached a TP — a 0%-across-the-board row
+  // says nothing a loss-only week doesn't already say via the bars/trade log above, and
+  // an empty week has no ladder length to even know how many rungs to draw (see
+  // maxTpLevels in computeWeeklyChartData).
+  if (data.wins > 0) {
+    ctx.fillStyle = COLORS.textCol
+    ctx.font = font(16, true)
+    ctx.fillText('TP SUCCESS RATE', MARGIN, y)
+    y += 40
 
-  // Horizontal row, TP1..TP3 left to right, evenly spaced across the same content width
-  // the bar panels above use.
-  const pieRadius = 46
-  const tpNames = data.tpReachPct.map((_, idx) => `TP${idx + 1}`)
-  const colW = CW / tpNames.length
-  const pieCy = y + pieRadius
-  tpNames.forEach((name, idx) => {
-    const pieCx = MARGIN + colW * idx + colW / 2
-    drawPie(ctx, { cx: pieCx, cy: pieCy, radius: pieRadius, pct: data.tpReachPct[idx], label: name })
-  })
-  y = pieCy + pieRadius + 22 + 18 + 40
+    // Horizontal row, TP1..TPn left to right (n = the longest TP ladder any trade this
+    // week actually reached), evenly spaced across the same content width the bar
+    // panels above use.
+    const pieRadius = 46
+    const tpNames = Array.from({ length: countReachedTpStages(data.tpReachCount) }, (_, idx) => `TP${idx + 1}`)
+    const colW = CW / tpNames.length
+    const pieCy = y + pieRadius
+    tpNames.forEach((name, idx) => {
+      const pieCx = MARGIN + colW * idx + colW / 2
+      drawPie(ctx, { cx: pieCx, cy: pieCy, radius: pieRadius, pct: data.tpReachPct[idx], label: name })
+    })
+    y = pieCy + pieRadius + 22 + 18 + 40
+  }
 
   ctx.fillStyle = COLORS.textCol
   ctx.font = font(16, true)
@@ -420,6 +461,110 @@ export function renderWeeklyReportImage(data, rangeLabel) {
   }
 
   y += 10
+  const finalCanvas = createCanvas(W * SCALE, Math.round(y) * SCALE)
+  const finalCtx = finalCanvas.getContext('2d')
+  finalCtx.drawImage(scratch, 0, 0)
+  return finalCanvas.toBuffer('image/png')
+}
+
+// Pure data prep for the daily image, independently testable from the canvas drawing
+// below — same split as computeWeeklyChartData. Only symbols that actually closed
+// something that day are included at all (mirrors buildDailyReportMessage's own "no
+// activity, no section" rule in fetch-data.mjs) — a quiet symbol isn't a 0%/$0 row.
+export function computeDailyChartData(history, dayStartMs, dayEndMs) {
+  const bySymbol = {}
+  for (const symbolKey of ['XAUUSD', 'BTCUSD']) {
+    const pipSize = PIP_SIZES[symbolKey]
+    const closedList = getClosedBetween(history, symbolKey, 'H1', dayStartMs, dayEndMs)
+    if (!closedList.length) continue
+    const wins = closedList.filter((r) => r.status === 'win').length
+    const net = closedList.reduce((sum, r) => sum + favorableMove(pipSize, r.entry, r.exitPrice, r.direction === 'buy'), 0)
+    bySymbol[symbolKey] = {
+      // One bar per trade (not per day — there's only one day here), labeled by its
+      // direction + entry price rather than a TP/SL label so several trades don't all
+      // repeat the same "TP1"/"SL" row label. Direction is padded so "@" lands in the
+      // same column across every row, same convention as the text report.
+      entries: closedList.map((r) => ({
+        label: `${paddedDirectionLabel(r)} @ ${Math.round(r.entry)}`,
+        value: favorableMove(pipSize, r.entry, r.exitPrice, r.direction === 'buy'),
+      })),
+      wins,
+      losses: closedList.length - wins,
+      net,
+      winRate: Math.round((wins / closedList.length) * 100),
+    }
+  }
+  return bySymbol
+}
+
+// Returns ONE PNG Buffer for the daily report: title, then one bar-chart panel per
+// symbol that actually closed something that day (bars = individual trades, same
+// visual language as the weekly report's own daily-pips panels — see drawHBarPanel)
+// plus that symbol's win rate. No TP-ladder pies or trade-log table here — a single
+// day's handful of trades is already fully shown by its own bar panel, and rarely
+// enough volume for a TP-success percentage to mean much.
+export function renderDailyReportImage(data, dayLabel) {
+  registerFonts()
+  const W = 700
+  const MARGIN = 28
+  const CW = W - MARGIN * 2
+
+  const scratch = createCanvas(W * SCALE, 900 * SCALE)
+  const ctx = scratch.getContext('2d')
+  ctx.scale(SCALE, SCALE)
+  ctx.textBaseline = 'top'
+  ctx.fillStyle = COLORS.bg
+  ctx.fillRect(0, 0, W, 900)
+
+  let y = 24
+  ctx.fillStyle = COLORS.textCol
+  ctx.font = font(22, true)
+  ctx.fillText(`Daily Performance (${dayLabel})`, MARGIN, y)
+  drawLogoBadge(ctx, W - MARGIN, y - 4, 30, 'right')
+  y += 46
+
+  const symbolMeta = [
+    { key: 'XAUUSD', color: COLORS.gold },
+    { key: 'BTCUSD', color: COLORS.cyan },
+  ]
+
+  let any = false
+  for (const { key: symbolKey, color } of symbolMeta) {
+    const s = data[symbolKey]
+    if (!s) continue
+    any = true
+    y = drawHBarPanel(ctx, {
+      label: symbolKey,
+      total: s.net,
+      entries: s.entries,
+      color,
+      x0: MARGIN,
+      y0: y,
+      w: CW,
+      labelW: 100, // wide enough for "SELL @ " plus a 5-digit entry price (e.g. BTCUSD), not just "Sun 16"
+      emptyMessage: 'No trades closed today.',
+    })
+    y += 10
+    ctx.fillStyle = COLORS.textDim
+    ctx.font = font(13)
+    ctx.fillText(`Win rate: ${s.winRate}%`, MARGIN, y)
+    y += 30
+    ctx.strokeStyle = COLORS.border
+    ctx.beginPath()
+    ctx.moveTo(MARGIN, y)
+    ctx.lineTo(W - MARGIN, y)
+    ctx.stroke()
+    y += 20
+  }
+
+  if (!any) {
+    ctx.fillStyle = COLORS.textDim
+    ctx.font = font(14)
+    ctx.fillText('No activity today.', MARGIN, y)
+    y += 30
+  }
+
+  y += 4
   const finalCanvas = createCanvas(W * SCALE, Math.round(y) * SCALE)
   const finalCtx = finalCanvas.getContext('2d')
   finalCtx.drawImage(scratch, 0, 0)

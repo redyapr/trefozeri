@@ -22,16 +22,14 @@ import {
   evaluateSignals,
   trimRecords,
   keyFor,
-  getHistory,
   getClosedBetween,
   PIP_SIZES,
   favorableMove,
-  formatAmount,
   formatMove,
   formatPrice,
 } from '../src/lib/signalHistoryCore.js'
 import { isGoldMarketClosed } from '../src/lib/marketHours.js'
-import { computeWeeklyChartData, renderWeeklyReportImage } from './weeklyChart.mjs'
+import { computeWeeklyChartData, renderWeeklyReportImage, computeDailyChartData, renderDailyReportImage } from './weeklyChart.mjs'
 
 const OUT_DIR = path.join(process.cwd(), 'public', 'data')
 const HISTORY_PATH = path.join(process.cwd(), 'data', 'signal-history.json')
@@ -430,11 +428,18 @@ export function buildNewSignalMessage(symbolKey, group) {
   const isBuy = primary.direction === 'buy'
   const isGolden = primary.strengthLabel === 'Strong'
   const title = `${isBuy ? '🔵' : '🔴'} ${isBuy ? 'BUY' : 'SELL'} LIMIT — ${symbolKey}${isGolden ? ' ⭐ Golden Zone' : ''}`
+  // Each TP's whole "price (rr R)" value is right-aligned within its own column — a
+  // shorter one (fewer price/rr digits than the widest TP row) gets leading spaces, so
+  // every "(...R)" ends at the same column regardless of how many digits it has
+  // (Zone/Price/SL have no "(...)" suffix, so they're not part of this — only the TP
+  // rows need it).
+  const tpValues = primary.tp.map((t) => `${formatPrice(t.price)} (${formatPrice(t.rr)}R)`)
+  const tpValueWidth = Math.max(...tpValues.map((v) => v.length))
   const rows = [
     ['Zone', `${primary.category} (${primary.strengthLabel})`],
     ['Price', formatPrice(primary.entry)],
     ['SL', formatPrice(primary.sl)],
-    ...primary.tp.map((t, i) => [`TP${i + 1}`, `${formatPrice(t.price)} (${formatPrice(t.rr)}R)`]),
+    ...tpValues.map((v, i) => [`TP${i + 1}`, v.padStart(tpValueWidth)]),
   ]
   // <code> (Telegram's "Monospace" formatting, plain fixed-width text), not <pre>
   // (a boxed "code snippet" with its own background and a copy button) — the goal is
@@ -615,61 +620,69 @@ function paddedDirectionLabel(record) {
   return directionLabel(record).padEnd(4)
 }
 
-// One [left, right] pair per closed trade — split rather than one string so
-// alignArrows (below) can pad the left side and line up every "→" in the same column,
-// same reasoning as alignRows' labelWidth for the new-signal message. No category
-// (Support/Resistance/RBS/SBR) or "HIT" here — direction + price + which TP/SL + the
-// result is enough to place the trade; both read as noise in the report specifically.
-// A standalone rollup message has no earlier "signal opened" message to inherit
-// context from the way a live SL/TP-hit reply does (see buildCloseMessage) — that
-// reply still says "HIT", this report line doesn't.
+// Report-only number formatting: always a whole number (Math.round — reports show
+// consolidated PnL, not per-pip precision), no "pips"/unit suffix regardless of
+// symbol, sign-prefixed. Distinct from formatAmount, which the standalone SL/TP-hit
+// reply (buildCloseMessage) and the weekly chart image still use as-is.
+function reportAmount(amount) {
+  const rounded = Math.round(amount)
+  return `${rounded >= 0 ? '+' : ''}${rounded}`
+}
+
+// One [left, label, number] triple per closed trade — split (rather than one string)
+// so alignReportLines (below) can pad each column independently: left so "→" lines up,
+// label so every number starts at the same offset, and the number itself right-aligned
+// within its own column. No category (Support/Resistance/RBS/SBR) or "HIT" here —
+// direction + price + which TP/SL + the result is enough to place the trade; both read
+// as noise in the report specifically. A standalone rollup message has no earlier
+// "signal opened" message to inherit context from the way a live SL/TP-hit reply does
+// (see buildCloseMessage) — that reply still says "HIT", this report line doesn't.
 function reportExitLine(symbolKey, record) {
   const label = record.status === 'win' ? `TP${(record.hitTpIndex ?? 0) + 1}` : 'SL'
-  const move = formatMove(PIP_SIZES[symbolKey], record.entry, record.exitPrice, record.direction === 'buy')
-  const left = `${record.status === 'win' ? '✅' : '❌'} ${paddedDirectionLabel(record)} @ ${formatPrice(record.entry)}`
-  return [left, `${label} ${move}`]
+  const number = reportAmount(favorableMove(PIP_SIZES[symbolKey], record.entry, record.exitPrice, record.direction === 'buy'))
+  const left = `${record.status === 'win' ? '✅' : '❌'} ${paddedDirectionLabel(record)} @ ${Math.round(record.entry)}`
+  return [left, label, number]
 }
 
-// Pads the left side of each [left, right] pair so "→" lands in the same column on
-// every row — same reasoning as alignRows above, just a different separator.
-function alignArrows(rows) {
-  const width = Math.max(...rows.map(([left]) => left.length))
-  return rows.map(([left, right]) => `${left.padEnd(width)} → ${right}`)
+// Pads each column of a [left, label, number] triple so "→" lines up, every label
+// starts at the same offset, and the number itself is right-aligned within its own
+// column (a ledger-style look, easiest to scan down a list of results) — same
+// per-column padding reasoning as alignRows above, just three columns instead of two.
+function alignReportLines(rows) {
+  const leftWidth = Math.max(...rows.map(([left]) => left.length))
+  const labelWidth = Math.max(...rows.map(([, label]) => label.length))
+  const numberWidth = Math.max(...rows.map(([, , number]) => number.length))
+  return rows.map(([left, label, number]) => `${left.padEnd(leftWidth)} → ${label.padEnd(labelWidth)} ${number.padStart(numberWidth)}`)
 }
 
-// Returns null (rather than an empty-looking section) when this symbol had neither a
-// running signal nor a closed trade that day — nothing to report, so it's omitted from
-// the message entirely instead of padding it out with "No running signals."/"No
-// signals closed today." noise. Same reasoning applies to each block individually: a
-// symbol with closes but nothing currently running skips the "Running" block entirely
-// rather than printing "Running (0): No running signals."
+// Same idea as alignReportLines but for a [label, number] pair joined by ":" (the
+// weekly report's per-day lines) instead of "→" — label padded so ":" lines up, number
+// right-aligned within its own column.
+function alignColonLines(rows) {
+  const labelWidth = Math.max(...rows.map(([label]) => label.length))
+  const numberWidth = Math.max(...rows.map(([, number]) => number.length))
+  return rows.map(([label, number]) => `${label.padEnd(labelWidth)}: ${number.padStart(numberWidth)}`)
+}
+
+// Returns null (rather than an empty-looking section) when this symbol had no closed
+// trade that day — nothing to report, so it's omitted from the message entirely
+// instead of padding it out with "No signals closed today." noise. Deliberately
+// closed-trades-only: a still-open signal is already visible via its own live message
+// in the channel, so it's not repeated here — this report recaps what actually
+// finished, not what's still pending.
 function buildSymbolDailySection(symbolKey, history, dayStartMs, dayEndMs) {
-  const running = getHistory(history, symbolKey, REPORT_TF).filter((r) => r.status === 'running')
   const closedList = getClosedBetween(history, symbolKey, REPORT_TF, dayStartMs, dayEndMs)
-  if (!running.length && !closedList.length) return null
+  if (!closedList.length) return null
 
   // Symbol header stays bold on its own line (like buildNewSignalMessage's title) —
   // <code> silently drops any tag nested inside it, so the header can't live inside
   // the same block as the monospace body below and keep its bold.
-  const lines = []
-  if (running.length) {
-    lines.push(`Running (${running.length}):`)
-    for (const r of running) lines.push(`• ${paddedDirectionLabel(r)} @ ${formatPrice(r.entry)}`)
-  }
-
-  if (closedList.length) {
-    if (lines.length) lines.push('') // blank separator only if the Running block precedes this
-    // The "Closed (N):" heading only earns its keep when a Running block precedes it
-    // to distinguish itself from — with nothing running, the whole section is already
-    // obviously about closed trades, so skip straight to the lines themselves.
-    if (running.length) lines.push(`Closed (${closedList.length}):`)
-    lines.push(...alignArrows(closedList.map((r) => reportExitLine(symbolKey, r))))
-    const wins = closedList.filter((r) => r.status === 'win').length
-    const pipSize = PIP_SIZES[symbolKey]
-    const net = closedList.reduce((sum, r) => sum + favorableMove(pipSize, r.entry, r.exitPrice, r.direction === 'buy'), 0)
-    const winRate = Math.round((wins / closedList.length) * 100)
-    lines.push('', `Win rate: ${winRate}% · Net: ${formatAmount(pipSize, net)}`)
-  }
+  const lines = alignReportLines(closedList.map((r) => reportExitLine(symbolKey, r)))
+  const wins = closedList.filter((r) => r.status === 'win').length
+  const pipSize = PIP_SIZES[symbolKey]
+  const net = closedList.reduce((sum, r) => sum + favorableMove(pipSize, r.entry, r.exitPrice, r.direction === 'buy'), 0)
+  const winRate = Math.round((wins / closedList.length) * 100)
+  lines.push('', `Win rate: ${winRate}% · Net: ${reportAmount(net)}`)
 
   return `<b>${symbolKey}</b>\n<code>${lines.join('\n')}</code>`
 }
@@ -688,7 +701,7 @@ export function buildDailyReportMessage(history, dayStartMs) {
     .map((symbolKey) => buildSymbolDailySection(symbolKey, history, dayStartMs, dayEndMs))
     .filter(Boolean)
   if (!sections.length) return null
-  return [`📊 <b>Daily Report : ${formatWibDate(dayStartMs)}</b>`, '', sections.join('\n\n')].join('\n')
+  return [`<b>Daily Performance (${formatWibDate(dayStartMs)})</b>`, '', sections.join('\n\n')].join('\n')
 }
 
 // Returns null when nothing closed for this symbol all week — omitted from the message
@@ -698,7 +711,7 @@ function buildSymbolWeeklySection(symbolKey, history, weekStartMs) {
   const pipSize = PIP_SIZES[symbolKey]
   // Header stays bold and outside the <code> block below — same reasoning as
   // buildSymbolDailySection.
-  const lines = []
+  const dayRows = []
   let totalNet = 0
   let totalWins = 0
   let totalLosses = 0
@@ -716,13 +729,21 @@ function buildSymbolWeeklySection(symbolKey, history, weekStartMs) {
     totalNet += net
     totalWins += wins
     totalLosses += losses
-    lines.push(`${dayLabel}: ${formatAmount(pipSize, net)} (${wins}W / ${losses}L)`)
+    // No (NW / ML) here — same reasoning as the daily report's own Win rate line: the
+    // net number and the week-level win rate below already say enough. The day's net
+    // decides its icon (profit vs loss for the day as a whole), not each individual
+    // trade's own result — a day can close net-positive despite a losing trade in it.
+    const dayIcon = net >= 0 ? '✅' : '❌'
+    dayRows.push([`${dayIcon} ${dayLabel}`, reportAmount(net)])
   }
 
   const totalClosed = totalWins + totalLosses
   if (!totalClosed) return null
 
-  lines.push('', `Total: ${formatAmount(pipSize, totalNet)} · Win rate: ${Math.round((totalWins / totalClosed) * 100)}% (${totalWins}W / ${totalLosses}L)`)
+  const lines = alignColonLines(dayRows)
+  const winRate = Math.round((totalWins / totalClosed) * 100)
+  // Win rate first, then Net — same order as the daily report's own summary line.
+  lines.push('', `Win rate: ${winRate}% · Net: ${reportAmount(totalNet)}`)
   return `<b>${symbolKey}</b>\n<code>${lines.join('\n')}</code>`
 }
 
@@ -735,7 +756,7 @@ export function buildWeeklyReportMessage(history, weekStartMs) {
   const rangeLabel = `${formatWibDayNum(weekStartMs)} – ${formatWibDateNoWeekday(weekEndMs)}`
   const sections = ['XAUUSD', 'BTCUSD'].map((symbolKey) => buildSymbolWeeklySection(symbolKey, history, weekStartMs)).filter(Boolean)
   if (!sections.length) return null
-  return [`📅 <b>Weekly Report : ${rangeLabel}</b>`, '', sections.join('\n\n')].join('\n')
+  return [`<b>Weekly Performance (${rangeLabel})</b>`, '', sections.join('\n\n')].join('\n')
 }
 
 // Fires on the first cron tick that lands in the 00:00-00:59 WIB hour each day (the
@@ -746,6 +767,23 @@ export function buildWeeklyReportMessage(history, weekStartMs) {
 // skipped, a later tick in the same hour still catches it. lastDailyReportDate is what
 // actually prevents a double-send once one tick in the window succeeds — not the
 // window's width.
+// Builds the daily performance image (one bar-chart panel per symbol that closed
+// something that day — see renderDailyReportImage) and sends it, with reportText as
+// its own caption, as ONE Telegram message — same "one photo, not a text message plus
+// a separate image" reasoning as sendWeeklyReport below. Best-effort like every other
+// Telegram notification here: a rendering or send failure is logged and swallowed,
+// never allowed to fail the whole cron run.
+async function sendDailyReport(reportText, history, dayStartMs) {
+  try {
+    const dayEndMs = dayStartMs + DAY_MS
+    const data = computeDailyChartData(history, dayStartMs, dayEndMs)
+    const buffer = renderDailyReportImage(data, formatWibDate(dayStartMs))
+    await sendTelegramPhoto(buffer, 'daily-performance.png', reportText)
+  } catch (err) {
+    console.warn(`[fetch-data] daily performance chart generation failed: ${err.message}`)
+  }
+}
+
 export async function maybeSendDailyReport(history, now, state) {
   const wib = wibParts(now)
   if (wib.hour !== 0) return false
@@ -759,7 +797,7 @@ export async function maybeSendDailyReport(history, now, state) {
   // happened" message every quiet day, but still remember today's date below so this
   // doesn't re-evaluate on every 15-minute tick within the same hour.
   const message = buildDailyReportMessage(history, yesterdayStartMs)
-  if (message) await sendTelegramMessage(message)
+  if (message) await sendDailyReport(message, history, yesterdayStartMs)
   state.lastDailyReportDate = todayKey
   return true
 }
