@@ -594,16 +594,28 @@ function buildSignalForZone(zone, allZones, higherTfZones = []) {
 }
 
 // One signal for the nearest qualifying bullish level (Support/RBS), one for the
-// nearest qualifying bearish level (Resistance/SBR) — both sides of price get an idea,
-// *unless* a confirmed higher-timeframe trend picks a side (see below).
+// nearest qualifying bearish level (Resistance/SBR) — both sides of price always get a
+// signal object back; a confirmed higher-timeframe trend only *annotates* the
+// off-trend side (`trendAligned: false`) rather than omitting it.
+//
+// That distinction matters: this same list is what recordSignals (signalHistoryCore.js)
+// uses both to keep an *already-open* pending record alive and to decide whether to
+// open a *brand-new* one. Trend can flip tick-to-tick as price oscillates right around
+// the neutral band — if the off-trend side were dropped from this list entirely, an
+// already-open pending record on that side would stop matching, get dropped as
+// "stale", and then get silently *recreated* as a fresh signal (new telegramMessageId,
+// a brand-new "new signal" post) the moment trend flips back. That's a real bug this
+// was already shipped with: production logs showed the same zone re-posted 2-3 times
+// in a row with only its SL/TP drifting slightly between posts. recordSignals is the
+// one that actually skips *creating new* records for `trendAligned: false` signals —
+// see its own comment — while still syncing/keeping-alive an existing one regardless.
 // higherTfZones (optional): zones from timeframes higher than the one `zones` came
 // from, made available as extra TP candidates (see buildSignalForZone) — the caller
 // (main.js / fetch-data.mjs) is responsible for only ever passing *higher* timeframes'
 // zones here, never lower ones.
-// trend (optional, see computeTrend): 'up' only offers the bullish side, 'down' only
-// the bearish side — a fade strategy taken symmetrically in both directions regardless
-// of the prevailing trend fights itself on whichever side goes against it. 'neutral'
-// (the default) offers both, same as before trend filtering existed.
+// trend (optional, see computeTrend): 'up' marks the bearish side trendAligned:false,
+// 'down' marks the bullish side — 'neutral' (the default) leaves both aligned, same as
+// before trend filtering existed.
 export function buildSignals(zones, currentPrice, higherTfZones = [], trend = 'neutral') {
   if (!zones.length || currentPrice == null) return []
 
@@ -626,9 +638,8 @@ export function buildSignals(zones, currentPrice, higherTfZones = [], trend = 'n
   const nearestBullish = zones.filter((z) => z.type === 'support' && onCorrectSide(z) && tradeable(z)).sort(byDistance)[0]
   const nearestBearish = zones.filter((z) => z.type === 'resistance' && onCorrectSide(z) && tradeable(z)).sort(byDistance)[0]
 
-  let candidates = [nearestBullish, nearestBearish]
-  if (trend === 'up') candidates = [nearestBullish]
-  else if (trend === 'down') candidates = [nearestBearish]
-
-  return candidates.filter(Boolean).map((zone) => buildSignalForZone(zone, zones, higherTfZones))
+  const signals = []
+  if (nearestBullish) signals.push({ ...buildSignalForZone(nearestBullish, zones, higherTfZones), trendAligned: trend !== 'down' })
+  if (nearestBearish) signals.push({ ...buildSignalForZone(nearestBearish, zones, higherTfZones), trendAligned: trend !== 'up' })
+  return signals
 }

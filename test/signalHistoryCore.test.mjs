@@ -70,6 +70,38 @@ test('recordSignals', async (t) => {
     assert.equal(history[0].threshold, 7)
   })
 
+  await t.test('does not open a new record for a signal marked trendAligned: false', () => {
+    const history = []
+    const { added } = recordSignals(history, 'XAUUSD', 'H1', [buySignal({ trendAligned: false })])
+    assert.equal(added.length, 0)
+    assert.equal(history.length, 0)
+  })
+
+  await t.test(
+    'a real production bug this fixes: an already-open record is kept alive even once its side turns trendAligned: false on a later tick',
+    () => {
+      // Trend can flip tick-to-tick as price oscillates right around the neutral band.
+      // Before this fix, buildSignals dropped the off-trend side from its output
+      // entirely — recordSignals' stale-pending-drop loop then saw no matching signal,
+      // dropped the record as if its level had vanished, and recreated it as a
+      // "new" signal (fresh telegramMessageId) the moment trend flipped back.
+      // Production logs showed exactly this: the same zone re-posted 2-3 times with
+      // only its SL/TP drifting slightly between posts.
+      const history = []
+      recordSignals(history, 'XAUUSD', 'H1', [buySignal({ trendAligned: true })])
+      assert.equal(history.length, 1)
+      const originalRecord = history[0]
+
+      // Trend flips against this side — still the exact same underlying zone/price,
+      // just newly marked trendAligned: false.
+      const { added } = recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 101, trendAligned: false })])
+      assert.equal(added.length, 0, 'no new record — the existing one must not have been dropped-and-recreated')
+      assert.equal(history.length, 1, 'still exactly one record for this key')
+      assert.equal(history[0], originalRecord, 'the same record object, not a replacement')
+      assert.equal(history[0].entry, 101, 'still synced to the latest recalculation despite being off-trend')
+    }
+  )
+
   await t.test('does not duplicate an already-open signal on the next tick, but syncs its entry/SL/TP to the recalculation', () => {
     const history = []
     recordSignals(history, 'XAUUSD', 'H1', [buySignal()])

@@ -609,13 +609,32 @@ function directionLabel(record) {
   return record.direction === 'buy' ? 'BUY' : 'SELL'
 }
 
-// One line per closed trade: outcome, what it was, and its result — a standalone
-// rollup message has no earlier "signal opened" message to inherit that context from
-// the way a live SL/TP-hit reply does (see buildCloseMessage).
+// Padded to "SELL"'s own length (the longer of the only two possible values) so "@"
+// lands in the same column whether a line says BUY or SELL.
+function paddedDirectionLabel(record) {
+  return directionLabel(record).padEnd(4)
+}
+
+// One [left, right] pair per closed trade — split rather than one string so
+// alignArrows (below) can pad the left side and line up every "→" in the same column,
+// same reasoning as alignRows' labelWidth for the new-signal message. No category
+// (Support/Resistance/RBS/SBR) or "HIT" here — direction + price + which TP/SL + the
+// result is enough to place the trade; both read as noise in the report specifically.
+// A standalone rollup message has no earlier "signal opened" message to inherit
+// context from the way a live SL/TP-hit reply does (see buildCloseMessage) — that
+// reply still says "HIT", this report line doesn't.
 function reportExitLine(symbolKey, record) {
-  const label = record.status === 'win' ? `TP${(record.hitTpIndex ?? 0) + 1} HIT` : 'SL HIT'
+  const label = record.status === 'win' ? `TP${(record.hitTpIndex ?? 0) + 1}` : 'SL'
   const move = formatMove(PIP_SIZES[symbolKey], record.entry, record.exitPrice, record.direction === 'buy')
-  return `${record.status === 'win' ? '✅' : '❌'} ${directionLabel(record)} ${record.category} @ ${formatPrice(record.entry)} → ${label} ${move}`
+  const left = `${record.status === 'win' ? '✅' : '❌'} ${paddedDirectionLabel(record)} @ ${formatPrice(record.entry)}`
+  return [left, `${label} ${move}`]
+}
+
+// Pads the left side of each [left, right] pair so "→" lands in the same column on
+// every row — same reasoning as alignRows above, just a different separator.
+function alignArrows(rows) {
+  const width = Math.max(...rows.map(([left]) => left.length))
+  return rows.map(([left, right]) => `${left.padEnd(width)} → ${right}`)
 }
 
 // Returns null (rather than an empty-looking section) when this symbol had neither a
@@ -635,19 +654,21 @@ function buildSymbolDailySection(symbolKey, history, dayStartMs, dayEndMs) {
   const lines = []
   if (running.length) {
     lines.push(`Running (${running.length}):`)
-    for (const r of running) lines.push(`• ${directionLabel(r)} ${r.category} @ ${formatPrice(r.entry)}`)
+    for (const r of running) lines.push(`• ${paddedDirectionLabel(r)} @ ${formatPrice(r.entry)}`)
   }
 
   if (closedList.length) {
     if (lines.length) lines.push('') // blank separator only if the Running block precedes this
-    lines.push(`Closed today (${closedList.length}):`)
-    for (const r of closedList) lines.push(reportExitLine(symbolKey, r))
+    // The "Closed (N):" heading only earns its keep when a Running block precedes it
+    // to distinguish itself from — with nothing running, the whole section is already
+    // obviously about closed trades, so skip straight to the lines themselves.
+    if (running.length) lines.push(`Closed (${closedList.length}):`)
+    lines.push(...alignArrows(closedList.map((r) => reportExitLine(symbolKey, r))))
     const wins = closedList.filter((r) => r.status === 'win').length
-    const losses = closedList.length - wins
     const pipSize = PIP_SIZES[symbolKey]
     const net = closedList.reduce((sum, r) => sum + favorableMove(pipSize, r.entry, r.exitPrice, r.direction === 'buy'), 0)
     const winRate = Math.round((wins / closedList.length) * 100)
-    lines.push('', `Win rate today: ${winRate}% (${wins}W / ${losses}L) · Net: ${formatAmount(pipSize, net)}`)
+    lines.push('', `Win rate: ${winRate}% · Net: ${formatAmount(pipSize, net)}`)
   }
 
   return `<b>${symbolKey}</b>\n<code>${lines.join('\n')}</code>`

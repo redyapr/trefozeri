@@ -107,6 +107,14 @@ export function recordSignals(records, symbolKey, tf, signals, currentPrice, cur
   for (const signal of signals) {
     const key = keyFor(symbolKey, tf, signal)
     if (openKeys.has(key)) continue
+    // trendAligned (see buildSignals in srDetector.js) only gates *opening a brand-new*
+    // record — an already-open one is kept alive regardless (the `openKeys.has` guard
+    // above already returned before reaching here for those). This is intentionally
+    // NOT applied to the stale-pending-drop loop above: dropping this check there
+    // instead would mean an already-open pending record gets silently dropped the
+    // moment trend flips against it, then recreated as a "new" signal the next time
+    // trend flips back — exactly the repeated-near-duplicate-post bug this fixes.
+    if (signal.trendAligned === false) continue
     const record = {
       key,
       symbolKey,

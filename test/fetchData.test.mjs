@@ -1463,39 +1463,79 @@ test('buildDailyReportMessage', async (t) => {
     assert.doesNotMatch(msg, /BTCUSD/)
   })
 
-  await t.test('lists running signals, with no "Closed today" section at all when nothing closed', () => {
+  await t.test('lists running signals (no category label), with no "Closed" section at all when nothing closed', () => {
     const dayStart = wibTime(2026, 8, 11, 0, 0)
     const history = [runningRecord({ category: 'Resistance', direction: 'sell', entry: 4350 })]
     const msg = buildDailyReportMessage(history, dayStart)
     assert.match(msg, /Running \(1\):/)
-    assert.match(msg, /SELL Resistance @ 4350/)
-    assert.doesNotMatch(msg, /Closed today/)
-    assert.doesNotMatch(msg, /No signals closed today/)
+    assert.match(msg, /• SELL @ 4350/)
+    assert.doesNotMatch(msg, /Resistance/)
+    assert.doesNotMatch(msg, /Closed/)
+    assert.doesNotMatch(msg, /No signals closed/)
   })
 
-  await t.test('lists closed trades with win\\/loss lines, win rate, and net, with no "Running" block at all when nothing is running', () => {
+  await t.test('lists closed trades with win\\/loss lines (no category, no "HIT"), arrows aligned, win rate, and net — no "Closed" heading either when nothing is running (nothing to distinguish it from)', () => {
     const dayStart = wibTime(2026, 8, 11, 0, 0)
     const history = [
       closedRecord({ status: 'win', entry: 4300, exitPrice: 4320, hitTpIndex: 0, closedAt: dayStart + 1000 }),
       closedRecord({ status: 'loss', entry: 4300, exitPrice: 4290, closedAt: dayStart + 2000 }),
     ]
     const msg = buildDailyReportMessage(history, dayStart)
-    assert.match(msg, /Closed today \(2\):/)
-    assert.match(msg, /✅ BUY Support @ 4300 → TP1 HIT \+200 pips/)
-    assert.match(msg, /❌ BUY Support @ 4300 → SL HIT -100 pips/)
-    assert.match(msg, /Win rate today: 50% \(1W \/ 1L\) · Net: \+100 pips/)
+    assert.doesNotMatch(msg, /Closed/)
+    assert.match(msg, /✅ BUY  @ 4300 → TP1 \+200 pips/)
+    assert.match(msg, /❌ BUY  @ 4300 → SL -100 pips/)
+    assert.doesNotMatch(msg, /Support|HIT/)
+    assert.match(msg, /Win rate: 50% · Net: \+100 pips/)
+    assert.doesNotMatch(msg, /1W|1L/)
+    assert.doesNotMatch(msg, /Win rate today/)
     assert.doesNotMatch(msg, /Running/)
     assert.doesNotMatch(msg, /No running signals/)
   })
 
-  await t.test('shows both blocks, correctly separated, when both running and closed are non-empty', () => {
+  await t.test('aligns "@" in the same column for both BUY and SELL lines', () => {
+    const dayStart = wibTime(2026, 8, 11, 0, 0)
+    const history = [
+      closedRecord({ direction: 'buy', status: 'win', entry: 4300, exitPrice: 4320, hitTpIndex: 0, closedAt: dayStart + 1000 }),
+      closedRecord({ direction: 'sell', status: 'loss', entry: 4300, exitPrice: 4310, closedAt: dayStart + 2000 }),
+    ]
+    const msg = buildDailyReportMessage(history, dayStart)
+    const atColumns = msg
+      .split('\n')
+      .filter((line) => line.includes('@'))
+      .map((line) => line.replace(/^<code>/, '').indexOf('@'))
+    assert.equal(atColumns.length, 2)
+    assert.equal(atColumns[0], atColumns[1], '"@" lands in the same column for BUY and SELL alike')
+  })
+
+  await t.test('shows the "Closed" heading (and both blocks, correctly separated) once a Running block precedes it', () => {
     const dayStart = wibTime(2026, 8, 11, 0, 0)
     const history = [
       runningRecord({ category: 'Resistance', direction: 'sell', entry: 4350 }),
       closedRecord({ status: 'win', entry: 4300, exitPrice: 4320, hitTpIndex: 0, closedAt: dayStart + 1000 }),
     ]
     const msg = buildDailyReportMessage(history, dayStart)
-    assert.match(msg, /Running \(1\):\n• SELL Resistance @ 4350\n\nClosed today \(1\):/)
+    assert.match(msg, /Running \(1\):\n• SELL @ 4350\n\nClosed \(1\):/)
+  })
+
+  await t.test('aligns the "→" in the same column across multiple closed-trade lines of different widths', () => {
+    const dayStart = wibTime(2026, 8, 11, 0, 0)
+    const history = [
+      // Shorter left side: "✅ BUY @ 4300"
+      closedRecord({ status: 'win', entry: 4300, exitPrice: 4320, hitTpIndex: 0, closedAt: dayStart + 1000 }),
+      // Longer left side: "❌ SELL @ 4300.5"
+      closedRecord({ direction: 'sell', status: 'loss', entry: 4300.5, exitPrice: 4310, closedAt: dayStart + 2000 }),
+    ]
+    const msg = buildDailyReportMessage(history, dayStart)
+    // Strip the leading <code> tag before measuring — Telegram renders it as pure
+    // formatting, not visible text, so the tag's own characters don't count toward
+    // what a reader actually sees lined up.
+    const closedLines = msg
+      .split('\n')
+      .filter((line) => line.includes('→'))
+      .map((line) => line.replace(/^<code>/, ''))
+    assert.equal(closedLines.length, 2)
+    const arrowColumns = closedLines.map((line) => line.indexOf('→'))
+    assert.equal(arrowColumns[0], arrowColumns[1], 'both arrows land in the same column despite differently-sized left sides')
   })
 
   await t.test('excludes records outside the day window and from other timeframes — treated the same as no activity', () => {
@@ -1591,7 +1631,7 @@ test('maybeSendDailyReport', async (t) => {
       assert.equal(sent.length, 1)
       assert.match(sent[0].text, /XAUUSD/)
       assert.doesNotMatch(sent[0].text, /BTCUSD/)
-      assert.match(sent[0].text, /TP1 HIT \+200 pips/)
+      assert.match(sent[0].text, /TP1 \+200 pips/)
       assert.equal(state.lastDailyReportDate, '2026-08-11')
     } finally {
       restore()

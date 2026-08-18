@@ -445,21 +445,31 @@ test('buildSignals', async (t) => {
     }
   }
 
-  await t.test('an "up" trend only offers the bullish (buy) side', () => {
+  await t.test('an "up" trend marks only the bearish (sell) side not-aligned — both sides still returned', () => {
+    // Not omitted from the array entirely: an already-open pending record on the
+    // off-trend side must keep matching against this list (see recordSignals in
+    // signalHistoryCore.js) or it gets dropped-and-recreated the moment trend flips.
     const signals = buildSignals([supportZone(), resistanceZone()], 4300, [], 'up')
-    assert.equal(signals.length, 1)
-    assert.equal(signals[0].direction, 'buy')
+    assert.equal(signals.length, 2)
+    assert.equal(signals.find((s) => s.direction === 'buy').trendAligned, true)
+    assert.equal(signals.find((s) => s.direction === 'sell').trendAligned, false)
   })
 
-  await t.test('a "down" trend only offers the bearish (sell) side', () => {
+  await t.test('a "down" trend marks only the bullish (buy) side not-aligned', () => {
     const signals = buildSignals([supportZone(), resistanceZone()], 4300, [], 'down')
-    assert.equal(signals.length, 1)
-    assert.equal(signals[0].direction, 'sell')
+    assert.equal(signals.length, 2)
+    assert.equal(signals.find((s) => s.direction === 'buy').trendAligned, false)
+    assert.equal(signals.find((s) => s.direction === 'sell').trendAligned, true)
   })
 
-  await t.test('"neutral" (or omitting trend entirely) offers both sides, same as before trend filtering existed', () => {
-    assert.equal(buildSignals([supportZone(), resistanceZone()], 4300, [], 'neutral').length, 2)
-    assert.equal(buildSignals([supportZone(), resistanceZone()], 4300, []).length, 2)
+  await t.test('"neutral" (or omitting trend entirely) marks both sides aligned, same as before trend filtering existed', () => {
+    for (const signals of [
+      buildSignals([supportZone(), resistanceZone()], 4300, [], 'neutral'),
+      buildSignals([supportZone(), resistanceZone()], 4300, []),
+    ]) {
+      assert.equal(signals.length, 2)
+      assert.ok(signals.every((s) => s.trendAligned === true))
+    }
   })
 
   await t.test('a zone flagged not-tradeable is excluded even though it would otherwise qualify', () => {

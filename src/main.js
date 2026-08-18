@@ -766,9 +766,15 @@ async function refreshData() {
       // just to skip briefly showing a signal card during a news window wasn't worth
       // the added coupling — the shared history stays the source of truth regardless.
       const trend = computeTrend(zonesByTimeframe.H4?.series?.length ? zonesByTimeframe.H4.series : zonesByTimeframe.D1?.series ?? [])
+      // buildSignals always returns both sides now (see its own comment — trend only
+      // *annotates* trendAligned rather than omitting the off-trend side, so an
+      // already-open record on that side never gets spuriously dropped/recreated by
+      // recordSignals). The dashboard has no such record to protect — it's a pure
+      // display refresh — so it filters trendAligned itself, same visual result as
+      // before.
       h1Result.signals = isPriceStagnant(h1Result.series)
         ? []
-        : buildSignals(h1Result.zones, currentPrice, higherTfZones, trend)
+        : buildSignals(h1Result.zones, currentPrice, higherTfZones, trend).filter((s) => s.trendAligned !== false)
     }
     checkZonesAndSignals(symbol.key, symbol.label, zonesByTimeframe, currentPrice)
 
