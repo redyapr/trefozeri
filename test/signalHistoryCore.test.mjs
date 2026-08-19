@@ -351,37 +351,26 @@ test('evaluateSignals', async (t) => {
     assert.equal(result.filled.length, 0)
   })
 
-  await t.test('an outsized (volatility-spike) candle is skipped for fill purposes even if it would otherwise close favorably', () => {
+  await t.test('a wide-range candle that touches entry and closes favorably still fills — no oversized-volatility-spike skip', () => {
+    // Removed 2026-08-19: a same-candle "skip this touch, its range is too wide"
+    // guard used to live here. A walk-forward simulation across ~7 months of XAUUSD
+    // and ~4 months of BTCUSD H1 data showed it was net negative — it excluded
+    // genuinely valid, profitable trades (a real production case: a signal whose only
+    // touching candle closed favorably but had a range ~1 point over the old
+    // threshold, missing what would have been an immediate TP1) without measurably
+    // improving win rate. Close-confirmation (below) is what actually protects win
+    // rate; this extra check wasn't pulling its weight.
     const history = []
-    // threshold: 2 -> effectiveAtr ~= 13.33 (threshold / BREAKOUT_ATR_MULT), so
-    // FILL_CANDLE_SKIP_ATR_MULT (2x) skips anything with a range beyond ~26.67 — this
-    // one's range is 30.
     recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 100, sl: 95, threshold: 2 })], undefined, 1000)
     const result = evaluateSignals(history, 'XAUUSD', [{ time: 1000, open: 100, high: 120, low: 90, close: 101 }])
-    assert.equal(
-      history[0].status,
-      'pending',
-      'an outsized candle reads as a violent move already in progress, not a controlled retest touch'
-    )
-    assert.equal(result.filled.length, 0)
+    assert.equal(history[0].status, 'running', 'touched and closed favorably — fills regardless of how wide the candle is')
+    assert.equal(result.filled.length, 1)
+    assert.equal(history[0].filledAt, 1000)
   })
 
-  await t.test('a calmer candle right after a skipped outsized one still fills normally', () => {
-    const history = []
-    recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 100, sl: 95, threshold: 2 })], undefined, 1000)
-    const result = evaluateSignals(history, 'XAUUSD', [
-      { time: 1000, open: 100, high: 120, low: 90, close: 101 }, // skipped — outsized
-      { time: 2000, open: 99, high: 101, low: 99, close: 100 }, // calm, touches + confirms
-    ])
-    assert.equal(history[0].status, 'running')
-    assert.equal(history[0].filledAt, 2000)
-  })
-
-  await t.test('a record with no stored threshold (very old records) skips the oversized-candle check but still requires close-confirmation', () => {
+  await t.test('a record with no stored threshold (very old records) still fills normally via close-confirmation', () => {
     const history = []
     recordSignals(history, 'XAUUSD', 'H1', [buySignal({ entry: 100, sl: 95, threshold: undefined })], undefined, 1000)
-    // Would be skipped as oversized if a threshold were available — instead just
-    // needs the ordinary close-confirmation, which this candle satisfies.
     const result = evaluateSignals(history, 'XAUUSD', [{ time: 1000, open: 100, high: 120, low: 90, close: 101 }])
     assert.equal(history[0].status, 'running')
   })

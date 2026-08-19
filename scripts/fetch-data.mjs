@@ -412,14 +412,24 @@ export async function sendAdminAlertDeduped(text, dedupKey = text) {
 // works unchanged if TELEGRAM_TIMEFRAMES is ever widened back out. The timeframe
 // itself isn't printed: with only one timeframe ever reaching Telegram, naming it on
 // every message is just noise.
+// Shared primitive behind every column-alignment helper below (and buildNewSignalMessage's
+// own TP price/rr columns): pads every string in `values` out to the width of the widest
+// one — `'end'` (default) left-aligns the column with trailing spaces, `'start'`
+// right-aligns it with leading spaces.
+function padColumn(values, align = 'end') {
+  const width = Math.max(...values.map((v) => v.length))
+  return values.map((v) => (align === 'start' ? v.padStart(width) : v.padEnd(width)))
+}
+
 // Right-pads every row's label to the widest one in this message, so the ":"s all land
 // in the same column — only readable as a fixed-width block, hence the <pre> wrapper
 // below (Telegram's normal proportional font would make manual padding meaningless).
 function alignRows(rows) {
-  // +1 so there's always at least one space before the ":", even for the widest label
-  // (which would otherwise butt right up against it with zero padding).
-  const labelWidth = Math.max(...rows.map(([label]) => label.length)) + 1
-  return rows.map(([label, value]) => `${label.padEnd(labelWidth)}: ${value}`).join('\n')
+  // Padding `label + ' '` (rather than the bare label) guarantees at least one space
+  // before the ":" even for the widest label, which would otherwise butt right up
+  // against it with zero padding.
+  const padded = padColumn(rows.map(([label]) => `${label} `))
+  return rows.map(([, value], i) => `${padded[i]}: ${value}`).join('\n')
 }
 
 export function buildNewSignalMessage(symbolKey, group) {
@@ -434,15 +444,16 @@ export function buildNewSignalMessage(symbolKey, group) {
   // Net effect: the price always starts right after "TPn   : " like every other row,
   // while "(...R)" always ENDS in the same column regardless of how many price/rr
   // digits it has (Zone/Price/SL have no "(...)" suffix, so they're not part of this).
-  const tpPrices = primary.tp.map((t) => formatPrice(t.price))
-  const tpPriceWidth = Math.max(...tpPrices.map((p) => p.length))
-  const tpParens = primary.tp.map((t) => `(${formatPrice(t.rr)}R)`)
-  const tpParenWidth = Math.max(...tpParens.map((p) => p.length))
+  const tpPrices = padColumn(primary.tp.map((t) => formatPrice(t.price)))
+  const tpParens = padColumn(
+    primary.tp.map((t) => `(${formatPrice(t.rr)}R)`),
+    'start'
+  )
   const rows = [
     ['Zone', `${primary.category} (${primary.strengthLabel})`],
     ['Price', formatPrice(primary.entry)],
     ['SL', formatPrice(primary.sl)],
-    ...tpPrices.map((p, i) => [`TP${i + 1}`, `${p.padEnd(tpPriceWidth)} ${tpParens[i].padStart(tpParenWidth)}`]),
+    ...tpPrices.map((p, i) => [`TP${i + 1}`, `${p} ${tpParens[i]}`]),
   ]
   // <code> (Telegram's "Monospace" formatting, plain fixed-width text), not <pre>
   // (a boxed "code snippet" with its own background and a copy button) — the goal is
@@ -527,26 +538,28 @@ export async function notifyUpdatedSignals(symbolKey, updated, signalByKey) {
   }
 }
 
-export async function notifyFilledSignals(filled) {
-  for (const record of filled) {
-    await sendTelegramMessage(buildFillMessage(), record.telegramMessageId)
+// Shared by every notifier below that just replies to a record's own message with a
+// status update (filled/closed/invalidated) — same guard as notifyUpdatedSignals: a
+// record with no telegramMessageId (never posted — e.g. it never survived long enough,
+// or formed on a symbol/day new signals were withheld for) has nothing to reply to,
+// skipped silently rather than posting an orphaned, contextless standalone message.
+async function notifyByReply(records, buildMessage) {
+  for (const record of records) {
+    if (!record.telegramMessageId) continue
+    await sendTelegramMessage(buildMessage(record), record.telegramMessageId)
   }
+}
+
+export async function notifyFilledSignals(filled) {
+  await notifyByReply(filled, buildFillMessage)
 }
 
 export async function notifyClosedSignals(symbolKey, closed) {
-  for (const record of closed) {
-    await sendTelegramMessage(buildCloseMessage(symbolKey, record), record.telegramMessageId)
-  }
+  await notifyByReply(closed, (record) => buildCloseMessage(symbolKey, record))
 }
 
-// A record with no telegramMessageId (never posted — e.g. it never survived long
-// enough, or formed on a symbol/day new signals were withheld for) has nothing to
-// reply to; skipped silently, same as notifyUpdatedSignals.
 export async function notifyInvalidatedSignals(invalidated) {
-  for (const record of invalidated) {
-    if (!record.telegramMessageId) continue
-    await sendTelegramMessage(buildInvalidatedMessage(), record.telegramMessageId)
-  }
+  await notifyByReply(invalidated, buildInvalidatedMessage)
 }
 
 // ---------------------------------------------------------------------------
@@ -670,19 +683,19 @@ function reportExitLine(symbolKey, record) {
 // column (a ledger-style look, easiest to scan down a list of results) — same
 // per-column padding reasoning as alignRows above, just three columns instead of two.
 function alignReportLines(rows) {
-  const leftWidth = Math.max(...rows.map(([left]) => left.length))
-  const labelWidth = Math.max(...rows.map(([, label]) => label.length))
-  const numberWidth = Math.max(...rows.map(([, , number]) => number.length))
-  return rows.map(([left, label, number]) => `${left.padEnd(leftWidth)} → ${label.padEnd(labelWidth)} ${number.padStart(numberWidth)}`)
+  const lefts = padColumn(rows.map(([left]) => left))
+  const labels = padColumn(rows.map(([, label]) => label))
+  const numbers = padColumn(rows.map(([, , number]) => number), 'start')
+  return rows.map((_, i) => `${lefts[i]} → ${labels[i]} ${numbers[i]}`)
 }
 
 // Same idea as alignReportLines but for a [label, number] pair joined by ":" (the
 // weekly report's per-day lines) instead of "→" — label padded so ":" lines up, number
 // right-aligned within its own column.
 function alignColonLines(rows) {
-  const labelWidth = Math.max(...rows.map(([label]) => label.length))
-  const numberWidth = Math.max(...rows.map(([, number]) => number.length))
-  return rows.map(([label, number]) => `${label.padEnd(labelWidth)}: ${number.padStart(numberWidth)}`)
+  const labels = padColumn(rows.map(([label]) => label))
+  const numbers = padColumn(rows.map(([, number]) => number), 'start')
+  return rows.map((_, i) => `${labels[i]}: ${numbers[i]}`)
 }
 
 // Returns null (rather than an empty-looking section) when this symbol had no closed
@@ -972,19 +985,34 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
       symbolKey === 'XAUUSD' && isGoldMarketClosed(currentDate)
       // BTCUSD trades 24/7 and now posts new signals every day, not just weekends —
       // nothing else to gate on for this symbol.
-    if (!skipNewSignals) await notifyNewSignals(symbolKey, added.filter(onlyH1), signalByKey)
-    // Not gated by skipNewSignals — this isn't opening a new signal, just correcting
+    // Invalidated first, before any new signal: keyFor has no price component, so a
+    // pending record whose pivot drifted outside tolerance is dropped into
+    // `invalidated` AND a fresh record under that same key opens into `added` in the
+    // very same recordSignals call (the old one effectively replaced by the new one).
+    // Sending the INVALIDATED reply first means subscribers see "this one's dead" on
+    // the old message before the new BUY/SELL LIMIT post lands — the reverse order
+    // reads as if the signal that was just posted is the one that died.
+    // Not gated by skipNewSignals — this isn't opening a new signal, just closing out
     // one already posted, same reasoning as fills/closes always posting regardless of
     // the day.
-    // Excludes a record that also filled this same tick (evaluateSignals above already
-    // flipped its status to 'running') — that gets a FILLED reply instead, right below;
-    // editing the original right before replying FILLED to it would just be redundant.
-    await notifyUpdatedSignals(symbolKey, updated.filter(onlyH1).filter((r) => r.status === 'pending'), signalByKey)
-    await notifyFilledSignals(filled.filter(onlyH1))
-    await notifyClosedSignals(symbolKey, closed.filter(onlyH1))
-    // Not gated by skipNewSignals either — same reasoning as fills/closes: this is
-    // closing out an order already posted, not opening a new one.
     await notifyInvalidatedSignals(invalidated.filter(onlyH1))
+    // Must complete before the Promise.all below: a record can be both newly added AND
+    // filled/closed within this same tick (entry reached the instant the signal forms),
+    // and notifyFilledSignals/notifyClosedSignals need `telegramMessageId` already set
+    // by notifyNewSignals to reply to the right message.
+    if (!skipNewSignals) await notifyNewSignals(symbolKey, added.filter(onlyH1), signalByKey)
+    // Independent of each other and of the above (updated/filled/closed records are
+    // never also in `added`, except for the same-tick case already covered by the
+    // await above) — run concurrently rather than one Telegram round-trip at a time.
+    await Promise.all([
+      // Excludes a record that also filled this same tick (evaluateSignals above
+      // already flipped its status to 'running') — that gets a FILLED reply instead;
+      // editing the original right before replying FILLED to it would just be
+      // redundant. Not gated by skipNewSignals — same reasoning as fills/closes.
+      notifyUpdatedSignals(symbolKey, updated.filter(onlyH1).filter((r) => r.status === 'pending'), signalByKey),
+      notifyFilledSignals(filled.filter(onlyH1)),
+      notifyClosedSignals(symbolKey, closed.filter(onlyH1)),
+    ])
   }
 }
 

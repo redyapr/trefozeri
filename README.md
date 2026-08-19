@@ -43,14 +43,17 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
   SL/TP are checked against each candle's actual high/low range, not just its close, so
   a touch isn't missed if price reverses before the next ~15-minute poll. A fill needs
   more than a wick touch: the candle must also close back on the favorable side of
-  entry, and can't be an outsized volatility spike relative to the level's own ATR. See
-  `evaluateSignals` in `src/lib/signalHistoryCore.js`. New signals are also withheld
-  around high-impact USD news releases, which tend to cause exactly that kind of spike.
+  entry, confirming the retest actually held. See `evaluateSignals` in
+  `src/lib/signalHistoryCore.js`. New signals are also withheld around high-impact USD
+  news releases, since those tend to spike straight through a level with no real retest.
 - **Telegram notifications** — public channel, H1 only. Posts new signals, fills, and
   SL/TP results automatically. A still-pending signal's own message is edited in place
   whenever its entry/SL/TP recalculate, so it never shows stale numbers — once filled,
-  it's a live position and stops changing. XAUUSD skips new signals while gold's market
-  is closed; BTCUSD posts new signals every day (trades 24/7, no market-hours gate).
+  it's a live position and stops changing. A pending signal that's dropped before ever
+  filling (its level moved on or was invalidated) gets a "❌ INVALIDATED" reply instead
+  of being silently deleted from the track record with no trace. XAUUSD skips new
+  signals while gold's market is closed; BTCUSD posts new signals every day (trades
+  24/7, no market-hours gate).
   Optional — no-ops without `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`. Real sends are also
   opt-in: only CI (`CI=true`, set automatically) or an explicit local
   `ALLOW_TELEGRAM_SEND=true` actually posts — see [Local development](#local-development).
@@ -66,7 +69,8 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
   trade (red = loss), labeled by entry price. Weekly: per-day P/L bars, TP-success-rate
   pie charts (as many rungs as any trade that week reached — a TP2 hit counts toward
   TP1 too), and a trade-log table of every closed trade's date, side, symbol, result,
-  and P/L. Whole numbers throughout, no "pips" unit. See `scripts/weeklyChart.mjs`.
+  and P/L. Whole numbers throughout; a footnote notes P/L is in pips. See
+  `scripts/weeklyChart.mjs`.
 - **Market status** — a banner during gold's closed hours (Fri 22:00 UTC → Sun 22:00
   UTC); also gates new XAUUSD signals during that window.
 - **Install prompt** — a custom "add to home screen" button in the header, in place of

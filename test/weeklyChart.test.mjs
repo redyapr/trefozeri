@@ -218,6 +218,17 @@ test('renderWeeklyReportImage', async (t) => {
     const tallBuf = renderWeeklyReportImage(computeWeeklyChartData(many, makeDays()), '10 – 16 Aug 2026')
     assert.ok(pngHeight(tallBuf) > pngHeight(shortBuf), '25 trade-log rows must make the image taller than 1 row does')
   })
+
+  await t.test('height keeps scaling linearly on an unusually busy week — no longer capped at a fixed scratch-canvas budget', () => {
+    // The scratch canvas used to be a flat 2200px regardless of content — anything
+    // drawn past that (including the "P/L is in pips." footnote) was silently clipped,
+    // never an error. Comparing two busy weeks confirms height still grows roughly
+    // 30px/row well past where the old fixed budget would have plateaued instead.
+    const trades = (n) => Array.from({ length: n }, (_, i) => closedRecord({ key: `k${i}`, closedAt: WEEK_START_MS + (i % 7) * DAY_MS + 3600000 }))
+    const h40 = pngHeight(renderWeeklyReportImage(computeWeeklyChartData(trades(40), makeDays()), '10 – 16 Aug 2026'))
+    const h80 = pngHeight(renderWeeklyReportImage(computeWeeklyChartData(trades(80), makeDays()), '10 – 16 Aug 2026'))
+    assert.ok(h80 - h40 > 1000, `40 extra 30px trade-log rows should add >1000px; only grew by ${h80 - h40}px`)
+  })
 })
 
 test('countReachedTpStages', async (t) => {
@@ -316,5 +327,15 @@ test('renderDailyReportImage', async (t) => {
     const oneBuf = renderDailyReportImage(oneSymbol, 'Monday, 10 Aug 2026')
     const bothBuf = renderDailyReportImage(bothSymbols, 'Monday, 10 Aug 2026')
     assert.ok(pngHeight(bothBuf) > pngHeight(oneBuf), 'a second symbol panel must make the image taller')
+  })
+
+  await t.test('height keeps scaling on an unusually busy day — no longer capped at a fixed scratch-canvas budget', () => {
+    function pngHeight(buf) {
+      return buf.readUInt32BE(8 + 4 + 4 + 4)
+    }
+    const trades = (n) => Array.from({ length: n }, (_, i) => closedRecord({ key: `k${i}`, symbolKey: 'XAUUSD' }))
+    const few = renderDailyReportImage(computeDailyChartData(trades(5), DAY_START_MS, DAY_END_MS), 'Monday, 10 Aug 2026')
+    const many = renderDailyReportImage(computeDailyChartData(trades(30), DAY_START_MS, DAY_END_MS), 'Monday, 10 Aug 2026')
+    assert.ok(pngHeight(many) - pngHeight(few) > 500, `25 extra 24px bar rows should add >500px; only grew by ${pngHeight(many) - pngHeight(few)}px`)
   })
 })

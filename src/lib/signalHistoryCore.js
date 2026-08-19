@@ -1,5 +1,3 @@
-import { BREAKOUT_ATR_MULT } from './srDetector.js'
-
 // Pure record-keeping logic for the signal track record — no localStorage, no fetch,
 // just plain array-in/array-out functions. This is the one copy shared between the
 // browser (read-only display, via signalHistory.js) and the Node cron script that
@@ -36,11 +34,17 @@ const isOpen = (r) => r.status === 'pending' || r.status === 'running'
 // touch used to be enough to fill a limit order. A disciplined S/R trader instead waits
 // for the retest candle to actually *close* holding the level before entering — not
 // just wick through it on the way to somewhere else — so a fill now requires both.
-// Also skips a candle whose own range is already an outsized volatility spike (see
-// FILL_CANDLE_SKIP_ATR_MULT below): that's a violent move already in progress, not a
-// controlled retest touch, and is exactly the shape of candle found blowing through
-// both entry and SL together in the same motion during the review.
-const FILL_CANDLE_SKIP_ATR_MULT = 2
+//
+// That review also added a second guard, since removed (2026-08-19): skip a touching
+// candle whose own range was already an outsized volatility spike relative to the
+// level's ATR, on the theory that a violent move already in progress isn't a
+// controlled retest. A walk-forward simulation across ~7 months of XAUUSD and ~4
+// months of BTCUSD H1 data (comparing this guard on vs. loosened vs. removed, always
+// alongside close-confirmation) showed it was net negative: removing it recovered
+// 10-15 more genuinely valid trades with an unchanged or *better* win rate. The
+// close-confirmation requirement above is what's actually doing the work — a separate
+// run with close-confirmation ALSO removed (bare-touch fills, closer to a real broker)
+// dropped win rate sharply, confirming that part is load-bearing and this one wasn't.
 
 // Mutates `records`: drops stale unfilled orders whose level moved on without them,
 // syncs a still-open pending order's entry/SL/TP to the freshest recalculation, then
@@ -168,7 +172,7 @@ export function recordSignals(records, symbolKey, tf, signals, currentPrice, cur
 
 // Advances every open record for this symbol: fills a 'pending' limit order once price
 // reaches its entry *and* the same candle closes back confirming the retest held (see
-// FILL_CANDLE_SKIP_ATR_MULT above), then (whether just filled or already running)
+// this function's own comment above), then (whether just filled or already running)
 // closes it out as a 'win' or 'loss' once price plausibly hits its first take-profit or
 // its stop-loss. Mutates `records` in place; returns `{ filled, closed }` — the records
 // that changed state this call, e.g. so a caller can notify about them. A record that
@@ -207,24 +211,17 @@ export function evaluateSignals(records, symbolKey, candles) {
     let justFilled = false
 
     if (r.status === 'pending') {
-      // effectiveAtr backs out of the level's own stored threshold (= atr *
-      // BREAKOUT_ATR_MULT, see srDetector.js) rather than needing the raw ATR passed
-      // through separately. Missing on very old records (from before `threshold` was
-      // recorded) — the oversized-candle check below simply doesn't apply to those.
-      const effectiveAtr = r.threshold ? r.threshold / BREAKOUT_ATR_MULT : null
       const fillIndex = relevant.findIndex((c) => {
         // A fade-the-level limit order: buy fills once price *trades* at or through
         // entry (candle low reaches it), sell fills once price trades up to it (candle
         // high reaches it).
         const touched = isBuy ? c.low <= r.entry : c.high >= r.entry
         if (!touched) return false
-        // Skip a candle that's already an outsized volatility spike relative to this
-        // level's own ATR — a violent move already in progress, not a controlled retest
-        // touch (see FILL_CANDLE_SKIP_ATR_MULT above). Wait for a calmer candle instead.
-        if (effectiveAtr && c.high - c.low > effectiveAtr * FILL_CANDLE_SKIP_ATR_MULT) return false
         // A bare touch isn't enough — require this same candle to also *close* back on
         // the favorable side of entry, confirming the retest actually held (support
         // bought back up, resistance sold back down) rather than just wicking through.
+        // (A same-candle oversized-volatility-spike skip used to live here too; removed
+        // 2026-08-19 — see this function's own comment above for why.)
         return isBuy ? c.close >= r.entry : c.close <= r.entry
       })
       if (fillIndex === -1) continue

@@ -89,6 +89,19 @@ function font(px, bold = false) {
   return `${bold ? 'bold ' : ''}${px}px "${FONT_FAMILY}"`
 }
 
+// Shared by both report images (see the two render functions below) — right-aligned
+// disclaimer that P/L throughout the image is a pip count, not a $ amount, drawn last
+// so it always sits just under whatever content came before it. Returns the y position
+// just past it, same "returns next y" convention as drawHBarPanel/drawTradeLogTable.
+function drawPLFootnote(ctx, { W, MARGIN, y }) {
+  ctx.fillStyle = COLORS.textDim
+  ctx.font = font(11)
+  ctx.textAlign = 'right'
+  ctx.fillText('P/L is in pips.', W - MARGIN, y)
+  ctx.textAlign = 'left'
+  return y + 20
+}
+
 // This image is a report, same as the daily/weekly text (see reportAmount in
 // fetch-data.mjs) — a chart is glanced at, not read closely, so it shows a
 // consolidated whole number rather than per-pip/per-cent precision, and drops the
@@ -370,13 +383,22 @@ export function renderWeeklyReportImage(data, rangeLabel) {
   // Rendered onto a generously-tall scratch canvas first, then cropped to the actual
   // content height — the same "measure as we go, crop at the end" approach as the
   // design-preview prototype, since the exact height depends on how many days actually
-  // had a trade, how many pie rows, and how many trade-log rows there are.
-  const scratch = createCanvas(W * SCALE, 2200 * SCALE)
+  // had a trade, how many pie rows, and how many trade-log rows there are. The scratch
+  // height itself is computed from those same counts (with a safety margin) rather than
+  // a flat guess — a fixed height silently clips (and drops, with no error) anything
+  // drawn past it on an unusually busy week, including the footnote at the very end.
+  const daysPerPanel = 7
+  const barsHeight = daysPerPanel * 24 + 40
+  const pieRowHeight = data.wins > 0 ? 260 : 0
+  const tradeLogHeight = 100 + Math.max(data.trades.length, 1) * 30
+  const scratchHeight = 260 + barsHeight + pieRowHeight + tradeLogHeight + 100
+
+  const scratch = createCanvas(W * SCALE, scratchHeight * SCALE)
   const ctx = scratch.getContext('2d')
   ctx.scale(SCALE, SCALE)
   ctx.textBaseline = 'top'
   ctx.fillStyle = COLORS.bg
-  ctx.fillRect(0, 0, W, 2200)
+  ctx.fillRect(0, 0, W, scratchHeight)
 
   let y = 24
   ctx.fillStyle = COLORS.textCol
@@ -460,13 +482,7 @@ export function renderWeeklyReportImage(data, rangeLabel) {
     y += 24
   }
 
-  y += 10
-  ctx.fillStyle = COLORS.textDim
-  ctx.font = font(11)
-  ctx.textAlign = 'right'
-  ctx.fillText('P/L is in pips.', W - MARGIN, y)
-  ctx.textAlign = 'left'
-  y += 20
+  y = drawPLFootnote(ctx, { W, MARGIN, y: y + 10 })
 
   const finalCanvas = createCanvas(W * SCALE, Math.round(y) * SCALE)
   const finalCtx = finalCanvas.getContext('2d')
@@ -516,12 +532,19 @@ export function renderDailyReportImage(data, dayLabel) {
   const MARGIN = 28
   const CW = W - MARGIN * 2
 
-  const scratch = createCanvas(W * SCALE, 900 * SCALE)
+  // See renderWeeklyReportImage's own comment on why this is computed from the actual
+  // data rather than a flat guess — a fixed height silently clips anything drawn past
+  // it (including the footnote) on an unusually busy day, with no error.
+  const symbolCount = ['XAUUSD', 'BTCUSD'].filter((key) => data[key]).length
+  const barsHeight = Object.values(data).reduce((sum, s) => sum + Math.max(s.entries.length, 1) * 24 + 90, 0)
+  const scratchHeight = 150 + Math.max(barsHeight, symbolCount ? 0 : 30) + 60
+
+  const scratch = createCanvas(W * SCALE, scratchHeight * SCALE)
   const ctx = scratch.getContext('2d')
   ctx.scale(SCALE, SCALE)
   ctx.textBaseline = 'top'
   ctx.fillStyle = COLORS.bg
-  ctx.fillRect(0, 0, W, 900)
+  ctx.fillRect(0, 0, W, scratchHeight)
 
   let y = 24
   ctx.fillStyle = COLORS.textCol
@@ -571,13 +594,7 @@ export function renderDailyReportImage(data, dayLabel) {
     y += 30
   }
 
-  y += 4
-  ctx.fillStyle = COLORS.textDim
-  ctx.font = font(11)
-  ctx.textAlign = 'right'
-  ctx.fillText('P/L is in pips.', W - MARGIN, y)
-  ctx.textAlign = 'left'
-  y += 20
+  y = drawPLFootnote(ctx, { W, MARGIN, y: y + 4 })
 
   const finalCanvas = createCanvas(W * SCALE, Math.round(y) * SCALE)
   const finalCtx = finalCanvas.getContext('2d')

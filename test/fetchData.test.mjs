@@ -1127,6 +1127,60 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
     }
   })
 
+  await t.test('notifyFilledSignals and notifyClosedSignals also skip a record with no telegramMessageId', async () => {
+    // A record with no telegramMessageId (never posted — e.g. skipNewSignals was true,
+    // or the original send failed) has nothing to reply to. Without this guard,
+    // sendTelegramMessage(msg, undefined) still posts — a standalone, contextless
+    // "🟡 ENTRY FILLED" or "✅ TP1 HIT" with no indication which signal it's about.
+    const { sent, restore } = mockTelegram()
+    try {
+      await notifyFilledSignals([{ telegramMessageId: undefined }])
+      await notifyClosedSignals('XAUUSD', [{ telegramMessageId: undefined, direction: 'buy', status: 'loss', entry: 100, exitPrice: 95 }])
+      assert.equal(sent.length, 0)
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('a same-tick pivot replacement sends the INVALIDATED reply BEFORE the new signal post, not after', async () => {
+    // keyFor has no price component, so when a still-pending record's pivot drifts
+    // outside tolerance, recordSignals drops it into `invalidated` AND opens a fresh
+    // record under that identical key into `added` within the same call — the old one
+    // effectively replaced by the new one. Sending the new-signal message first would
+    // read as if the signal just posted is the one that died; INVALIDATED must land
+    // first so subscribers see the old message resolved before the new one appears.
+    const { sent, restore } = mockTelegram()
+    try {
+      const history = [
+        {
+          key: 'XAUUSD-H1-Resistance-sell',
+          symbolKey: 'XAUUSD',
+          tf: 'H1',
+          category: 'Resistance',
+          direction: 'sell',
+          entry: 3000, // far from the real pivot this series produces (~4299) — guaranteed no match
+          sl: 2900, // keeps the "already filled" guard from protecting it either
+          tp: [],
+          threshold: 2,
+          openedAt: 0,
+          status: 'pending',
+          telegramMessageId: 555,
+        },
+      ]
+      const base = seriesWithHighPivot(4300) // forms a fresh Resistance/sell signal under the same key
+      await updateSignalHistoryForSymbol(history, 'XAUUSD', { H1: base })
+
+      assert.ok(sent.length >= 2, 'expected both an INVALIDATED reply and a new-signal post')
+      const invalidatedIdx = sent.findIndex((m) => m.reply_to_message_id === 555)
+      const newSignalIdx = sent.findIndex((m) => m.text.includes('SELL LIMIT'))
+      assert.ok(invalidatedIdx !== -1, 'the old record should have gotten an INVALIDATED reply')
+      assert.ok(newSignalIdx !== -1, 'the replacing pivot should have posted a new signal')
+      assert.ok(invalidatedIdx < newSignalIdx, 'INVALIDATED reply must be sent before the new signal post')
+    } finally {
+      restore()
+    }
+  })
+
   await t.test('skips new-signal notifications for XAUUSD while the gold market is closed', async () => {
     const { sent, restore } = mockTelegram()
     try {
@@ -1177,8 +1231,8 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
     // (see its own comment) — the record survives either way.
     //
     // What evaluateSignals then does with it changed in the 2026-08-17 win-rate review,
-    // though: a bare touch is no longer enough to fill (see FILL_CANDLE_SKIP_ATR_MULT /
-    // close-confirmation in signalHistoryCore.js) — a candle that closes decisively
+    // though: a bare touch is no longer enough to fill (see close-confirmation in
+    // signalHistoryCore.js) — a candle that closes decisively
     // *through* the level is a breakout continuing, not a held retest, so it correctly
     // stays pending rather than confirm-filling off it. Only a later candle that
     // touches the entry and closes back on the favorable side actually fills it.
