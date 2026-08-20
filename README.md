@@ -40,12 +40,14 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
 - **Track record** — shared across every visitor. Each signal goes `pending` →
   `running` (filled) → `win`/`loss`, stored in `data/signal-history.json` and
   committed by CI. View it via the chart-icon button. Capped at 300 records per symbol.
-  SL/TP are checked against each candle's actual high/low range, not just its close, so
-  a touch isn't missed if price reverses before the next ~15-minute poll. A fill needs
-  more than a wick touch: the candle must also close back on the favorable side of
-  entry, confirming the retest actually held. See `evaluateSignals` in
-  `src/lib/signalHistoryCore.js`. New signals are also withheld around high-impact USD
-  news releases, since those tend to spike straight through a level with no real retest.
+  SL/TP are checked against M1 (1-minute) candles, not H1 or a single snapshotted
+  price — an hourly candle can't tell whether TP or SL came first when both fall inside
+  the same hour, so a fill/SL/TP touch is never missed or mis-ordered just because price
+  reversed before the next ~15-minute poll. A fill needs more than a wick touch: the
+  candle must also close back on the favorable side of entry, confirming the retest
+  actually held. See `evaluateSignals` in `src/lib/signalHistoryCore.js`. New signals
+  are also withheld around high-impact USD news releases, since those tend to spike
+  straight through a level with no real retest.
 - **Telegram notifications** — public channel, H1 only. Posts new signals, fills, and
   SL/TP results automatically. A still-pending signal's own message is edited in place
   whenever its entry/SL/TP recalculate, so it never shows stale numbers — once filled,

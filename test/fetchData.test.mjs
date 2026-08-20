@@ -1377,6 +1377,62 @@ test('updateSignalHistoryForSymbol: never records/notifies a signal built on sta
   })
 })
 
+test('updateSignalHistoryForSymbol: M1 (not H1) monitors already-open records for fill/SL/TP', async (t) => {
+  // A running BUY whose SL and TP both fall inside the SAME H1 candle's range is a real
+  // ambiguity an hourly candle can't resolve on its own — hitSl is checked before
+  // hitTpIndex (see evaluateSignals), so H1-only data conservatively assumes SL came
+  // first. The M1 series decomposing that same hour shows what actually happened
+  // chronologically: TP reached first, SL only touched several minutes later.
+  function runningRecord() {
+    return {
+      key: 'k',
+      symbolKey: 'XAUUSD',
+      tf: 'H1',
+      direction: 'buy',
+      entry: 100,
+      sl: 95,
+      tp: [{ price: 110, rr: 3 }],
+      status: 'running',
+      filledAt: 0,
+      openedAt: 0,
+    }
+  }
+
+  await t.test('falls back to H1 when no M1 series is provided — matches the old behavior exactly', async () => {
+    const history = [runningRecord()]
+    const h1 = [candle(0, 100, 115, 90, 105)] // one candle spanning both SL (95) and TP (110)
+    await updateSignalHistoryForSymbol(history, 'XAUUSD', { H1: h1 })
+    assert.equal(history[0].status, 'loss', 'H1-only conservatively assumes SL came first, same tie-break as before')
+  })
+
+  await t.test('uses M1 to correctly resolve the same hour when it shows TP was actually reached first', async () => {
+    const history = [runningRecord()]
+    const h1 = [candle(0, 100, 115, 90, 105)] // still needed for currentPrice/currentTime
+    const m1 = [
+      candle(0, 100, 102, 99, 101),
+      candle(1, 101, 111, 100, 108), // TP (110) reached here, well before the SL dip below
+      candle(2, 108, 109, 89, 90), // SL (95) only breached afterward
+    ]
+    await updateSignalHistoryForSymbol(history, 'XAUUSD', { H1: h1, M1: m1 })
+    assert.equal(history[0].status, 'win', 'M1 shows TP was genuinely reached before SL — the real chronological outcome')
+    assert.equal(history[0].hitTpIndex, 0)
+  })
+
+  await t.test('M1 never produces its own zones or signals — a pivot shape in M1 alone adds nothing', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const history = []
+      // flatSeries has no pivot at all on its own; seriesWithLowPivot(4300) very much
+      // does — if M1 were mistakenly fed into zone detection, this would open a signal.
+      await updateSignalHistoryForSymbol(history, 'XAUUSD', { H1: flatSeries(4300), M1: seriesWithLowPivot(4300) })
+      assert.equal(sent.length, 0)
+      assert.equal(history.length, 0)
+    } finally {
+      restore()
+    }
+  })
+})
+
 test('updateSignalHistoryForSymbol: withholds new signals in a window straddling high-impact USD news', async (t) => {
   await t.test('a high-impact USD event at the data\'s own current time suppresses new signal formation', async () => {
     const { sent, restore } = mockTelegram()

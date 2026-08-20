@@ -89,6 +89,17 @@ const TIMEFRAMES = [
   { key: 'D1', twelveDataInterval: '1day', binanceInterval: '1d', outputsize: 300 },
 ]
 
+// Fetched separately from TIMEFRAMES and used for exactly one thing: checking an
+// already-open (pending/running) record's fill/SL/TP against finer-grained intrabar
+// movement than an H1 candle can show (see evaluateSignals' own call site below, and
+// updateSignalHistoryForSymbol's explicit skip of this key in its zone-detection loop).
+// Deliberately NOT part of S/R detection, trend, or higher-timeframe TP borrowing — a
+// "support/resistance" read off 1-minute noise wouldn't mean anything. outputsize 1000
+// (~16.7 hours) comfortably covers even a long gap between cron runs; evaluateSignals
+// falls back to whatever's actually in the window regardless of how old a still-open
+// record is, same as it always has.
+const MONITOR_TF = { key: 'M1', twelveDataInterval: '1min', binanceInterval: '1m', outputsize: 1000 }
+
 export function toTwelveDataDatetime(ms) {
   const d = new Date(ms)
   const pad = (n) => String(n).padStart(2, '0')
@@ -914,6 +925,10 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
   const zonesByTimeframe = {}
 
   for (const [tfKey, series] of Object.entries(seriesByTf)) {
+    // MONITOR_TF (M1) lives in this same seriesByTf object for convenience (fetch/
+    // fallback plumbing in main() is identical either way), but never participates in
+    // zone detection — see MONITOR_TF's own comment for why.
+    if (tfKey === 'M1') continue
     if (!series?.length) continue
     const last = series.at(-1)
     zonesByTimeframe[tfKey] = { zones: detectLevels(series, currentPrice ?? last.close) }
@@ -955,15 +970,17 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
     invalidated.push(...forTf.invalidated)
   }
 
-  // The H1 series specifically (not just its latest close) — evaluateSignals now scans
-  // every candle's actual high/low since a record's own openedAt/filledAt, not just a
-  // single snapshotted price, so a genuine intra-candle TP touch is no longer missed
-  // just because price later reversed past SL before the next ~15-minute poll (see
+  // MONITOR_TF (M1), not just its latest close — evaluateSignals scans every candle's
+  // actual high/low since a record's own openedAt/filledAt, not just a single
+  // snapshotted price, so a genuine intra-candle TP touch is no longer missed just
+  // because price later reversed past SL before the next ~15-minute poll (see
   // evaluateSignals' own comment in signalHistoryCore.js for the production bug this
-  // fixes). H1 is used regardless of which timeframe a record's own signal came from —
-  // it's the finest-grained series actually fetched, equally valid as the shared price
-  // reference for H4/D1 records too.
-  const { filled, closed } = evaluateSignals(history, symbolKey, seriesByTf.H1 ?? [])
+  // fixes). M1 sharpens that further — an SL/TP touch-and-reverse that happens and
+  // undoes itself within a single H1 candle is invisible to H1 candles but still shows
+  // up in M1's own high/low. Used regardless of which timeframe a record's own signal
+  // came from — same reasoning H1 used to have. Falls back to H1 if M1 isn't available
+  // yet (e.g. its first-ever fetch failed with no prior snapshot to fall back to).
+  const { filled, closed } = evaluateSignals(history, symbolKey, seriesByTf.M1 ?? seriesByTf.H1 ?? [])
 
   if (TELEGRAM_SYMBOLS.has(symbolKey)) {
     // Filtered to H1 before grouping, not after — an H4/D1 confluence partner should
@@ -1039,6 +1056,24 @@ export async function main() {
       await writeJson(`quote/BTCUSD-${tf.key}.json`, btc)
       seriesByTfBySymbol.BTCUSD[tf.key] = toCandles(btc.values)
     }
+  }
+
+  // See MONITOR_TF's own comment — fetched outside the TIMEFRAMES loop since it never
+  // participates in zone detection, only in evaluateSignals' fill/SL/TP check below.
+  const goldM1 = await fetchWithFallback(
+    'XAUUSD M1',
+    () => fetchTwelveData('XAU/USD', MONITOR_TF, apiKey),
+    'quote/XAUUSD-M1.json'
+  )
+  if (goldM1) {
+    await writeJson('quote/XAUUSD-M1.json', goldM1)
+    seriesByTfBySymbol.XAUUSD.M1 = toCandles(goldM1.values)
+  }
+
+  const btcM1 = await fetchWithFallback('BTCUSD M1', () => fetchBinance(MONITOR_TF), 'quote/BTCUSD-M1.json')
+  if (btcM1) {
+    await writeJson('quote/BTCUSD-M1.json', btcM1)
+    seriesByTfBySymbol.BTCUSD.M1 = toCandles(btcM1.values)
   }
 
   // Fetched before the signal-history loop below (not after, as it used to be) so
