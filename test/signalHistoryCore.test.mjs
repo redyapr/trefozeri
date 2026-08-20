@@ -113,6 +113,29 @@ test('recordSignals', async (t) => {
     assert.equal(updated[0], history[0])
   })
 
+  await t.test('a "win" record still short of its own last TP still keeps its key occupied — no duplicate signal on the same still-valid level', () => {
+    // Real regression: once evaluateSignals started crediting a win at the very first
+    // TP touched (rather than only once the whole ladder was exhausted), a naive
+    // isOpen() still scoped to pending/running would see the key as "free" the instant
+    // that happened — recordSignals would then spawn a brand-new duplicate signal on
+    // top of a level that never actually changed.
+    const history = [
+      { ...buySignal(), key: 'XAUUSD-H1-Support-buy', symbolKey: 'XAUUSD', tf: 'H1', status: 'win', hitTpIndex: 0, tp: [{ price: 110 }, { price: 120 }] },
+    ]
+    const { added } = recordSignals(history, 'XAUUSD', 'H1', [buySignal({ tp: [{ price: 110 }, { price: 120 }] })])
+    assert.equal(added.length, 0, 'still short of the final TP — the key stays occupied, no duplicate opened')
+    assert.equal(history.length, 1)
+  })
+
+  await t.test('a "win" record already at its own final TP frees its key up — a fresh retest of the same level is a genuinely new trade', () => {
+    const history = [
+      { ...buySignal(), key: 'XAUUSD-H1-Support-buy', symbolKey: 'XAUUSD', tf: 'H1', status: 'win', hitTpIndex: 1, tp: [{ price: 110 }, { price: 120 }] },
+    ]
+    const { added } = recordSignals(history, 'XAUUSD', 'H1', [buySignal({ tp: [{ price: 110 }, { price: 120 }] })])
+    assert.equal(added.length, 1, 'already done — the level is free to open a brand-new record')
+    assert.equal(history.length, 2)
+  })
+
   await t.test('does not report an update when nothing about the signal actually changed', () => {
     const history = []
     recordSignals(history, 'XAUUSD', 'H1', [buySignal()])
@@ -452,6 +475,179 @@ test('evaluateSignals', async (t) => {
     assert.equal(history[0].status, 'running')
     assert.equal(history[0].filledAt, 2000)
     assert.equal(result.filled.length, 1)
+  })
+})
+
+// 2026-08-21: a filled position now runs toward the farthest TP it reaches instead of
+// closing at the first one touched — see evaluateSignals' own doc comment for why.
+test('evaluateSignals: a win locks in for good the instant any TP is touched, and keeps upgrading toward farther ones', async (t) => {
+  function ladderSignal(overrides) {
+    return buySignal({
+      entry: 100,
+      sl: 95,
+      tp: [
+        { price: 110, rr: 2 },
+        { price: 120, rr: 4 },
+        { price: 130, rr: 6 },
+      ],
+      ...overrides,
+    })
+  }
+
+  await t.test('reaching TP1 (not the last rung) immediately becomes a win, and keeps being watched for a farther TP', () => {
+    const history = []
+    recordSignals(history, 'XAUUSD', 'H1', [ladderSignal()], undefined, 1000)
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100)]) // fill
+    const result = evaluateSignals(history, 'XAUUSD', [candle(1000, 100), { time: 2000, open: 101, high: 111, low: 101, close: 105 }])
+    assert.equal(history[0].status, 'win', 'ANY TP touch is a win immediately, not just the last rung')
+    assert.equal(history[0].hitTpIndex, 0)
+    assert.equal(history[0].exitPrice, 110)
+    assert.equal(history[0].closedAt, 2000)
+    assert.equal(history[0].tp[0].reachedAt, 2000, 'each TP entry gets its own first-touch timestamp')
+    assert.equal(result.closed.length, 1)
+    assert.equal(result.closed[0], history[0])
+  })
+
+  await t.test('a later call reaching TP2 upgrades the same win — closedAt/exitPrice/hitTpIndex all move forward', () => {
+    const history = []
+    recordSignals(history, 'XAUUSD', 'H1', [ladderSignal()], undefined, 1000)
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100)]) // fill
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100), candle(2000, 111)]) // TP1 -> win
+    const result = evaluateSignals(history, 'XAUUSD', [candle(1000, 100), candle(2000, 111), candle(3000, 121)]) // TP2, a later tick
+    assert.equal(history[0].status, 'win')
+    assert.equal(history[0].hitTpIndex, 1)
+    assert.equal(history[0].exitPrice, 120)
+    assert.equal(history[0].closedAt, 3000)
+    assert.equal(history[0].tp[0].reachedAt, 2000, 'TP1\'s own reach time is untouched')
+    assert.equal(history[0].tp[1].reachedAt, 3000)
+    assert.equal(result.closed.length, 1, 'reported again — the caller sends a fresh reply for the upgrade')
+  })
+
+  await t.test('a tick where nothing new is reached does not re-report the record', () => {
+    const history = []
+    recordSignals(history, 'XAUUSD', 'H1', [ladderSignal()], undefined, 1000)
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100)])
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100), candle(2000, 111)]) // TP1 -> win
+    const result = evaluateSignals(history, 'XAUUSD', [candle(1000, 100), candle(2000, 111), candle(3000, 112)]) // still short of TP2
+    assert.equal(result.closed.length, 0)
+  })
+
+  await t.test('giving back a reached TP does not undo the win or downgrade it', () => {
+    const history = []
+    recordSignals(history, 'XAUUSD', 'H1', [ladderSignal()], undefined, 1000)
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100)])
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100), candle(2000, 111)]) // TP1 -> win
+    const result = evaluateSignals(history, 'XAUUSD', [
+      candle(1000, 100),
+      candle(2000, 111),
+      { time: 3000, open: 111, high: 112, low: 108, close: 109 }, // gives back TP1 (110)
+    ])
+    assert.equal(history[0].status, 'win', 'still a win, unchanged')
+    assert.equal(history[0].hitTpIndex, 0)
+    assert.equal(result.closed.length, 0, 'giving back ground isn\'t itself a reportable event')
+  })
+
+  await t.test('reaching all the way to the last TP stops the record from ever being watched again', () => {
+    const history = []
+    recordSignals(history, 'XAUUSD', 'H1', [ladderSignal()], undefined, 1000)
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100)])
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100), candle(2000, 111)]) // TP1
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100), candle(2000, 111), candle(3000, 121)]) // TP2
+    const result = evaluateSignals(history, 'XAUUSD', [
+      candle(1000, 100),
+      candle(2000, 111),
+      candle(3000, 121),
+      candle(4000, 131), // TP3, the last rung
+    ])
+    assert.equal(history[0].status, 'win')
+    assert.equal(history[0].hitTpIndex, 2)
+    assert.equal(history[0].exitPrice, 130)
+    assert.equal(result.closed.length, 1)
+
+    // A further call, even one showing price crashing to nothing, changes nothing —
+    // the last rung was already reached, so the record is never watched again.
+    const after = evaluateSignals(history, 'XAUUSD', [
+      candle(1000, 100),
+      candle(2000, 111),
+      candle(3000, 121),
+      candle(4000, 131),
+      candle(5000, 1),
+    ])
+    assert.equal(history[0].hitTpIndex, 2)
+    assert.equal(after.closed.length, 0)
+  })
+
+  await t.test('never reaching any TP still closes as a loss at the original SL, same as before', () => {
+    const history = []
+    recordSignals(history, 'XAUUSD', 'H1', [ladderSignal()], undefined, 1000)
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100)])
+    const result = evaluateSignals(history, 'XAUUSD', [candle(1000, 100), candle(2000, 94)])
+    assert.equal(history[0].status, 'loss')
+    assert.equal(history[0].exitPrice, 95)
+    assert.equal(result.closed.length, 1)
+  })
+
+  await t.test('a candle reaching TP1 for the first time while ALSO breaching the original SL is conservatively scored a loss', () => {
+    const history = []
+    recordSignals(history, 'XAUUSD', 'H1', [ladderSignal()], undefined, 1000)
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100)])
+    const result = evaluateSignals(history, 'XAUUSD', [
+      candle(1000, 100),
+      { time: 2000, open: 101, high: 111, low: 94, close: 94 }, // one candle spans both TP1 (110) and SL (95)
+    ])
+    assert.equal(history[0].status, 'loss', 'ambiguous same-candle order — same conservative tie-break as always')
+    assert.equal(result.closed.length, 1)
+  })
+
+  await t.test('once TP1 is reached, a later candle diving all the way past the original SL no longer forces a loss — but does end the chase', () => {
+    // Explicit product decision: once ANY TP is touched, the original SL can never
+    // turn the result into a loss — but it does stop the position from being watched
+    // for a farther TP forever; there's no point re-scanning indefinitely once price
+    // has round-tripped all the way back to it.
+    const history = []
+    recordSignals(history, 'XAUUSD', 'H1', [ladderSignal()], undefined, 1000)
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100)])
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100), candle(2000, 111)]) // TP1 -> win
+    const result = evaluateSignals(history, 'XAUUSD', [
+      candle(1000, 100),
+      candle(2000, 111),
+      { time: 3000, open: 111, high: 112, low: 90, close: 91 }, // dives back down through the original SL (95)
+    ])
+    assert.equal(history[0].status, 'win', 'TP1 was already reached — the original SL is moot from that point on')
+    assert.equal(history[0].hitTpIndex, 0)
+    assert.equal(history[0].exitPrice, 110)
+    assert.equal(history[0].slReachedAt, 3000, 'marks the chase as over')
+    assert.equal(result.closed.length, 0, 'diving through the old SL is not itself a reportable event')
+
+    // Even if price later rallies all the way to TP2, the chase already ended — it's
+    // never watched again.
+    const after = evaluateSignals(history, 'XAUUSD', [
+      candle(1000, 100),
+      candle(2000, 111),
+      { time: 3000, open: 111, high: 112, low: 90, close: 91 },
+      candle(4000, 121),
+    ])
+    assert.equal(history[0].hitTpIndex, 0, 'never upgraded — the chase was already over')
+    assert.equal(after.closed.length, 0)
+  })
+
+  await t.test('a win whose chase has ended (SL reached after the win) also frees its own key up, like reaching the final TP does', () => {
+    const history = [
+      { ...ladderSignal(), key: 'XAUUSD-H1-Support-buy', symbolKey: 'XAUUSD', tf: 'H1', status: 'win', hitTpIndex: 0, slReachedAt: 3000 },
+    ]
+    const { added } = recordSignals(history, 'XAUUSD', 'H1', [ladderSignal()])
+    assert.equal(added.length, 1, 'the chase already ended — the level is free for a genuinely new trade')
+  })
+
+  await t.test('a single candle blowing through more than one TP at once only reports the record once, at its farthest', () => {
+    const history = []
+    recordSignals(history, 'XAUUSD', 'H1', [ladderSignal()], undefined, 1000)
+    evaluateSignals(history, 'XAUUSD', [candle(1000, 100)])
+    const result = evaluateSignals(history, 'XAUUSD', [candle(1000, 100), candle(2000, 125)]) // blows straight through TP1 and TP2
+    assert.equal(history[0].hitTpIndex, 1)
+    assert.equal(history[0].tp[0].reachedAt, 2000)
+    assert.equal(history[0].tp[1].reachedAt, 2000)
+    assert.equal(result.closed.length, 1, 'one reply for this tick, not one per TP crossed')
   })
 })
 

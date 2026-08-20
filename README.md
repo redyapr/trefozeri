@@ -45,17 +45,30 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
   the same hour, so a fill/SL/TP touch is never missed or mis-ordered just because price
   reversed before the next ~15-minute poll. A fill needs more than a wick touch: the
   candle must also close back on the favorable side of entry, confirming the retest
-  actually held. See `evaluateSignals` in `src/lib/signalHistoryCore.js`. New signals
-  are also withheld around high-impact USD news releases, since those tend to spike
-  straight through a level with no real retest.
+  actually held. A `win` is credited the instant ANY take-profit is touched, and can
+  never turn back into a loss after that (an explicit "let it ride, worst case it still
+  counts" product choice) — even if price later round-trips all the way back through
+  the original SL. A record short of its own ladder's last TP keeps being watched
+  afterwards: reaching a farther TP upgrades `closedAt`/`exitPrice`/`hitTpIndex` to that
+  new level, and each TP gets its own `reachedAt` timestamp once first touched. The SL
+  still ends the chase, though — hitting it after a win just stops watching for a
+  farther TP (no point re-scanning forever), without undoing the win already credited.
+  A record is permanently done once it reaches its very last TP, hits the SL before any
+  TP was ever reached (a genuine loss), or hits the SL after a win (chase over, win
+  stands). See `evaluateSignals` in `src/lib/signalHistoryCore.js`. New signals are also
+  withheld around high-impact USD news releases, since those tend to spike straight
+  through a level with no real retest.
 - **Telegram notifications** — public channel, H1 only. Posts new signals, fills, and
   SL/TP results automatically. A still-pending signal's own message is edited in place
   whenever its entry/SL/TP recalculate, so it never shows stale numbers — once filled,
   it's a live position and stops changing. A pending signal that's dropped before ever
   filling (its level moved on or was invalidated) gets a "❌ INVALIDATED" reply instead
-  of being silently deleted from the track record with no trace. XAUUSD skips new
-  signals while gold's market is closed; BTCUSD posts new signals every day (trades
-  24/7, no market-hours gate).
+  of being silently deleted from the track record with no trace. A win reply lands the
+  instant any TP is touched, then again each time price reaches a farther TP on the
+  same ladder (see Track record above) — each such reply's own message id is kept on
+  that TP entry, in case a later correction ever needs to edit it directly. XAUUSD
+  skips new signals while gold's market is closed; BTCUSD posts new signals every day
+  (trades 24/7, no market-hours gate).
   Optional — no-ops without `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`. Real sends are also
   opt-in: only CI (`CI=true`, set automatically) or an explicit local
   `ALLOW_TELEGRAM_SEND=true` actually posts — see [Local development](#local-development).

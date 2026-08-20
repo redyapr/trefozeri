@@ -28,7 +28,14 @@ export const MAX_RECORDS = 300
 // same trade continuing.
 export const keyFor = (symbolKey, tf, signal) => `${symbolKey}-${tf}-${signal.category}-${signal.direction}`
 
-const isOpen = (r) => r.status === 'pending' || r.status === 'running'
+// A 'win' record still short of its own ladder's last TP counts as open too — it's
+// still being watched for a farther TP (see evaluateSignals), so its key must stay
+// occupied; otherwise the still-unchanged level behind it would look "free" and
+// recordSignals would spawn a brand-new duplicate signal right on top of it. Not open
+// any more, though, once the original SL is hit after a win (slReachedAt) — the chase
+// is over even though the win itself still stands.
+const isOpen = (r) =>
+  r.status === 'pending' || r.status === 'running' || (r.status === 'win' && r.hitTpIndex < r.tp.length - 1 && r.slReachedAt == null)
 
 // 2026-08-17 win-rate review (see the matching comments in srDetector.js): a bare wick
 // touch used to be enough to fill a limit order. A disciplined S/R trader instead waits
@@ -173,12 +180,13 @@ export function recordSignals(records, symbolKey, tf, signals, currentPrice, cur
 // Advances every open record for this symbol: fills a 'pending' limit order once price
 // reaches its entry *and* the same candle closes back confirming the retest held (see
 // this function's own comment above), then (whether just filled or already running)
-// closes it out as a 'win' or 'loss' once price plausibly hits its first take-profit or
-// its stop-loss. Mutates `records` in place; returns `{ filled, closed }` — the records
-// that changed state this call, e.g. so a caller can notify about them. A record that
-// fills AND closes within the same call (a fast move a coarse ~15-minute poll can't see
-// the middle of) only appears in `closed`, not `filled` — a "filled" notification would
-// be redundant noise immediately followed by the close.
+// credits a 'win' the instant ANY take-profit is touched — and keeps that win
+// permanently, even if price later round-trips all the way back through the original
+// SL. Mutates `records` in place; returns `{ filled, closed }` — the records that
+// changed state this call, e.g. so a caller can notify about them. A record that fills
+// AND closes within the same call (a fast move a coarse ~15-minute poll can't see the
+// middle of) only appears in `closed`, not `filled` — a "filled" notification would be
+// redundant noise immediately followed by the close.
 //
 // `candles` is the price series (ascending by time, full OHLC) fill/SL/TP are checked
 // against — NOT just the latest close. A real production bug: checking only the most
@@ -193,17 +201,40 @@ export function recordSignals(records, symbolKey, tf, signals, currentPrice, cur
 // close-confirmed the way the fill above is: once actually in a trade, a real stop/limit
 // order fires the instant price trades there regardless of where that candle later
 // closes. Only the *entry* is a discretionary "did the retest actually hold" decision.
+//
+// 2026-08-21 (revised three times the same day): a 'win' record whose farthest reached
+// TP isn't the last rung on its own ladder is still watched on every future call —
+// price might yet go on to reach a farther target. Each TP that's ever touched gets
+// its own `reachedAt` timestamp (and, once a caller sends a reply for it,
+// `telegramMessageId` — see notifyClosedSignals in fetch-data.mjs), so
+// `closedAt`/`exitPrice`/`hitTpIndex` are really "as of the *latest* TP reached",
+// upgraded every time price reaches farther — not frozen at the first touch. Once ANY
+// TP has been touched, the original SL can no longer turn the result into a 'loss' —
+// there's no partial-close/trailing protection, but there's also no way back to a loss
+// once a win has been credited, by design (an explicit "let it ride, worst case it
+// still counts" reporting choice, not a claim about what a real broker would do). The
+// SL still ends the chase, though: touching it after a win (`slReachedAt`) just stops
+// watching for a farther TP, without changing the win already credited — there's no
+// point re-scanning forever once price has round-tripped that far back. A record is
+// permanently done once it reaches its very last TP, hits the original SL before ever
+// touching any TP (a genuine loss), or hits the SL after a win (chase over, win stands).
 export function evaluateSignals(records, symbolKey, candles) {
   if (!candles?.length) return { filled: [], closed: [] }
   const filled = []
   const closed = []
 
   for (const r of records) {
-    if (r.symbolKey !== symbolKey || !isOpen(r)) continue
+    if (r.symbolKey !== symbolKey) continue
     const isBuy = r.direction === 'buy'
 
+    // isOpen() itself now includes a 'win' that hasn't reached the final rung of its
+    // own ladder yet (see its own comment) — a genuine 'loss', or a 'win' already at
+    // the last TP, has nothing left that could ever change, so those are skipped here.
+    if (!isOpen(r)) continue
+
     // A still-pending order can't have filled on a candle from before it even existed;
-    // a running position's SL/TP can't have been touched before its own fill.
+    // a running/already-winning position's SL/TP can't have been touched before its
+    // own fill.
     const sinceMs = r.status === 'pending' ? r.openedAt : r.filledAt
     const relevant = candles.filter((c) => c.time >= sinceMs)
 
@@ -235,42 +266,67 @@ export function evaluateSignals(records, symbolKey, candles) {
       searchFrom = fillIndex + 1
     }
 
-    // Scan forward from the fill (or from the start of `relevant` if already running)
-    // for the first candle whose actual high/low range touches SL or TP — stops at the
-    // first one found, since the position is closed from that point on and anything
-    // later in the series no longer applies to it.
+    // Snapshotted before the scan below so a record that advances through more than
+    // one TP within this SAME call (several new candles at once, e.g. after a slow
+    // poll) is still only reported to the caller once, reflecting where it ended up —
+    // `closed` holds live record references, so pushing the same record more than once
+    // in one call would just have every entry read back the same final state anyway.
+    const startHitTpIndex = r.hitTpIndex ?? -1
+
     for (let i = searchFrom; i < relevant.length; i++) {
       const c = relevant[i]
-      const hitSl = isBuy ? c.low <= r.sl : c.high >= r.sl
 
-      // Find the farthest TP this single candle's own range reached, not just the
-      // first — a fast candle can blow through more than one target, so a win gets
-      // credit for whichever level it actually reached.
-      let hitTpIndex = -1
+      // Before any TP has ever been touched (r.hitTpIndex is still undefined), the SL
+      // decides a genuine loss — same conservative tie-break as always for a
+      // same-candle ambiguity (OHLC alone can't say whether SL or a TP came first),
+      // scored as a loss rather than assuming the better outcome.
+      if (r.hitTpIndex == null) {
+        const hitSl = isBuy ? c.low <= r.sl : c.high >= r.sl
+        if (hitSl) {
+          r.status = 'loss'
+          r.closedAt = c.time
+          r.exitPrice = r.sl
+          closed.push(r)
+          break
+        }
+      } else {
+        // Already won — the SL can never turn this back into a loss, but touching it
+        // still ends the chase for a farther TP (see this function's own doc comment):
+        // no point re-scanning forever once price has round-tripped all the way back
+        // to it. Checked before this candle's own TP reach is folded in, same
+        // conservative ordering as always.
+        const hitSl = isBuy ? c.low <= r.sl : c.high >= r.sl
+        if (hitSl) {
+          r.slReachedAt = c.time
+          break
+        }
+      }
+
+      // Farthest TP this single candle's own range reached, not just the first — a
+      // fast candle can blow through more than one target at once — cascading on top
+      // of whatever was already reached in an earlier candle/call. Every TP actually
+      // touched gets its own first-touch timestamp, even ones short of the farthest.
+      let farthest = r.hitTpIndex ?? -1
       for (let j = 0; j < r.tp.length; j++) {
         const reached = isBuy ? c.high >= r.tp[j].price : c.low <= r.tp[j].price
-        if (reached) hitTpIndex = j
+        if (reached) {
+          if (r.tp[j].reachedAt == null) r.tp[j].reachedAt = c.time
+          farthest = Math.max(farthest, j)
+        }
       }
 
-      // Checked in this order so a single candle whose range plausibly covers both
-      // (an unusually large-range candle) is scored as a loss rather than assuming the
-      // better outcome — same conservative tie-break as before, just per-candle now
-      // instead of per-poll.
-      if (hitSl) {
-        r.status = 'loss'
-        r.closedAt = c.time
-        r.exitPrice = r.sl
-        closed.push(r)
-        break
-      } else if (hitTpIndex >= 0) {
+      if (farthest > (r.hitTpIndex ?? -1)) {
+        // Reached farther than ever before (including the very first touch, which is
+        // also the win itself) — upgrade the record's own "current result" fields.
         r.status = 'win'
+        r.hitTpIndex = farthest
+        r.exitPrice = r.tp[farthest].price
         r.closedAt = c.time
-        r.exitPrice = r.tp[hitTpIndex].price
-        r.hitTpIndex = hitTpIndex
-        closed.push(r)
-        break
+        if (farthest === r.tp.length - 1) break // the last rung — nothing left to reach, ever
       }
     }
+
+    if (r.status === 'win' && r.hitTpIndex > startHitTpIndex) closed.push(r)
 
     if (justFilled && r.status === 'running') filled.push(r)
   }

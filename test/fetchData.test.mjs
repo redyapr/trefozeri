@@ -340,6 +340,7 @@ test('buildCloseMessage', async (t) => {
   })
 })
 
+
 test('withRetry', async (t) => {
   await t.test('succeeds without retrying when the first attempt works', async () => {
     let calls = 0
@@ -1061,18 +1062,21 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
     }
   })
 
-  await t.test('full lifecycle: open -> fill -> TP hit, all three replies chained to the same message', async () => {
+  await t.test('full lifecycle: open -> fill -> TP1 win -> TP2 upgrade, all replies chained to the same message', async () => {
     const { sent, restore } = mockTelegram()
     try {
       const seriesByTf = { H1: seriesWithLowPivot(4300) }
       const history = []
       await updateSignalHistoryForSymbol(history, 'XAUUSD', seriesByTf)
       const h1 = history.find((r) => r.tf === 'H1')
+      assert.ok(h1.tp.length > 1, 'this test relies on TP1 not being the final rung on the ladder')
 
       const filledSeries = { H1: [...seriesByTf.H1, candle(998, h1.entry, h1.entry + 1, h1.entry - 1, h1.entry)] }
       await updateSignalHistoryForSymbol(history, 'XAUUSD', filledSeries)
 
-      const winSeries = { H1: [...filledSeries.H1, candle(999, h1.tp[0].price + 1, h1.tp[0].price + 2, h1.tp[0].price, h1.tp[0].price + 1)] }
+      const winSeries = {
+        H1: [...filledSeries.H1, candle(999, h1.tp[0].price + 1, h1.tp[0].price + 2, h1.tp[0].price, h1.tp[0].price + 1)],
+      }
       await updateSignalHistoryForSymbol(history, 'XAUUSD', winSeries)
 
       assert.equal(sent.length, 3)
@@ -1081,6 +1085,20 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
       assert.match(sent[2].text, /^<code>✅ TP1 HIT/)
       assert.equal(sent[1].reply_to_message_id, 1)
       assert.equal(sent[2].reply_to_message_id, 1)
+      assert.equal(h1.status, 'win', 'ANY TP touch is an immediate, permanent win')
+      assert.equal(h1.tp[0].telegramMessageId, 3, 'the TP1 reply\'s own id (3rd message sent) is stashed for future editing')
+
+      // A later tick reaching TP2 upgrades the same win with a fresh reply.
+      const upgradeSeries = {
+        H1: [...winSeries.H1, candle(1000, h1.tp[1].price + 1, h1.tp[1].price + 2, h1.tp[1].price, h1.tp[1].price + 1)],
+      }
+      await updateSignalHistoryForSymbol(history, 'XAUUSD', upgradeSeries)
+
+      assert.equal(sent.length, 4)
+      assert.match(sent[3].text, /^<code>✅ TP2 HIT/)
+      assert.equal(sent[3].reply_to_message_id, 1)
+      assert.equal(h1.hitTpIndex, 1)
+      assert.equal(h1.tp[1].telegramMessageId, 4, 'the TP2 reply\'s own id (4th message sent)')
     } finally {
       restore()
     }
@@ -1137,6 +1155,20 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
       await notifyFilledSignals([{ telegramMessageId: undefined }])
       await notifyClosedSignals('XAUUSD', [{ telegramMessageId: undefined, direction: 'buy', status: 'loss', entry: 100, exitPrice: 95 }])
       assert.equal(sent.length, 0)
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('notifyClosedSignals stashes a win reply\'s own message id onto that specific tp[] entry, but not for a loss', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const win = { telegramMessageId: 42, direction: 'buy', status: 'win', entry: 100, exitPrice: 110, hitTpIndex: 0, tp: [{ price: 110 }, { price: 120 }] }
+      const loss = { telegramMessageId: 43, direction: 'buy', status: 'loss', entry: 100, exitPrice: 95 }
+      await notifyClosedSignals('XAUUSD', [win, loss])
+      assert.equal(sent.length, 2)
+      assert.equal(win.tp[0].telegramMessageId, 1, 'the win reply\'s own id, for a possible future edit')
+      assert.equal(loss.tp, undefined, 'a loss has no tp[] to stash anything onto — nothing thrown either')
     } finally {
       restore()
     }

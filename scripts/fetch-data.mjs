@@ -565,8 +565,18 @@ export async function notifyFilledSignals(filled) {
   await notifyByReply(filled, buildFillMessage)
 }
 
+// A 'win' record can pass through here more than once over its lifetime (see
+// evaluateSignals in signalHistoryCore.js — reaching a farther TP than before keeps
+// crediting the same win at the new level, right up until the very last rung), so this
+// doesn't use the shared notifyByReply above: each such reply's own message id is
+// stashed onto that specific tp[] entry, in case it's ever needed to edit that reply
+// later (e.g. a manual correction after re-checking against finer-grained data).
 export async function notifyClosedSignals(symbolKey, closed) {
-  await notifyByReply(closed, (record) => buildCloseMessage(symbolKey, record))
+  for (const record of closed) {
+    if (!record.telegramMessageId) continue
+    const messageId = await sendTelegramMessage(buildCloseMessage(symbolKey, record), record.telegramMessageId)
+    if (messageId && record.status === 'win') record.tp[record.hitTpIndex].telegramMessageId = messageId
+  }
 }
 
 export async function notifyInvalidatedSignals(invalidated) {
