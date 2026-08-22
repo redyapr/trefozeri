@@ -55,14 +55,20 @@ const SL_STRUCTURE_BUFFER_RATIO = 0.15 // extra room beyond the wick itself, as 
 // historical-candle verification (not just the recorded numbers) surfaced several
 // concrete, fixable gaps between how this module traded S/R and how a disciplined S/R
 // trader actually does — see the constants and their call sites below for each one.
+//
+// 2026-08-23: BREAKOUT_CONFIRM_BARS lowered from 2 to 1 — a level now flips role the
+// instant one candle closes beyond it, rather than waiting for a second consecutive
+// confirming bar. An explicit product decision to trade the extra fakeout risk for
+// consistently faster entries on every level. Deliberately scoped to just this one
+// constant — the other two gates below (pullback-extent, breakout-quality) are
+// untouched and still apply on top of whichever single candle now satisfies this.
 // ----------------------------------------------------------------------------
 
-// A single candle closing beyond a level used to flip its state immediately — a
-// one-candle spike that reverses the very next bar still permanently broke the level,
-// seeding a retest entry off what was really a fakeout. Requiring the close to hold for
-// more than one consecutive bar filters that out. Applies symmetrically to both the
-// original break (state 0 -> 1) and a later re-break that invalidates it (state 1 -> 2).
-const BREAKOUT_CONFIRM_BARS = 2
+// A single candle closing beyond a level flips its state immediately — no longer
+// waiting for a second consecutive confirming bar (see 2026-08-23 above). Applies
+// symmetrically to both the original break (state 0 -> 1) and a later re-break that
+// invalidates it (state 1 -> 2).
+const BREAKOUT_CONFIRM_BARS = 1
 
 // A level already tested (approached without breaking) this many times is real S/R
 // wisdom to treat as weaker than a fresh, never-touched one — each successful defense

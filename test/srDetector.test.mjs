@@ -765,25 +765,26 @@ test('buildSignals: cross-timeframe TP borrowing (higher timeframes only)', asyn
 })
 
 // 2026-08-17 win-rate review: the tests below cover the concrete behavior changes made
-// to runStateMachine/toZone off of that review — breakout persistence (a single
-// spike-and-reverse candle shouldn't permanently flip a level), level freshness
-// (testCount/strengthLabel), and breakout-quality gating (pullback extent, and
-// volume/body-ratio conviction) that decides whether a broken level is `tradeable`.
+// to runStateMachine/toZone off of that review — level freshness (testCount/
+// strengthLabel) and breakout-quality gating (pullback extent, and volume/body-ratio
+// conviction) that decides whether a broken level is `tradeable`. The breakout-
+// persistence gate (requiring 2 consecutive confirming closes) that used to also be
+// covered here was reverted 2026-08-23 — see BREAKOUT_CONFIRM_BARS' own comment — a
+// single confirming close now flips a level immediately, covered below instead.
 
-test('breakout confirmation requires more than one consecutive closing bar', async (t) => {
-  await t.test('a single spike-and-reverse candle does not flip the level\'s state', () => {
+test('breakout confirmation is instant — a single confirming close flips the level right away', async (t) => {
+  await t.test('one close beyond threshold flips Support straight to SBR, no second confirming bar needed', () => {
     const candles = seriesWithLowPivot(4300)
-    // One close well beyond threshold, immediately followed by a close back above —
-    // the spike never gets a second confirming bar.
     let t2 = candles.length
-    candles.push(candle(t2++, 4278, 4279, 4275, 4278))
-    candles.push(candle(t2++, 4279, 4302, 4278, 4302))
-    const support = detectLevels(candles, candles.at(-1).close).find((z) => z.category === 'Support')
-    assert.ok(support, 'the level must still be a pure Support, not flipped to SBR')
-    assert.equal(support.broken, false)
+    candles.push(candle(t2++, 4278, 4279, 4275, 4278)) // one close well beyond threshold
+    const zones = detectLevels(candles, candles.at(-1).close)
+    assert.equal(zones.find((z) => z.category === 'Support'), undefined, 'no longer a pure Support')
+    const sbr = zones.find((z) => z.category === 'SBR')
+    assert.ok(sbr, 'expected the level to have flipped on this very candle')
+    assert.equal(sbr.broken, true)
   })
 
-  await t.test('two consecutive closing bars beyond threshold does flip it', () => {
+  await t.test('a sustained break (many holding candles) still flips and stays flipped', () => {
     const candles = seriesWithLowPivot(4300, { breakBelow: true }) // holds below for many bars
     const zones = detectLevels(candles, candles.at(-1).close)
     assert.ok(zones.find((z) => z.category === 'SBR'), 'expected the level to have flipped')
