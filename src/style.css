@@ -1116,12 +1116,22 @@ body[data-symbol='btcusd'] {
     padding: 12px 14px;
   }
 
+  /* Stacked instead of side-by-side — zone-label's own row (below) and zone-range
+     each get the full card width rather than splitting it. */
   .zone-card {
-    flex-wrap: wrap;
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .zone-label {
-    width: 84px;
+    width: 100%;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .zone-range {
+    width: 100%;
   }
 
   .zone-type {

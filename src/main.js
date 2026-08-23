@@ -485,7 +485,11 @@ function confluenceBadgeHtml() {
   return `<span class="confluence-badge"><span class="confluence-badge-icon">${icon}</span> ${label}</span>`
 }
 
-function renderZoneCard(zone) {
+// showMediumBadge (see renderContent) is false when nothing in the current combined
+// zone list is golden — every card's badge would then read "Medium" with no exception
+// to contrast it against, so the whole row of identical badges is dropped rather than
+// shown for no informational value.
+function renderZoneCard(zone, showMediumBadge) {
   const card = document.createElement('div')
   card.className = `zone-card ${zone.type}`
   const flippedFrom = zone.type === 'support' ? 'resistance' : 'support'
@@ -494,7 +498,7 @@ function renderZoneCard(zone) {
   // Strong and Golden Zone are literally the same condition (see srDetector.js's
   // strengthLabel) — there's no "strong but not confluent" state, so the confluence
   // badge fully replaces a separate "Strong" badge instead of sitting next to one.
-  const badge = zone.isGolden ? confluenceBadgeHtml() : '<span class="strength-badge medium">Medium</span>'
+  const badge = zone.isGolden ? confluenceBadgeHtml() : showMediumBadge ? '<span class="strength-badge medium">Medium</span>' : ''
   // Two columns only: timeframe + category + strength badge stacked on the left
   // (zone-label), price + the rest of the metadata on the right (zone-range) — the
   // timeframe used to live in zone-meta and the badge in its own third column.
@@ -579,6 +583,9 @@ function renderContent() {
   }
   const resistances = allZones.filter((z) => z.type === 'resistance').sort(byTfThenDistance)
   const supports = allZones.filter((z) => z.type === 'support').sort(byTfThenDistance)
+  // Across the whole combined list, not per column — a Golden zone on the support
+  // side still makes the resistance side's "Medium" badges meaningful by contrast.
+  const showMediumBadge = allZones.some((z) => z.isGolden)
 
   const zonesGrid = document.createElement('div')
   zonesGrid.className = 'zones-grid'
@@ -586,13 +593,13 @@ function renderContent() {
   if (supports.length) {
     const column = document.createElement('div')
     column.className = 'zone-column'
-    supports.forEach((zone) => column.appendChild(renderZoneCard(zone)))
+    supports.forEach((zone) => column.appendChild(renderZoneCard(zone, showMediumBadge)))
     zonesGrid.appendChild(column)
   }
   if (resistances.length) {
     const column = document.createElement('div')
     column.className = 'zone-column'
-    resistances.forEach((zone) => column.appendChild(renderZoneCard(zone)))
+    resistances.forEach((zone) => column.appendChild(renderZoneCard(zone, showMediumBadge)))
     zonesGrid.appendChild(column)
   }
   contentEl.appendChild(zonesGrid)
