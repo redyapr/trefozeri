@@ -24,7 +24,7 @@
      theme's original cyan. Both feed --accent below, switched by data-symbol. */
   --accent-xau: #ffd23f;
   --accent-btc: var(--cyan);
-  /* The confluence badge ("Golden Zone" for XAUUSD, "Diamond Zone" for BTCUSD) is
+  /* The confluence badge ("★ Golden" for XAUUSD, "◆ Diamond" for BTCUSD) is
      its own filled pill — its base "medal" gold values are XAUUSD's; BTCUSD's own
      rule below overrides them to the symbol's own cyan accent instead. */
   --gold-badge: #d4af37;
@@ -643,7 +643,7 @@ body[data-symbol='btcusd'] {
 .symbol-tab-btn {
   padding: 3px 10px;
   border: 1px solid var(--border);
-  border-radius: 20px;
+  border-radius: 8px;
   background: var(--panel);
   color: var(--text-dim);
   cursor: pointer;
@@ -984,8 +984,8 @@ body[data-symbol='btcusd'] {
 /* Explicit confluence badge — its own filled pill, distinct from the (plain,
    outlined) strength badge above. There's no "strong but not confluent" state (see
    srDetector.js's strengthLabel), so this fully replaces strength-badge.strong
-   rather than sitting alongside it. Named "Golden Zone" for XAUUSD and "Diamond
-   Zone" for BTCUSD (see main.js), colored to match whichever symbol is active via
+   rather than sitting alongside it. Named "Golden" for XAUUSD and "Diamond" for
+   BTCUSD (see main.js), colored to match whichever symbol is active via
    --badge-bg/--badge-text/--badge-glow. */
 .confluence-badge {
   display: inline-flex;
@@ -996,7 +996,7 @@ body[data-symbol='btcusd'] {
   letter-spacing: 0.05em;
   text-transform: uppercase;
   padding: 3px 9px;
-  border-radius: 999px;
+  border-radius: 8px;
   background: var(--badge-bg);
   color: var(--badge-text);
   box-shadow: var(--badge-glow);

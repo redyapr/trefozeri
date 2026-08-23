@@ -475,13 +475,13 @@ function shortCategory(category) {
   return category === 'Resistance' ? 'Resist.' : category
 }
 
-// The confluence badge is named/colored per the active symbol — "★ Golden Zone" for
-// XAUUSD, "◆ Diamond Zone" for BTCUSD (see style.css's body[data-symbol] accents) —
+// The confluence badge is named/colored per the active symbol — "★ Golden" for
+// XAUUSD, "◆ Diamond" for BTCUSD (see style.css's body[data-symbol] accents) —
 // rather than always "Golden", since that name only really makes sense for gold itself.
 function confluenceBadgeHtml() {
   const isXau = activeSymbol.key === 'XAUUSD'
   const icon = isXau ? '★' : '◆'
-  const label = isXau ? 'Golden Zone' : 'Diamond Zone'
+  const label = isXau ? 'Golden' : 'Diamond'
   return `<span class="confluence-badge"><span class="confluence-badge-icon">${icon}</span> ${label}</span>`
 }
 
@@ -500,7 +500,7 @@ function renderZoneCard(zone) {
   // timeframe used to live in zone-meta and the badge in its own third column.
   card.innerHTML = `
     <div class="zone-label">
-      <span class="zone-type">${zone.tf} · ${shortCategory(zone.category)}</span>
+      <span class="zone-type">${zone.tf} ${shortCategory(zone.category)}</span>
       ${badge}
     </div>
     <div class="zone-range">
