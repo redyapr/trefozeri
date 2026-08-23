@@ -43,7 +43,7 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
   SL/TP are checked against M1 (1-minute) candles, not H1 or a single snapshotted
   price — an hourly candle can't tell whether TP or SL came first when both fall inside
   the same hour, so a fill/SL/TP touch is never missed or mis-ordered just because price
-  reversed before the next ~15-minute poll. A fill needs more than a wick touch: the
+  reversed before the next ~5-minute poll. A fill needs more than a wick touch: the
   candle must also close back on the favorable side of entry, confirming the retest
   actually held. A `win` is credited the instant ANY take-profit is touched, and can
   never turn back into a loss after that (an explicit "let it ride, worst case it still
@@ -126,12 +126,16 @@ GitHub Pages only serves static files, so `scripts/fetch-data.mjs` fetches Twelv
 Data / Binance.US / the calendar feed once per run and writes static JSON into
 `public/data/` — retrying on failure, then falling back to the last published
 snapshot. Secrets are only ever read inside that script, never bundled into browser
-code.
+code. XAUUSD's H1/H4/D1 (Twelve Data) are throttled to their own slower cadence —
+15/60/360 minutes — reusing the last published snapshot on a run where they're not due
+yet, so the free tier's 800-request/day cap survives a 5-minute cron; only M1 (fill/SL/TP
+detection) and all of BTCUSD (Binance.US, a far more generous limit) fetch fresh every
+run. See `fetchThrottled`/`shouldFetchNow` in `scripts/fetch-data.mjs`.
 
 `.github/workflows/deploy.yml` runs test → fetch → build → deploy:
 
 - on every push to `master`
-- every 15 minutes (cron — matches the app's own refresh cadence)
+- every 5 minutes (cron — the fastest GitHub Actions' own scheduler supports)
 - on manual `workflow_dispatch`
 
 A failing test stops the run before anything else happens. CI is otherwise stateless.

@@ -12,7 +12,7 @@ let cache = []
 export async function fetchNewsCalendar() {
   try {
     // Cache-busts so the browser doesn't keep serving a snapshot from before the
-    // last cron refresh — this file is small and changes every ~15 minutes.
+    // last cron refresh — this file is small and changes every ~5 minutes.
     const res = await fetch(`${CALENDAR_ENDPOINT}?v=${Date.now()}`)
     // Without this, a missing static file (404 -> GitHub Pages' HTML error page)
     // would hit res.json() below and throw a cryptic JSON-parse error instead of a

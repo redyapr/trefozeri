@@ -4,12 +4,16 @@ on:
   push:
     branches: [master]
   schedule:
-    # Refreshes price & calendar data roughly every 15 minutes. This matches (and
-    # doesn't exceed) the dashboard's own refresh throttling — each timeframe only
-    # actually refetches on its own cadence (e.g. H1 every 20 minutes, D1 every 4
-    # hours, see minRefetchMs in src/lib/twelveData.js) — so this cadence never
-    # leaves the static snapshot staler than the app already tolerates.
-    - cron: '*/15 * * * *'
+    # 2026-08-23: sped up from every 15 minutes to every 5 — GitHub Actions' own
+    # scheduler doesn't support anything shorter than 5-minute intervals, so that's the
+    # fastest this can run at all. The real reason to go faster is M1 (fill/SL/TP
+    # detection), not the S/R timeframes themselves: H1/H4/D1 don't refetch from Twelve
+    # Data on every single tick any more (see fetchThrottled/refetchIntervalMinutes in
+    # scripts/fetch-data.mjs) — they're throttled to their own slower cadence, mirroring
+    # the dashboard's own minRefetchMs (src/lib/twelveData.js), so gold's Twelve Data
+    # quota (800 requests/day, free tier) isn't blown through just to re-check a candle
+    # that mostly hasn't moved since the last tick anyway.
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 # Deliberately no workflow-level `permissions:` block — each job below declares
@@ -67,7 +71,7 @@ jobs:
       # scripts/fetch-data.mjs) — everything else here is regenerated fresh every time.
       # Only commits when something actually changed (a new signal opened/hit its
       # SL-TP, an admin alert fired, or the daily/weekly report sent), so this doesn't
-      # spam a commit every 15 minutes. Pushing with the default GITHUB_TOKEN is safe
+      # spam a commit every tick. Pushing with the default GITHUB_TOKEN is safe
       # from a trigger-loop standpoint: GitHub doesn't fire `on: push` for commits made
       # with that token.
       - name: Persist shared signal track record
@@ -127,7 +131,7 @@ jobs:
     steps:
       # actions/deploy-pages occasionally fails on a transient GitHub Pages API hiccup
       # (observed a handful of isolated, self-resolving failures — gone again by the
-      # very next 15-minute cron tick). Retried up to 3 attempts total, each only
+      # very next cron tick). Retried up to 3 attempts total, each only
       # running if every previous one failed, so a passing attempt publishes right away
       # instead of waiting on the next tick.
       - id: deployment

@@ -11,21 +11,25 @@ import { PIP_SIZES } from './signalHistoryCore.js'
 // this module would throw before any test ever got to run.
 const DATA_ENDPOINT = `${import.meta.env?.BASE_URL ?? '/'}data`
 // Cache-busts the static JSON so the browser doesn't keep serving a snapshot from
-// before the last cron refresh — these files are small and change every ~15 minutes.
+// before the last cron refresh — these files are small and change every ~5 minutes.
 const cacheBust = () => `?v=${Date.now()}`
 
 // This pivot-based state machine runs on D1/H4/H1 only — the lower timeframes were
 // dropped rather than adapted, since sub-hourly noise is exactly what it isn't meant
 // to be run on.
 //
-// minRefetchMs caps how often each timeframe is allowed to hit the API again —
-// roughly proportional to how often its own bars actually change, so refreshData()
-// (run on startup and on every symbol switch) doesn't re-fetch data that can't
-// plausibly have moved yet.
+// 2026-08-23: used to also carry a per-timeframe minRefetchMs, skipping a re-fetch in
+// refreshData() (main.js) until that much time had passed — dropped once the dashboard
+// moved to fetching static JSON off a CDN (see fetchAllTimeframes below) rather than
+// hitting a live, per-minute-rate-limited API directly: there's no real request budget
+// left to protect here any more, so all three timeframes now just refetch on every
+// refreshData() tick. The chart itself still avoids a needless teardown/zoom-reset when
+// a refetch turns up byte-identical data — see the content-based fingerprint comparison
+// in main.js's renderContent, not this module.
 export const TIMEFRAMES = [
-  { key: 'H1', interval: '1h', outputsize: 300, label: 'H1', minRefetchMs: 20 * 60 * 1000 },
-  { key: 'H4', interval: '4h', outputsize: 300, label: 'H4', minRefetchMs: 60 * 60 * 1000 },
-  { key: 'D1', interval: '1day', outputsize: 300, label: 'D1', minRefetchMs: 4 * 60 * 60 * 1000 },
+  { key: 'H1', interval: '1h', outputsize: 300, label: 'H1' },
+  { key: 'H4', interval: '4h', outputsize: 300, label: 'H4' },
+  { key: 'D1', interval: '1day', outputsize: 300, label: 'D1' },
 ]
 
 // pipSize (used for the track record's win/loss pip readout) comes from

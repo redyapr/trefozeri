@@ -27,6 +27,8 @@ const {
   notifyInvalidatedSignals,
   withRetry,
   fetchWithFallback,
+  shouldFetchNow,
+  fetchThrottled,
   sendTelegramMessage,
   editTelegramMessage,
   sendTelegramPhoto,
@@ -444,6 +446,91 @@ test('fetchWithFallback', async (t) => {
         async () => { throw new Error('primary down') },
         'irrelevant.json',
         { attempts: 0 }
+      )
+      assert.equal(result, null)
+      assert.equal(getFailures().length, 1)
+      assert.match(getFailures()[0], /SRC/)
+    } finally {
+      restore()
+    }
+  })
+})
+
+// 2026-08-23 rate-limit review: XAUUSD's H1/H4/D1 are throttled to their own cadence
+// (see TIMEFRAMES' refetchIntervalMinutes) so a faster cron doesn't blow through Twelve
+// Data's 800-request/day free-tier cap — see shouldFetchNow/fetchThrottled below.
+test('shouldFetchNow', async (t) => {
+  await t.test('true exactly on a UTC time that lands on the interval boundary', () => {
+    assert.equal(shouldFetchNow(15, new Date('2026-08-23T10:00:00Z')), true)
+    assert.equal(shouldFetchNow(15, new Date('2026-08-23T10:15:00Z')), true)
+    assert.equal(shouldFetchNow(15, new Date('2026-08-23T10:30:00Z')), true)
+  })
+
+  await t.test('false on a tick that falls between boundaries', () => {
+    assert.equal(shouldFetchNow(15, new Date('2026-08-23T10:05:00Z')), false)
+    assert.equal(shouldFetchNow(15, new Date('2026-08-23T10:14:00Z')), false)
+  })
+
+  await t.test('a 360-minute (6-hour) interval only lands 4 times a day', () => {
+    assert.equal(shouldFetchNow(360, new Date('2026-08-23T00:00:00Z')), true)
+    assert.equal(shouldFetchNow(360, new Date('2026-08-23T06:00:00Z')), true)
+    assert.equal(shouldFetchNow(360, new Date('2026-08-23T05:00:00Z')), false)
+  })
+})
+
+test('fetchThrottled', async (t) => {
+  await t.test('due this tick: fetches the primary, same as fetchWithFallback', async () => {
+    const { restore } = mockTelegram()
+    try {
+      let calls = 0
+      const result = await fetchThrottled(
+        'SRC',
+        async () => { calls += 1; return { ok: true } },
+        'irrelevant.json',
+        15,
+        { attempts: 0 },
+        new Date('2026-08-23T10:00:00Z')
+      )
+      assert.deepEqual(result, { ok: true })
+      assert.equal(calls, 1)
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('not due yet: skips the primary entirely and reuses the last snapshot', async () => {
+    let calls = 0
+    const { restore } = mockTelegram((url) => {
+      assert.equal(String(url), 'https://redyapr.github.io/trefozeri/data/irrelevant.json')
+      return { ok: true, json: async () => ({ reused: true }) }
+    })
+    try {
+      const result = await fetchThrottled(
+        'SRC',
+        async () => { calls += 1; return { ok: true } },
+        'irrelevant.json',
+        15,
+        { attempts: 0 },
+        new Date('2026-08-23T10:05:00Z')
+      )
+      assert.deepEqual(result, { reused: true })
+      assert.equal(calls, 0, 'the real API must never be called on an off-cadence tick')
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('not due yet, and reusing the snapshot also fails: records a failure, returns null', async () => {
+    const { restore } = mockTelegram(() => ({ ok: false, status: 503, json: async () => ({}) }))
+    resetFailures()
+    try {
+      const result = await fetchThrottled(
+        'SRC',
+        async () => { throw new Error('should never be called') },
+        'irrelevant.json',
+        15,
+        { attempts: 0 },
+        new Date('2026-08-23T10:05:00Z')
       )
       assert.equal(result, null)
       assert.equal(getFailures().length, 1)

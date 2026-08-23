@@ -184,7 +184,7 @@ export function recordSignals(records, symbolKey, tf, signals, currentPrice, cur
 // permanently, even if price later round-trips all the way back through the original
 // SL. Mutates `records` in place; returns `{ filled, closed }` — the records that
 // changed state this call, e.g. so a caller can notify about them. A record that fills
-// AND closes within the same call (a fast move a coarse ~15-minute poll can't see the
+// AND closes within the same call (a fast move a coarse ~5-minute poll can't see the
 // middle of) only appears in `closed`, not `filled` — a "filled" notification would be
 // redundant noise immediately followed by the close.
 //
@@ -192,7 +192,7 @@ export function recordSignals(records, symbolKey, tf, signals, currentPrice, cur
 // against — NOT just the latest close. A real production bug: checking only the most
 // recent close price meant a genuine TP touch (S/R levels are "wick and reverse" points
 // almost by definition — price touches, then reverses) went completely undetected
-// whenever price had already moved back past SL by the time the next ~15-minute poll
+// whenever price had already moved back past SL by the time the next ~5-minute poll
 // ran, mis-recording a real win as a loss. Every candle since the record's own
 // openedAt/filledAt is scanned (not just the latest one) so a gap of more than one poll
 // — a skipped cron tick, a slow run — still can't hide a touch that happened in between.

@@ -18,11 +18,12 @@ import { renderEquityChart } from './lib/priceChart.js'
 import { isGoldMarketClosed, nextGoldReopenUtc } from './lib/marketHours.js'
 
 const NEWS_HORIZON_HOURS = 12
-// The cron in .github/workflows/deploy.yml refreshes the static snapshot roughly
-// every 15 minutes — polling more often than that just re-fetches the same JSON,
-// so this checks a few times per cron cycle to pick up each update promptly
-// without a manual reload. refreshData() itself is cheap to call when nothing's
-// due yet: it checks each timeframe's minRefetchMs before touching the network.
+// The cron in .github/workflows/deploy.yml refreshes the static snapshot every 5
+// minutes too (see fetchThrottled in scripts/fetch-data.mjs — XAUUSD's own H1/H4/D1
+// are throttled to a slower cadence server-side, but the static JSON files themselves
+// are still rewritten every run), so this matches that cadence 1:1. refreshData()
+// refetches all three timeframes on every tick unconditionally — see TIMEFRAMES' own
+// comment in twelveData.js for why that no longer needs its own client-side throttle.
 const AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000
 
 const symbolTabsEl = document.getElementById('symbol-tabs')
@@ -43,7 +44,6 @@ const uiState = loadUiState()
 
 let activeSymbol = SYMBOLS.find((s) => s.key === uiState.symbolKey) ?? SYMBOLS[0]
 let zonesByTimeframe = {}
-let lastFetchedAt = {}
 let currentPrice = null
 let refreshing = false
 // Bumped on every symbol switch so a fetch already in flight for the symbol just left
@@ -94,7 +94,6 @@ function renderSymbolTabs() {
       applySymbolTheme(activeSymbol)
       saveUiState({ symbolKey: activeSymbol.key })
       zonesByTimeframe = {}
-      lastFetchedAt = {}
       currentPrice = null
       priceEl.textContent = '—'
       lastUpdateEl.textContent = '' // the old symbol's fetch time no longer applies to this one
@@ -507,12 +506,13 @@ function renderZoneCard(zone) {
   return card
 }
 
-// Tracks which per-timeframe result object is currently reflected by activeChart, so a
-// refresh tick that didn't actually refetch *any* of the three (all three still within
-// their own minRefetchMs cooldown) can skip tearing the chart down — renderDashboard()
-// runs after every refreshData()/refreshHistory() (every 5 minutes each), and rebuilding
-// the chart unconditionally would reset any zoom/pan the user was mid-inspection with
-// even though nothing actually changed. Chart candles are always H1's own series (the
+// Tracks which per-timeframe fingerprint (see refreshData) is currently reflected by
+// activeChart, so a refresh tick whose candles all came back byte-identical to last
+// time — every timeframe refetches on every tick now, see TIMEFRAMES' own comment in
+// twelveData.js — can skip tearing the chart down. renderDashboard() runs after every
+// refreshData()/refreshHistory() (every 5 minutes each), and rebuilding the chart
+// unconditionally would reset any zoom/pan the user was mid-inspection with even though
+// nothing actually changed. Chart candles are always H1's own series (the
 // finest-grained one); H4/D1 only ever contribute their zone bands on top of it.
 let chartedH1 = null
 let chartedH4 = null
@@ -546,7 +546,7 @@ function renderContent() {
     return
   }
 
-  const needsFreshChart = chartedH1 !== h1 || chartedH4 !== h4 || chartedD1 !== d1
+  const needsFreshChart = chartedH1 !== h1.fingerprint || chartedH4 !== h4?.fingerprint || chartedD1 !== d1?.fingerprint
   if (needsFreshChart) {
     disposeChart()
     contentEl.innerHTML = ''
@@ -556,9 +556,9 @@ function renderContent() {
     chartContainer.className = 'zone-chart'
     contentEl.appendChild(chartContainer)
     activeChart = renderZoneChart(chartContainer, h1.series, allZones)
-    chartedH1 = h1
-    chartedH4 = h4
-    chartedD1 = d1
+    chartedH1 = h1.fingerprint
+    chartedH4 = h4?.fingerprint
+    chartedD1 = d1?.fingerprint
   } else {
     // Nothing actually refetched this tick — leave the chart and its DOM alone, just
     // drop the old zone/signal cards below it before rebuilding them fresh.
@@ -692,40 +692,28 @@ function renderSignalCard(signal) {
 async function refreshData() {
   if (refreshing) return
 
-  const now = Date.now()
-  // Skip timeframes that were fetched too recently to plausibly have new data yet —
-  // this is what keeps refreshData() (called on startup and on every symbol switch)
-  // from re-requesting all timeframes every time and blowing through the API's
-  // per-minute rate limit.
-  const dueTimeframes = TIMEFRAMES.filter(
-    (tf) => !lastFetchedAt[tf.key] || now - lastFetchedAt[tf.key] >= tf.minRefetchMs
-  )
-  if (!dueTimeframes.length) return
-
   refreshing = true
   const myGeneration = refreshGeneration
-  // All three timeframes are always on screen together now (no tab to be "off"), so
-  // any due timeframe dims every visible card.
+  // All three timeframes are always fetched together now (no tab to be "off"), so
+  // every visible card dims for the duration of the fetch.
   contentEl.querySelectorAll('.zone-card, .signal-card').forEach((c) => (c.style.opacity = '0.6'))
 
   const symbol = activeSymbol
 
   try {
-    const raw = await fetchAllTimeframes(symbol.apiSymbol, dueTimeframes)
+    const raw = await fetchAllTimeframes(symbol.apiSymbol, TIMEFRAMES)
     // The user switched symbols while this fetch was in flight — these results
     // belong to the symbol we've since navigated away from, so drop them rather
     // than mixing them into the new symbol's (freshly reset) state.
     if (activeSymbol !== symbol) return
 
     let anySuccess = false
-    for (const tf of dueTimeframes) {
+    for (const tf of TIMEFRAMES) {
       const series = raw[tf.key]
       // Rate-limited or transient fetch failure: keep whatever data is already
-      // on screen for this timeframe instead of clearing it out, and leave it
-      // due for next time rather than marking it as freshly fetched.
+      // on screen for this timeframe instead of clearing it out.
       if (series?.error) continue
       anySuccess = true
-      lastFetchedAt[tf.key] = now
       const last = series[series.length - 1]
       // H1 is the finest timeframe still fetched, so it's the freshest source for spot.
       if (tf.key === 'H1') {
@@ -733,7 +721,14 @@ async function refreshData() {
         priceEl.textContent = formatPrice(currentPrice)
       }
       const zones = detectLevels(series, currentPrice ?? last.close)
-      zonesByTimeframe[tf.key] = { zones, series }
+      // fingerprint (2026-08-23): every timeframe refetches on every tick now (see
+      // TIMEFRAMES' own comment in twelveData.js), so `series` is always a brand-new
+      // array even when its content is byte-identical to last tick's — a plain object
+      // identity check can no longer tell "actually changed" from "just refetched".
+      // renderContent compares this instead, so the chart only tears down (losing the
+      // user's zoom/pan) when the data it's showing has genuinely moved.
+      const fingerprint = `${series.length}:${last.time}:${last.close}`
+      zonesByTimeframe[tf.key] = { zones, series, fingerprint }
     }
 
     // Every due timeframe failed (offline, or the whole API is down) — nothing

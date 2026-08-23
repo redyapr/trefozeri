@@ -36,7 +36,7 @@ const HISTORY_PATH = path.join(process.cwd(), 'data', 'signal-history.json')
 const ALERT_STATE_PATH = path.join(process.cwd(), 'data', 'last-alert.json')
 const REPORT_STATE_PATH = path.join(process.cwd(), 'data', 'last-report.json')
 // A persistent cause (an expired API key, say) would otherwise re-alert every single
-// 15-minute cron tick forever — suppress a repeat of the exact same alert text until
+// cron tick forever — suppress a repeat of the exact same alert text until
 // this long has passed since it was last actually sent. Overridable (hours, not ms)
 // via ALERT_SUPPRESS_HOURS for anyone who wants alerts more/less often than the default.
 const ALERT_SUPPRESS_MS = (Number(process.env.ALERT_SUPPRESS_HOURS) || 6) * 60 * 60 * 1000
@@ -83,10 +83,21 @@ const LIVE_BASE = `${SITE_URL}/data`
 
 // Kept as a local, minimal copy rather than importing src/lib/twelveData.js — that
 // module reads import.meta.env (a Vite/browser concern), which plain Node doesn't have.
+//
+// refetchIntervalMinutes (2026-08-23): only throttles the Twelve Data (XAUUSD) side of
+// each timeframe — see fetchThrottled below. BTCUSD's Binance.US calls don't need this;
+// its rate limit is far more generous and isn't shared with gold's own quota. This is a
+// real request-budget throttle (unlike the dashboard's own client-side fetches, which
+// hit a static-JSON CDN with no such quota — see TIMEFRAMES' own comment in
+// twelveData.js): fetching an H4/D1 candle fresh every 5 minutes would blow through
+// Twelve Data's 800-request/day free-tier cap for no real benefit, since that candle
+// mostly hasn't moved since the last check anyway. Each value here must stay a multiple
+// of the cron's own interval (5, see deploy.yml) or shouldFetchNow's alignment check
+// below will never land on it.
 const TIMEFRAMES = [
-  { key: 'H1', twelveDataInterval: '1h', binanceInterval: '1h', outputsize: 300 },
-  { key: 'H4', twelveDataInterval: '4h', binanceInterval: '4h', outputsize: 300 },
-  { key: 'D1', twelveDataInterval: '1day', binanceInterval: '1d', outputsize: 300 },
+  { key: 'H1', twelveDataInterval: '1h', binanceInterval: '1h', outputsize: 300, refetchIntervalMinutes: 15 },
+  { key: 'H4', twelveDataInterval: '4h', binanceInterval: '4h', outputsize: 300, refetchIntervalMinutes: 60 },
+  { key: 'D1', twelveDataInterval: '1day', binanceInterval: '1d', outputsize: 300, refetchIntervalMinutes: 360 },
 ]
 
 // Fetched separately from TIMEFRAMES and used for exactly one thing: checking an
@@ -204,20 +215,62 @@ export async function withRetry(fn, label, { attempts = RETRY_ATTEMPTS, baseDela
   throw lastErr
 }
 
+// Shared by fetchWithFallback's own fallback path and fetchThrottled's "not due yet"
+// skip below — both ultimately want the same thing: whatever this file's own
+// already-deployed value currently is, without hitting the real (rate-limited) API.
+async function fetchLiveSnapshot(relPath) {
+  const res = await fetch(`${LIVE_BASE}/${relPath}`)
+  if (!res.ok) throw new Error(`fallback fetch returned ${res.status}`)
+  return res.json()
+}
+
 export async function fetchWithFallback(label, primary, fallbackRelPath, retryOptions) {
   try {
     return await withRetry(primary, label, retryOptions)
   } catch (err) {
     console.warn(`[fetch-data] ${label} failed after retries (${err.message}) — falling back to last published snapshot`)
     try {
-      const res = await fetch(`${LIVE_BASE}/${fallbackRelPath}`)
-      if (!res.ok) throw new Error(`fallback fetch returned ${res.status}`)
-      return await res.json()
+      return await fetchLiveSnapshot(fallbackRelPath)
     } catch (fallbackErr) {
       console.warn(`[fetch-data] ${label} fallback also failed (${fallbackErr.message}) — leaving this file unwritten`)
       recordFailure(label, `primary failed after retries (${err.message}); fallback also failed (${fallbackErr.message})`)
       return null
     }
+  }
+}
+
+// True once every `intervalMinutes`, aligned to the UTC day rather than to whenever this
+// process happens to start — so it lines up the same way regardless of which run first
+// introduced it, as long as the cron cadence itself divides evenly into intervalMinutes
+// (3-minute cron, 15/60/360-minute intervals — see TIMEFRAMES' own comment).
+export function shouldFetchNow(intervalMinutes, now = new Date()) {
+  const minuteOfDay = now.getUTCHours() * 60 + now.getUTCMinutes()
+  return minuteOfDay % intervalMinutes === 0
+}
+
+// Like fetchWithFallback, but skips even trying the real API on a run where this
+// timeframe isn't due for a refresh yet (see TIMEFRAMES' refetchIntervalMinutes) —
+// reusing the currently-deployed snapshot instead, the same way a failed real fetch
+// already falls back to it. Not treated as a failure when that reuse succeeds: this is
+// an intentional skip, not a data source actually being down. Only recordFailure()s (so
+// an ops alert fires) if the reuse itself fails too — otherwise this timeframe's file
+// would simply be missing from this run's deploy, since public/data/ is rebuilt fresh
+// every run rather than persisted between them.
+//
+// M1 (see MONITOR_TF below) is deliberately never throttled this way — it's the one
+// piece of this whole 2026-08-23 rate-limit rework that actually benefits from the
+// cron's own faster cadence (finer-grained fill/SL/TP detection), so it's still fetched
+// fresh on every single run.
+export async function fetchThrottled(label, primary, fallbackRelPath, intervalMinutes, retryOptions, now) {
+  if (shouldFetchNow(intervalMinutes, now)) {
+    return fetchWithFallback(label, primary, fallbackRelPath, retryOptions)
+  }
+  try {
+    return await fetchLiveSnapshot(fallbackRelPath)
+  } catch (err) {
+    console.warn(`[fetch-data] ${label} not due yet, and reusing the last snapshot failed (${err.message}) — leaving this file unwritten`)
+    recordFailure(label, `not due yet, and reusing last snapshot failed (${err.message})`)
+    return null
   }
 }
 
@@ -815,8 +868,8 @@ export function buildWeeklyReportMessage(history, weekStartMs) {
 }
 
 // Fires on the first cron tick that lands in the 00:00-00:59 WIB hour each day (the
-// existing 15-minute cron already ticks 4 times inside that hour — :00, :15, :30,
-// :45 — so no separate GitHub Actions schedule is needed). Reports on the WIB calendar
+// existing 5-minute cron already ticks 12 times inside that hour — :00, :05, :10, ...,
+// :55 — so no separate GitHub Actions schedule is needed). Reports on the WIB calendar
 // day that just ended. The whole-hour window (rather than just the :00 tick) tolerates
 // GitHub Actions' own scheduling jitter/delay: if the :00 tick itself runs late or gets
 // skipped, a later tick in the same hour still catches it. lastDailyReportDate is what
@@ -850,7 +903,7 @@ export async function maybeSendDailyReport(history, now, state) {
   const yesterdayStartMs = todayStartMs - DAY_MS
   // null means neither symbol had any activity yesterday — skip sending a "nothing
   // happened" message every quiet day, but still remember today's date below so this
-  // doesn't re-evaluate on every 15-minute tick within the same hour.
+  // doesn't re-evaluate on every tick within the same hour.
   const message = buildDailyReportMessage(history, yesterdayStartMs)
   if (message) await sendDailyReport(message, history, yesterdayStartMs)
   state.lastDailyReportDate = todayKey
@@ -923,7 +976,7 @@ async function loadSignalHistory() {
 export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByTf, calendar = null) {
   const currentPrice = seriesByTf.H1?.at(-1)?.close
   // The data's own timestamp, not wall-clock now — normally the same thing (this runs
-  // every ~15 minutes), but ties "is the market closed" to what the candles actually
+  // every ~5 minutes), but ties "is the market closed" to what the candles actually
   // show rather than whenever the script happens to execute, and makes it deterministic
   // to test.
   const currentTime = seriesByTf.H1?.at(-1)?.time
@@ -1051,10 +1104,11 @@ export async function main() {
   const seriesByTfBySymbol = { XAUUSD: {}, BTCUSD: {} }
 
   for (const tf of TIMEFRAMES) {
-    const gold = await fetchWithFallback(
+    const gold = await fetchThrottled(
       `XAUUSD ${tf.key}`,
       () => fetchTwelveData('XAU/USD', tf, apiKey),
-      `quote/XAUUSD-${tf.key}.json`
+      `quote/XAUUSD-${tf.key}.json`,
+      tf.refetchIntervalMinutes
     )
     if (gold) {
       await writeJson(`quote/XAUUSD-${tf.key}.json`, gold)
