@@ -918,14 +918,23 @@ body[data-symbol='btcusd'] {
   box-shadow: var(--card-shadow);
 }
 
+/* Left column: timeframe + category (zone-type) with the strength/confluence badge
+   stacked directly below it — the card is two columns total, this and zone-range. */
+.zone-label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100px;
+  flex: 0 0 auto;
+}
+
 .zone-type {
   font-family: var(--font);
   font-weight: 700;
   font-size: 0.8rem;
   letter-spacing: 0.01em;
   text-transform: uppercase;
-  width: 66px;
-  flex: 0 0 auto;
 }
 
 .zone-card.support .zone-type {
@@ -954,14 +963,6 @@ body[data-symbol='btcusd'] {
   font-size: 0.74rem;
   color: var(--text-dim);
   margin-top: 2px;
-}
-
-.zone-stats {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 5px;
-  flex: 0 0 auto;
 }
 
 .strength-badge {
@@ -1119,12 +1120,11 @@ body[data-symbol='btcusd'] {
     flex-wrap: wrap;
   }
 
-  .zone-stats {
-    align-items: flex-start;
+  .zone-label {
+    width: 84px;
   }
 
   .zone-type {
-    width: 52px;
     font-size: 0.72rem;
   }
 }

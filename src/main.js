@@ -495,13 +495,18 @@ function renderZoneCard(zone) {
   // strengthLabel) — there's no "strong but not confluent" state, so the confluence
   // badge fully replaces a separate "Strong" badge instead of sitting next to one.
   const badge = zone.isGolden ? confluenceBadgeHtml() : '<span class="strength-badge medium">Medium</span>'
+  // Two columns only: timeframe + category + strength badge stacked on the left
+  // (zone-label), price + the rest of the metadata on the right (zone-range) — the
+  // timeframe used to live in zone-meta and the badge in its own third column.
   card.innerHTML = `
-    <span class="zone-type">${shortCategory(zone.category)}</span>
+    <div class="zone-label">
+      <span class="zone-type">${zone.tf} · ${shortCategory(zone.category)}</span>
+      ${badge}
+    </div>
     <div class="zone-range">
       <div class="zone-price">${formatPrice(zone.price)}</div>
-      <div class="zone-meta">${zone.tf} · Distance: ${formatPrice(zone.distanceFromPrice)} · Formed ${timeAgo(zone.startTime)}${brokenNote}${confluenceNote}</div>
+      <div class="zone-meta">Distance: ${formatPrice(zone.distanceFromPrice)} · Formed ${timeAgo(zone.startTime)}${brokenNote}${confluenceNote}</div>
     </div>
-    <div class="zone-stats">${badge}</div>
   `
   return card
 }
