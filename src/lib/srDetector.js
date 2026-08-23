@@ -72,7 +72,9 @@ const BREAKOUT_CONFIRM_BARS = 1
 
 // A level already tested (approached without breaking) this many times is real S/R
 // wisdom to treat as weaker than a fresh, never-touched one — each successful defense
-// makes the next attacker more likely to finally break it. Feeds strengthLabel below.
+// makes the next attacker more likely to finally break it. Feeds computeStrengthLabel
+// below — both toZone (raw zones) and buildSignalForZone (signals) read strengthLabel
+// straight off their own zone object now, so this no longer needs to be exported.
 const RETEST_WEAKEN_THRESHOLD = 3
 
 // A level that just flipped role needs to have actually traveled some real distance in
@@ -89,6 +91,20 @@ const MIN_PULLBACK_EXTENT_ATR_MULT = 0.5
 const VOLUME_LOOKBACK = 20
 const VOLUME_CONFIRM_MULT = 1.2
 const BODY_RATIO_CONFIRM_MIN = 0.5
+
+// 2026-08-23: "Strong" used to just mean isGolden (cross-timeframe confluence) — there
+// was no way for a level to earn it on its own. This is deliberately independent of
+// confluence (computeStrengthLabel below never looks at isGolden, and isGolden is
+// computed later by annotateGoldenZones anyway — long after toZone has already set
+// strengthLabel) — a level can be both, either, or neither. Five yes/no signals off the
+// level's own track record, majority vote decides Strong rather than one dominant
+// metric that could be noisy alone. testCount >= RETEST_WEAKEN_THRESHOLD still overrides
+// everything straight to Weak first: a fatigued level isn't "Strong" just because it's
+// also old and well-formed.
+const LEVEL_AGE_STRONG_BARS = 30 // bars since formation, timeframe-relative like everything else here
+const SHARP_REJECTION_ATR_MULT = 1 // moved this many ATRs away within the pivot's own confirm window
+const TIGHT_DEFENSE_ATR_MULT = 0.5 // matches MIN_PULLBACK_EXTENT_ATR_MULT's own scale
+const STRONG_SCORE_THRESHOLD = 3 // out of the 5 criteria in computeStrengthLabel
 
 function computeATR(candles, period = 14) {
   const trs = []
@@ -261,9 +277,50 @@ function evaluateBreakoutQuality(candle, avgVolume) {
   return body / range >= BODY_RATIO_CONFIRM_MIN
 }
 
+// One of the 5 "Strong" signals (see computeStrengthLabel): did price actually leave in
+// a hurry right after this pivot formed, or did it just barely poke a new extreme and
+// linger? Looks at the same PIVOT_RIGHT-bar window that already had to hold for this to
+// be recognized as a pivot at all — isLow=true for a support/low pivot (checks how far
+// UP price ran), false for a resistance/high pivot (how far DOWN).
+function computeSharpRejection(candles, pivotIndex, pivotPrice, isLow, atr) {
+  if (!(atr > 0)) return false
+  const windowEnd = Math.min(candles.length - 1, pivotIndex + PIVOT_RIGHT)
+  let extreme = isLow ? -Infinity : Infinity
+  for (let k = pivotIndex + 1; k <= windowEnd; k++) {
+    extreme = isLow ? Math.max(extreme, candles[k].high) : Math.min(extreme, candles[k].low)
+  }
+  if (!Number.isFinite(extreme)) return false
+  const moved = isLow ? extreme - pivotPrice : pivotPrice - extreme
+  return moved >= atr * SHARP_REJECTION_ATR_MULT
+}
+
+// "Strong" independent of confluence (see this constant block's own comment above) —
+// five yes/no reads off the level's own track record:
+//   1. proven at least once but not yet fatigued (testCount 1-2, not 3+)
+//   2. old enough to have mattered for a while (age, in bars, >= LEVEL_AGE_STRONG_BARS)
+//   3. formed on a candle with real conviction (evaluateBreakoutQuality at the pivot
+//      itself, not the later breakout candle)
+//   4. rejected sharply right after forming (computeSharpRejection above)
+//   5. defended tightly since (roleExtreme sits close to price, not far beyond it) —
+//      only counts once actually tested at least once; an untested level's roleExtreme
+//      is still just its own formation wick, which would trivially look "tight"
+// Strong once STRONG_SCORE_THRESHOLD of these hold; testCount alone can still veto
+// straight to Weak first, same as before this existed.
+function computeStrengthLabel(level, atr) {
+  if (level.testCount >= RETEST_WEAKEN_THRESHOLD) return 'Weak'
+  const provenNotFatigued = level.testCount >= 1
+  const old = level.age >= LEVEL_AGE_STRONG_BARS
+  const tightDefense =
+    level.testCount >= 1 && atr > 0 && Math.abs(level.price - level.roleExtreme) < atr * TIGHT_DEFENSE_ATR_MULT
+  const score = [provenNotFatigued, old, level.formationQuality, level.sharpRejection, tightDefense].filter(
+    Boolean
+  ).length
+  return score >= STRONG_SCORE_THRESHOLD ? 'Strong' : 'Medium'
+}
+
 // Replays the per-pivot state machine bar-by-bar over the full series, exactly as it
 // would evolve live, one candle at a time.
-function runStateMachine(candles, breakoutThreshold) {
+function runStateMachine(candles, breakoutThreshold, atr) {
   const { highs, lows } = findBodyPivots(candles, PIVOT_LEFT, PIVOT_RIGHT, breakoutThreshold)
   const lowByPivotIndex = new Map(lows.map((p) => [p.index, p]))
   const highByPivotIndex = new Map(highs.map((p) => [p.index, p]))
@@ -284,6 +341,9 @@ function runStateMachine(candles, breakoutThreshold) {
     touching: false, // edge-detects a prolonged approach as one test, not one per bar
     testCount: 0, // approaches that didn't break — see RETEST_WEAKEN_THRESHOLD
     tradeable: true, // set false at confirmation if evaluateBreakoutQuality rejects the breakout candle
+    age: 0, // bars since formation, incremented every bar below — see computeStrengthLabel
+    formationQuality: false, // set once at formation — see computeStrengthLabel
+    sharpRejection: false, // set once at formation — see computeSharpRejection
   })
 
   for (let i = 0; i < candles.length; i++) {
@@ -294,12 +354,18 @@ function runStateMachine(candles, breakoutThreshold) {
       // roleExtreme starts at the pivot's own wick — the low that already got bought up
       // once, which is the natural first reference for "how far below is this level
       // actually defended".
-      supports.unshift(freshLevel(pl.price, pl.time, pl.wick))
+      const level = freshLevel(pl.price, pl.time, pl.wick)
+      level.formationQuality = evaluateBreakoutQuality(candles[pl.index], avgVolumeBefore(candles, pl.index))
+      level.sharpRejection = computeSharpRejection(candles, pl.index, pl.price, true, atr)
+      supports.unshift(level)
       if (supports.length > MAX_KEEP) supports.pop()
     }
     const ph = highByPivotIndex.get(confirmedIndex)
     if (ph) {
-      resistances.unshift(freshLevel(ph.price, ph.time, ph.wick))
+      const level = freshLevel(ph.price, ph.time, ph.wick)
+      level.formationQuality = evaluateBreakoutQuality(candles[ph.index], avgVolumeBefore(candles, ph.index))
+      level.sharpRejection = computeSharpRejection(candles, ph.index, ph.price, false, atr)
+      resistances.unshift(level)
       if (resistances.length > MAX_KEEP) resistances.pop()
     }
 
@@ -308,6 +374,7 @@ function runStateMachine(candles, breakoutThreshold) {
     const avgVolNow = avgVolumeBefore(candles, i)
 
     for (const s of supports) {
+      s.age += 1
       if (s.state === 0) {
         // Role = support, invalidated by a close below price — track the deepest low
         // wick seen while still acting as support (a real, already-tested downside).
@@ -349,6 +416,7 @@ function runStateMachine(candles, breakoutThreshold) {
     }
 
     for (const r of resistances) {
+      r.age += 1
       if (r.state === 0) {
         const beyond = close > r.price + breakoutThreshold
         if (beyond) {
@@ -435,6 +503,12 @@ function toZone(level, category, type, currentPrice, breakoutThreshold, atr) {
     // buildSignals actually excludes a non-tradeable zone from becoming a live idea,
     // same "shown but not tradeable" treatment already given to H4/D1 zones.
     tradeable: level.tradeable !== false && pullbackOk,
+    // 'Strong' | 'Medium' | 'Weak' off the level's own track record — see
+    // computeStrengthLabel. Independent of isGolden above (still false here; confluence
+    // is decided later, across timeframes, by annotateGoldenZones) — a zone can be
+    // Strong and golden, Strong and not, or neither; the confluence badge is a separate
+    // display decision the caller makes on top of this, not a further input into it.
+    strengthLabel: computeStrengthLabel(level, atr),
   }
 }
 
@@ -446,7 +520,7 @@ export function detectLevels(candles, currentPrice) {
   const atr = computeATR(candles)
   const breakoutThreshold = Math.max(atr * BREAKOUT_ATR_MULT, currentPrice * 0.0002)
 
-  const { support, resistance, sbr, rbs } = runStateMachine(candles, breakoutThreshold)
+  const { support, resistance, sbr, rbs } = runStateMachine(candles, breakoutThreshold, atr)
 
   return [
     toZone(support, 'Support', 'support', currentPrice, breakoutThreshold, atr),
@@ -589,12 +663,14 @@ function buildSignalForZone(zone, allZones, higherTfZones = []) {
     sl,
     tp,
     threshold: zone.threshold, // lets the track record tell "same pivot, recalculated" apart from "replaced by a different one"
-    // Golden Zone confluence always wins (cross-timeframe agreement is the strongest
-    // signal this app has); otherwise a level tested RETEST_WEAKEN_THRESHOLD+ times
-    // without breaking is downgraded — each successful defense makes the next attacker
-    // more likely to finally break it, so a well-worn level is weaker, not equally
-    // "Medium", to a fresh one.
-    strengthLabel: zone.isGolden ? 'Strong' : zone.testCount >= RETEST_WEAKEN_THRESHOLD ? 'Weak' : 'Medium',
+    // strengthLabel ('Strong'/'Medium'/'Weak', see computeStrengthLabel) and isGolden
+    // (cross-timeframe confluence) are independent reads — carried through separately
+    // rather than folded into one another, so a caller can still tell "proven on its
+    // own merits" apart from "another timeframe also has a level right here". Confluence
+    // is still treated as the stronger signal for *display* purposes (see
+    // confluenceBadgeHtml's call sites in main.js), just not baked into this field.
+    strengthLabel: zone.strengthLabel,
+    isGolden: zone.isGolden,
     confluence: zone.confluence,
   }
 }

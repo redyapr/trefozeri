@@ -812,43 +812,89 @@ test('detectLevels: level freshness (testCount)', async (t) => {
   })
 })
 
-test('strengthLabel reflects Golden Zone confluence and level freshness', async (t) => {
-  function zoneWithTestCount(testCount, overrides = {}) {
-    return {
-      category: 'Support',
-      type: 'support',
-      price: 4295,
-      mid: 4295,
-      threshold: 5,
-      atr: 10,
-      structureAnchor: 4290,
-      distanceFromPrice: 5,
-      isGolden: false,
-      confluence: [],
-      testCount,
-      ...overrides,
-    }
+// 2026-08-23: strengthLabel used to just mean isGolden ('Strong') vs testCount>=3
+// ('Weak') vs everything else ('Medium'), computed inside buildSignalForZone off of
+// isGolden directly. It's now computed by computeStrengthLabel off the level's own
+// track record ALONE (testCount, age, formation quality, a sharp post-formation
+// rejection, and how tightly it's been defended since — Strong needs 3 of those 5),
+// entirely independent of isGolden — set by toZone, before annotateGoldenZones (which
+// sets isGolden) has even run. A zone can be Strong and golden, Strong and not, or
+// neither; buildSignalForZone/buildSignals just carry both fields through unchanged.
+test('strengthLabel: independent of confluence, off the level\'s own track record', async (t) => {
+  function candle(t, o, h, l, c) {
+    return { time: t, open: o, high: h, low: l, close: c }
   }
 
-  await t.test('a Golden Zone (isGolden) is Strong regardless of testCount', () => {
-    const [signal] = buildSignals([zoneWithTestCount(5, { isGolden: true, confluence: ['H4'] })], 4300)
-    assert.equal(signal.strengthLabel, 'Strong')
+  // A calm run (small, stable ATR), a full-bodied pivot with a tight wick, a sharp
+  // 5-bar rejection well past 1 ATR away, one clean touch-and-bounce (a deep wick,
+  // elevated body so it registers as a touch without itself becoming a competing
+  // pivot), then a long, uneventful hold — satisfies all 5 of computeStrengthLabel's
+  // criteria at once (proven-not-fatigued, old, well-formed, sharply rejected, tightly
+  // defended since).
+  function strongCandidateSeries(base) {
+    const candles = []
+    let t = 0
+    for (let i = 0; i < 20; i++) candles.push(candle(t++, base + 5, base + 5.5, base + 4.5, base + 5))
+    candles.push(candle(t++, base + 1, base + 1, base + 0.7, base + 1)) // the pivot: full body, tight wick
+    for (let i = 0; i < 5; i++) candles.push(candle(t++, base + 4, base + 6, base + 3.5, base + 5)) // sharp rejection
+    for (let i = 0; i < 5; i++) candles.push(candle(t++, base + 4, base + 5, base + 3, base + 4))
+    candles.push(candle(t++, base + 4, base + 4.5, base + 1.3, base + 4.2)) // one touch (deep wick, high body)
+    for (let i = 0; i < 5; i++) candles.push(candle(t++, base + 4, base + 5, base + 3, base + 4))
+    for (let i = 0; i < 30; i++) candles.push(candle(t++, base + 4, base + 4.5, base + 3.5, base + 4)) // ages it past 30 bars
+    return candles
+  }
+
+  await t.test('a level that is proven, aged, well-formed, sharply rejected and tightly defended is Strong — with no confluence at all', () => {
+    const candles = strongCandidateSeries(4300)
+    const support = detectLevels(candles, candles.at(-1).close).find((z) => z.category === 'Support')
+    assert.equal(support.testCount, 1)
+    assert.equal(support.isGolden, false)
+    assert.equal(support.strengthLabel, 'Strong')
   })
 
-  await t.test('a level tested 3+ times without breaking is downgraded to Weak', () => {
-    const [signal] = buildSignals([zoneWithTestCount(3)], 4300)
-    assert.equal(signal.strengthLabel, 'Weak')
+  await t.test('a fresh, never-tested, thin-wicked level (the common case) stays Medium', () => {
+    const candles = seriesWithLowPivot(4300)
+    const support = detectLevels(candles, candles.at(-1).close).find((z) => z.category === 'Support')
+    assert.equal(support.testCount, 0)
+    assert.equal(support.strengthLabel, 'Medium')
   })
 
-  await t.test('a fresh level (below the weaken threshold) stays Medium', () => {
-    const [signal] = buildSignals([zoneWithTestCount(1)], 4300)
-    assert.equal(signal.strengthLabel, 'Medium')
+  await t.test('testCount >= RETEST_WEAKEN_THRESHOLD (3) overrides straight to Weak, even with every other criterion otherwise favorable', () => {
+    const candles = []
+    let t = 0
+    const base = 4300
+    for (let i = 0; i < 20; i++) candles.push(candle(t++, base + 5, base + 5.5, base + 4.5, base + 5))
+    candles.push(candle(t++, base + 1, base + 1, base + 0.7, base + 1))
+    for (let i = 0; i < 5; i++) candles.push(candle(t++, base + 4, base + 6, base + 3.5, base + 5))
+    for (let cycle = 0; cycle < 3; cycle++) {
+      for (let i = 0; i < 5; i++) candles.push(candle(t++, base + 4, base + 5, base + 3, base + 4))
+      candles.push(candle(t++, base + 4, base + 4.5, base + 1.3, base + 4.2))
+    }
+    for (let i = 0; i < 5; i++) candles.push(candle(t++, base + 4, base + 5, base + 3, base + 4))
+    for (let i = 0; i < 30; i++) candles.push(candle(t++, base + 4, base + 4.5, base + 3.5, base + 4))
+    const support = detectLevels(candles, candles.at(-1).close).find((z) => z.category === 'Support')
+    assert.equal(support.testCount, 3)
+    assert.equal(support.strengthLabel, 'Weak')
   })
 
-  await t.test('a level with no testCount at all (e.g. pre-existing detectLevels output) defaults to Medium, not Weak', () => {
-    const { testCount, ...withoutTestCount } = zoneWithTestCount(0)
-    const [signal] = buildSignals([withoutTestCount], 4300)
-    assert.equal(signal.strengthLabel, 'Medium')
+  await t.test('isGolden never changes strengthLabel — a confluent zone with a weak track record still reads Medium', () => {
+    const candles = seriesWithLowPivot(4300)
+    const zones = detectLevels(candles, candles.at(-1).close)
+    const support = zones.find((z) => z.category === 'Support')
+    const zonesByTf = { H1: { zones }, H4: { zones: [{ ...support }] } }
+    annotateGoldenZones(zonesByTf)
+    const golden = zonesByTf.H1.zones.find((z) => z.category === 'Support')
+    assert.equal(golden.isGolden, true, 'sanity check: the fixture actually produced a confluent zone')
+    assert.equal(golden.strengthLabel, 'Medium')
+  })
+
+  await t.test('buildSignalForZone/buildSignals carry strengthLabel and isGolden through from the zone unchanged', () => {
+    const candles = strongCandidateSeries(4300)
+    const zone = detectLevels(candles, candles.at(-1).close).find((z) => z.category === 'Support')
+    zone.isGolden = true // simulate annotateGoldenZones having run
+    const [signal] = buildSignals([zone], candles.at(-1).close)
+    assert.equal(signal.strengthLabel, zone.strengthLabel)
+    assert.equal(signal.isGolden, zone.isGolden)
   })
 })
 

@@ -981,11 +981,27 @@ body[data-symbol='btcusd'] {
   color: var(--text-dim);
 }
 
-/* Explicit confluence badge — its own filled pill, distinct from the (plain,
-   outlined) strength badge above. There's no "strong but not confluent" state (see
-   srDetector.js's strengthLabel), so this fully replaces strength-badge.strong
-   rather than sitting alongside it. Named "Golden" for XAUUSD and "Diamond" for
-   BTCUSD (see main.js), colored to match whichever symbol is active via
+/* Tested 3+ times without breaking (see RETEST_WEAKEN_THRESHOLD in srDetector.js) —
+   the same "watch out" red as a resistance level, not just a dimmer version of Medium,
+   since this is a real caution, not merely "less notable than Strong". */
+.strength-badge.weak {
+  color: var(--resistance);
+}
+
+/* 2026-08-23: a level proving itself on its own track record (see computeStrengthLabel
+   in srDetector.js) — independent of, and plainer than, the filled confluence pill
+   below (isGolden). Support's green rather than the accent color: this is "proven",
+   not "special" the way a Golden/Diamond Zone is. */
+.strength-badge.strong {
+  color: var(--support);
+}
+
+/* Explicit confluence badge — its own filled pill, distinct from the (plain, outlined)
+   strength badge above. A zone can be both Strong (strength-badge.strong above) and
+   golden (see computeStrengthLabel/isGolden in srDetector.js) — this still wins the
+   display slot when both are true (see confluenceBadgeHtml's call sites in main.js),
+   so the two are never shown stacked together. Named "Golden" for XAUUSD and "Diamond"
+   for BTCUSD (see main.js), colored to match whichever symbol is active via
    --badge-bg/--badge-text/--badge-glow. */
 .confluence-badge {
   display: inline-flex;

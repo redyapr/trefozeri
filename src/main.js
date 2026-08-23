@@ -485,20 +485,27 @@ function confluenceBadgeHtml() {
   return `<span class="confluence-badge"><span class="confluence-badge-icon">${icon}</span> ${label}</span>`
 }
 
-// showMediumBadge (see renderContent) is false when nothing in the current combined
-// zone list is golden — every card's badge would then read "Medium" with no exception
-// to contrast it against, so the whole row of identical badges is dropped rather than
-// shown for no informational value.
-function renderZoneCard(zone, showMediumBadge) {
+// A non-Strong badge used to always render as the literal text "Medium" regardless of
+// the actual label — silently hiding a real "Weak" behind the wrong word. Shared by
+// renderZoneCard and renderSignalCard so both show whichever of the two it actually is.
+function strengthBadgeHtml(label) {
+  return `<span class="strength-badge ${label.toLowerCase()}">${label}</span>`
+}
+
+// showBadges (see renderContent) is false when every zone in the current combined list
+// would show the exact same label — nothing to contrast it against, so the whole row of
+// identical badges is dropped rather than shown for no informational value.
+function renderZoneCard(zone, showBadges) {
   const card = document.createElement('div')
   card.className = `zone-card ${zone.type}`
   const flippedFrom = zone.type === 'support' ? 'resistance' : 'support'
   const brokenNote = zone.broken ? ` · flipped from ${flippedFrom} after one breakout` : ''
   const confluenceNote = zone.confluence.length ? ` · also on ${zone.confluence.join(', ')}` : ''
-  // Strong and Golden Zone are literally the same condition (see srDetector.js's
-  // strengthLabel) — there's no "strong but not confluent" state, so the confluence
-  // badge fully replaces a separate "Strong" badge instead of sitting next to one.
-  const badge = zone.isGolden ? confluenceBadgeHtml() : showMediumBadge ? '<span class="strength-badge medium">Medium</span>' : ''
+  // isGolden (confluence) and strengthLabel (see computeStrengthLabel in srDetector.js)
+  // are independent now — a zone can be Strong and golden, Strong and not, or neither.
+  // Confluence still wins the display slot when both are true: it's the stronger signal
+  // and there's no room for two badges here.
+  const badge = !showBadges ? '' : zone.isGolden ? confluenceBadgeHtml() : strengthBadgeHtml(zone.strengthLabel)
   // Two columns only: timeframe + category + strength badge stacked on the left
   // (zone-label), price + the rest of the metadata on the right (zone-range) — the
   // timeframe used to live in zone-meta and the badge in its own third column.
@@ -583,9 +590,14 @@ function renderContent() {
   }
   const resistances = allZones.filter((z) => z.type === 'resistance').sort(byTfThenDistance)
   const supports = allZones.filter((z) => z.type === 'support').sort(byTfThenDistance)
-  // Across the whole combined list, not per column — a Golden zone on the support
-  // side still makes the resistance side's "Medium" badges meaningful by contrast.
-  const showMediumBadge = allZones.some((z) => z.isGolden)
+  // Across the whole combined list, not per column — a Golden zone on the support side
+  // still makes the resistance side's badges meaningful by contrast. Keyed on whatever
+  // badge would actually render (isGolden wins display over strengthLabel — see
+  // renderZoneCard), not just strengthLabel alone: isGolden and strengthLabel are
+  // independent now, so an all-Medium list with one golden zone in it is still 2
+  // distinct badges on screen, not 1.
+  const badgeIdentity = (z) => (z.isGolden ? 'golden' : z.strengthLabel)
+  const showBadges = new Set(allZones.map(badgeIdentity)).size > 1
 
   const zonesGrid = document.createElement('div')
   zonesGrid.className = 'zones-grid'
@@ -593,13 +605,13 @@ function renderContent() {
   if (supports.length) {
     const column = document.createElement('div')
     column.className = 'zone-column'
-    supports.forEach((zone) => column.appendChild(renderZoneCard(zone, showMediumBadge)))
+    supports.forEach((zone) => column.appendChild(renderZoneCard(zone, showBadges)))
     zonesGrid.appendChild(column)
   }
   if (resistances.length) {
     const column = document.createElement('div')
     column.className = 'zone-column'
-    resistances.forEach((zone) => column.appendChild(renderZoneCard(zone, showMediumBadge)))
+    resistances.forEach((zone) => column.appendChild(renderZoneCard(zone, showBadges)))
     zonesGrid.appendChild(column)
   }
   contentEl.appendChild(zonesGrid)
@@ -639,10 +651,13 @@ function renderSignalCard(signal) {
 
   const label = `${signal.direction === 'buy' ? 'BUY' : 'SELL'} ${signal.orderType}`
   const entryText = formatPrice(signal.entry)
-  // Strong and Golden Zone are literally the same condition (see srDetector.js's
-  // strengthLabel) — no separate "Strong" wording needed once the badge is shown.
-  const badge =
-    signal.strengthLabel === 'Strong' ? confluenceBadgeHtml() : '<span class="strength-badge medium">Medium</span>'
+  // isGolden (confluence) and strengthLabel (Strong/Medium/Weak off the level's own
+  // track record — see computeStrengthLabel in srDetector.js) are independent; a
+  // strengthLabel of 'Strong' no longer implies golden, so this checks isGolden
+  // directly rather than the old (and now wrong) `strengthLabel === 'Strong'`.
+  // Otherwise shows whichever it actually is (see strengthBadgeHtml) — this used to
+  // hardcode "Medium" regardless, silently hiding a real Weak (or Strong) signal.
+  const badge = signal.isGolden ? confluenceBadgeHtml() : strengthBadgeHtml(signal.strengthLabel ?? 'Medium')
 
   const tpRows = signal.tp
     .map(

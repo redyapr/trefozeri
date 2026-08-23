@@ -12,11 +12,16 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
 - **Levels** — `srDetector.js` detects pivots per timeframe and tracks each through 3
   states: Support/Resistance → broken-once SBR/RBS → invalidated. A single confirming
   close flips a level immediately — no second bar needed. Cross-timeframe confluence is
-  flagged as a "Golden Zone". A level tested 3+ times
-  without breaking downgrades from "Medium" to "Weak". A broken level (RBS/SBR) becomes
-  a tradeable idea only once its breakout candle shows real conviction (volume for
-  BTCUSD, body-to-range ratio for XAUUSD) and price has run far enough past it for a
-  retest to matter. Until then it's shown on the chart but not offered as a signal.
+  flagged as a "Golden Zone" (independent of the strength badge below — a level can be
+  both, either, or neither). A level tested 3+ times without breaking downgrades to
+  "Weak"; otherwise it's "Strong" once it's proven itself on at least 3 of 5 signals off
+  its own track record — tested at least once but not yet fatigued, old enough to have
+  mattered for a while, formed on a candle with real conviction, rejected sharply right
+  after forming, and defended tightly ever since — or "Medium" otherwise. A broken level
+  (RBS/SBR) becomes a tradeable idea only once its breakout candle shows real conviction
+  (volume for BTCUSD, body-to-range ratio for XAUUSD) and price has run far enough past
+  it for a retest to matter. Until then it's shown on the chart but not offered as a
+  signal.
 - **Trend filter** — a fade strategy that takes both directions symmetrically fights
   itself against the prevailing trend. A confirmed H4 (falling back to D1) trend offers
   only the aligned side: buy in an uptrend, sell in a downtrend. A range-bound read
