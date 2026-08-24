@@ -27,7 +27,7 @@ const {
   notifyInvalidatedSignals,
   withRetry,
   fetchWithFallback,
-  shouldFetchNow,
+  isFetchDue,
   fetchThrottled,
   sendTelegramMessage,
   editTelegramMessage,
@@ -94,6 +94,22 @@ async function withClearReportState(fn) {
   } finally {
     if (backup == null) await rm(REPORT_STATE_PATH, { force: true })
     else await writeFile(REPORT_STATE_PATH, backup)
+  }
+}
+
+// fetchThrottled persists its last-successful-fetch timestamps here too (same
+// reasoning as ALERT_STATE_PATH/REPORT_STATE_PATH — no injectable path, it has to
+// survive across separate CI processes) — back it up/restore it around any test that
+// could touch it, same as the others above.
+const LAST_FETCH_STATE_PATH = path.join(process.cwd(), 'data', 'last-fetch.json')
+async function withClearLastFetchState(fn) {
+  const backup = await readFile(LAST_FETCH_STATE_PATH, 'utf8').catch(() => null)
+  await rm(LAST_FETCH_STATE_PATH, { force: true })
+  try {
+    await fn()
+  } finally {
+    if (backup == null) await rm(LAST_FETCH_STATE_PATH, { force: true })
+    else await writeFile(LAST_FETCH_STATE_PATH, backup)
   }
 }
 
@@ -458,63 +474,89 @@ test('fetchWithFallback', async (t) => {
 
 // 2026-08-23 rate-limit review: XAUUSD's H1/H4/D1 are throttled to their own cadence
 // (see TIMEFRAMES' refetchIntervalMinutes) so a faster cron doesn't blow through Twelve
-// Data's 800-request/day free-tier cap — see shouldFetchNow/fetchThrottled below.
-test('shouldFetchNow', async (t) => {
-  await t.test('true exactly on a UTC time that lands on the interval boundary', () => {
-    assert.equal(shouldFetchNow(15, new Date('2026-08-23T10:00:00Z')), true)
-    assert.equal(shouldFetchNow(15, new Date('2026-08-23T10:15:00Z')), true)
-    assert.equal(shouldFetchNow(15, new Date('2026-08-23T10:30:00Z')), true)
+// Data's 800-request/day free-tier cap. 2026-08-24: the first version of this decided
+// "due" by checking the current UTC minute against the cron's own nominal schedule —
+// GitHub Actions' scheduler doesn't actually fire that precisely (observed drifting by
+// 10-20+ minutes in production, once over an hour), so that check could go long
+// stretches without ever lining up, silently reusing an increasingly stale snapshot the
+// whole time. isFetchDue/fetchThrottled below track actual elapsed time since the last
+// genuinely successful fetch instead (data/last-fetch.json), which is correct
+// regardless of how irregularly the cron actually fires.
+test('isFetchDue', async (t) => {
+  await t.test('true when this key has never been fetched before', () => {
+    assert.equal(isFetchDue({}, 'XAUUSD-H1', 15, Date.parse('2026-08-24T10:00:00Z')), true)
   })
 
-  await t.test('false on a tick that falls between boundaries', () => {
-    assert.equal(shouldFetchNow(15, new Date('2026-08-23T10:05:00Z')), false)
-    assert.equal(shouldFetchNow(15, new Date('2026-08-23T10:14:00Z')), false)
+  await t.test('false when less than intervalMinutes have elapsed since the last fetch', () => {
+    const state = { 'XAUUSD-H1': Date.parse('2026-08-24T10:00:00Z') }
+    assert.equal(isFetchDue(state, 'XAUUSD-H1', 15, Date.parse('2026-08-24T10:10:00Z')), false)
   })
 
-  await t.test('a 360-minute (6-hour) interval only lands 4 times a day', () => {
-    assert.equal(shouldFetchNow(360, new Date('2026-08-23T00:00:00Z')), true)
-    assert.equal(shouldFetchNow(360, new Date('2026-08-23T06:00:00Z')), true)
-    assert.equal(shouldFetchNow(360, new Date('2026-08-23T05:00:00Z')), false)
+  await t.test('true once at least intervalMinutes have elapsed, regardless of clock alignment', () => {
+    const state = { 'XAUUSD-H1': Date.parse('2026-08-24T10:03:27Z') } // an off-the-clock timestamp, on purpose
+    assert.equal(isFetchDue(state, 'XAUUSD-H1', 15, Date.parse('2026-08-24T10:18:27Z')), true)
+    assert.equal(isFetchDue(state, 'XAUUSD-H1', 15, Date.parse('2026-08-24T10:18:26Z')), false, 'one ms short of the interval')
+  })
+
+  await t.test('a long gap between cron ticks (the real production failure mode) is still caught', () => {
+    const state = { 'XAUUSD-H1': Date.parse('2026-08-24T00:01:47Z') }
+    // over an hour later, as actually observed — still correctly due, unlike the old
+    // minute-alignment check which could keep missing indefinitely.
+    assert.equal(isFetchDue(state, 'XAUUSD-H1', 15, Date.parse('2026-08-24T01:20:00Z')), true)
+  })
+
+  await t.test('different keys (e.g. different timeframes/symbols) are tracked independently', () => {
+    const state = { 'XAUUSD-H1': Date.parse('2026-08-24T10:00:00Z') }
+    assert.equal(isFetchDue(state, 'XAUUSD-H4', 60, Date.parse('2026-08-24T10:05:00Z')), true)
   })
 })
 
 test('fetchThrottled', async (t) => {
-  await t.test('due this tick: fetches the primary, same as fetchWithFallback', async () => {
+  await t.test('due this tick: fetches the primary and advances state[key] to now', async () => {
     const { restore } = mockTelegram()
     try {
       let calls = 0
+      const state = {}
+      const now = Date.parse('2026-08-24T10:00:00Z')
       const result = await fetchThrottled(
         'SRC',
         async () => { calls += 1; return { ok: true } },
         'irrelevant.json',
         15,
+        state,
+        'XAUUSD-H1',
         { attempts: 0 },
-        new Date('2026-08-23T10:00:00Z')
+        now
       )
       assert.deepEqual(result, { ok: true })
       assert.equal(calls, 1)
+      assert.equal(state['XAUUSD-H1'], now)
     } finally {
       restore()
     }
   })
 
-  await t.test('not due yet: skips the primary entirely and reuses the last snapshot', async () => {
+  await t.test('not due yet: skips the primary entirely, reuses the last snapshot, and leaves state untouched', async () => {
     let calls = 0
     const { restore } = mockTelegram((url) => {
       assert.equal(String(url), 'https://redyapr.github.io/trefozeri/data/irrelevant.json')
       return { ok: true, json: async () => ({ reused: true }) }
     })
     try {
+      const state = { 'XAUUSD-H1': Date.parse('2026-08-24T10:00:00Z') }
       const result = await fetchThrottled(
         'SRC',
         async () => { calls += 1; return { ok: true } },
         'irrelevant.json',
         15,
+        state,
+        'XAUUSD-H1',
         { attempts: 0 },
-        new Date('2026-08-23T10:05:00Z')
+        Date.parse('2026-08-24T10:05:00Z')
       )
       assert.deepEqual(result, { reused: true })
       assert.equal(calls, 0, 'the real API must never be called on an off-cadence tick')
+      assert.equal(state['XAUUSD-H1'], Date.parse('2026-08-24T10:00:00Z'), 'unchanged — this tick never actually fetched')
     } finally {
       restore()
     }
@@ -524,17 +566,64 @@ test('fetchThrottled', async (t) => {
     const { restore } = mockTelegram(() => ({ ok: false, status: 503, json: async () => ({}) }))
     resetFailures()
     try {
+      const state = { 'XAUUSD-H1': Date.parse('2026-08-24T10:00:00Z') }
       const result = await fetchThrottled(
         'SRC',
         async () => { throw new Error('should never be called') },
         'irrelevant.json',
         15,
+        state,
+        'XAUUSD-H1',
         { attempts: 0 },
-        new Date('2026-08-23T10:05:00Z')
+        Date.parse('2026-08-24T10:05:00Z')
       )
       assert.equal(result, null)
       assert.equal(getFailures().length, 1)
       assert.match(getFailures()[0], /SRC/)
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('due this tick, but the primary fails: falls back to the snapshot and does NOT advance state (keeps retrying next tick)', async () => {
+    const { restore } = mockTelegram(() => ({ ok: true, json: async () => ({ fallback: true }) }))
+    try {
+      const state = {}
+      const result = await fetchThrottled(
+        'SRC',
+        async () => { throw new Error('primary down') },
+        'irrelevant.json',
+        15,
+        state,
+        'XAUUSD-H1',
+        { attempts: 0 },
+        Date.parse('2026-08-24T10:00:00Z')
+      )
+      assert.deepEqual(result, { fallback: true })
+      assert.equal(state['XAUUSD-H1'], undefined, 'a fallback is not a genuine fetch — must not push the next real attempt further out')
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('due this tick, primary and its fallback both fail: records a failure, returns null, state untouched', async () => {
+    const { restore } = mockTelegram(() => ({ ok: false, status: 503, json: async () => ({}) }))
+    resetFailures()
+    try {
+      const state = {}
+      const result = await fetchThrottled(
+        'SRC',
+        async () => { throw new Error('primary down') },
+        'irrelevant.json',
+        15,
+        state,
+        'XAUUSD-H1',
+        { attempts: 0 },
+        Date.parse('2026-08-24T10:00:00Z')
+      )
+      assert.equal(result, null)
+      assert.equal(getFailures().length, 1)
+      assert.equal(state['XAUUSD-H1'], undefined)
     } finally {
       restore()
     }
@@ -2126,17 +2215,19 @@ test('main()', async (t) => {
     await withBackedUpHistoryFile(async () => {
       await withClearAlertState(async () => {
         await withClearReportState(async () => {
-          const restoreFetch = mockAllSources()
-          const savedKey = process.env.TWELVE_DATA_API_KEY
-          process.env.TWELVE_DATA_API_KEY = 'test-key'
-          try {
-            await assert.doesNotReject(() => main())
-            const written = JSON.parse(await readFile(REAL_HISTORY_PATH, 'utf8'))
-            assert.ok(Array.isArray(written), 'signal-history.json must still be a JSON array afterward')
-          } finally {
-            restoreFetch()
-            process.env.TWELVE_DATA_API_KEY = savedKey
-          }
+          await withClearLastFetchState(async () => {
+            const restoreFetch = mockAllSources()
+            const savedKey = process.env.TWELVE_DATA_API_KEY
+            process.env.TWELVE_DATA_API_KEY = 'test-key'
+            try {
+              await assert.doesNotReject(() => main())
+              const written = JSON.parse(await readFile(REAL_HISTORY_PATH, 'utf8'))
+              assert.ok(Array.isArray(written), 'signal-history.json must still be a JSON array afterward')
+            } finally {
+              restoreFetch()
+              process.env.TWELVE_DATA_API_KEY = savedKey
+            }
+          })
         })
       })
     })

@@ -106,8 +106,9 @@ npm run dev
 ```
 
 Re-run `npm run fetch:data` manually to refresh local data — there's no dev-time
-proxy. It also updates the real `data/signal-history.json` in place; check `git diff`
-(or `git checkout -- data/signal-history.json`) before committing anything else.
+proxy. It also updates the real `data/signal-history.json` and `data/last-fetch.json`
+in place; check `git diff` (or `git checkout -- data/signal-history.json
+data/last-fetch.json`) before committing anything else.
 Telegram sends stay off during this either way (see the notifications feature above) —
 reverting the JSON file cannot un-send a real message, so don't set
 `ALLOW_TELEGRAM_SEND=true` unless you actually mean to test the real send path.
@@ -135,7 +136,12 @@ code. XAUUSD's H1/H4/D1 (Twelve Data) are throttled to their own slower cadence 
 15/60/360 minutes — reusing the last published snapshot on a run where they're not due
 yet, so the free tier's 800-request/day cap survives a 5-minute cron; only M1 (fill/SL/TP
 detection) and all of BTCUSD (Binance.US, a far more generous limit) fetch fresh every
-run. See `fetchThrottled`/`shouldFetchNow` in `scripts/fetch-data.mjs`.
+run. "Due" is tracked as actual elapsed time since the last successful fetch
+(`data/last-fetch.json`, git-tracked — see below), not the cron's own nominal schedule:
+GitHub Actions' scheduler routinely fires minutes off-schedule, so checking against the
+nominal schedule instead once left every throttled endpoint frozen on stale weekend
+candles for hours, several cron ticks after the market had already reopened. See
+`fetchThrottled`/`isFetchDue` in `scripts/fetch-data.mjs`.
 
 `.github/workflows/deploy.yml` runs test → fetch → build → deploy:
 
@@ -144,8 +150,9 @@ run. See `fetchThrottled`/`shouldFetchNow` in `scripts/fetch-data.mjs`.
 - on manual `workflow_dispatch`
 
 A failing test stops the run before anything else happens. CI is otherwise stateless.
-`data/signal-history.json` is the one exception — updated every run, committed back to
-`master` only when it changes (most ticks commit nothing). A rejected push (something
+`data/signal-history.json`, `data/last-alert.json`, `data/last-report.json` and
+`data/last-fetch.json` are the exceptions — updated every run, committed back to
+`master` only when they change (most ticks commit nothing). A rejected push (something
 else landed on `master` mid-run) rebases and retries up to 3 times. The `deploy` job
 itself retries up to 3 times on a transient `actions/deploy-pages` failure.
 
@@ -205,6 +212,8 @@ data/
   signal-history.json  Git-tracked shared signal track record — committed by CI
   last-alert.json      Git-tracked admin-alert de-dup state — committed by CI
   last-report.json     Git-tracked daily/weekly report de-dup state — committed by CI
+  last-fetch.json      Git-tracked last-successful-fetch timestamps — committed by CI,
+                       used to throttle XAUUSD's H1/H4/D1 (see isFetchDue above)
 .github/workflows/
   deploy.yml  Test → cron fetch → persist track record → build → deploy
 .github/

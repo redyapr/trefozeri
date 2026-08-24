@@ -35,6 +35,7 @@ const OUT_DIR = path.join(process.cwd(), 'public', 'data')
 const HISTORY_PATH = path.join(process.cwd(), 'data', 'signal-history.json')
 const ALERT_STATE_PATH = path.join(process.cwd(), 'data', 'last-alert.json')
 const REPORT_STATE_PATH = path.join(process.cwd(), 'data', 'last-report.json')
+const LAST_FETCH_STATE_PATH = path.join(process.cwd(), 'data', 'last-fetch.json')
 // A persistent cause (an expired API key, say) would otherwise re-alert every single
 // cron tick forever — suppress a repeat of the exact same alert text until
 // this long has passed since it was last actually sent. Overridable (hours, not ms)
@@ -85,15 +86,15 @@ const LIVE_BASE = `${SITE_URL}/data`
 // module reads import.meta.env (a Vite/browser concern), which plain Node doesn't have.
 //
 // refetchIntervalMinutes (2026-08-23): only throttles the Twelve Data (XAUUSD) side of
-// each timeframe — see fetchThrottled below. BTCUSD's Binance.US calls don't need this;
-// its rate limit is far more generous and isn't shared with gold's own quota. This is a
-// real request-budget throttle (unlike the dashboard's own client-side fetches, which
-// hit a static-JSON CDN with no such quota — see TIMEFRAMES' own comment in
-// twelveData.js): fetching an H4/D1 candle fresh every 5 minutes would blow through
-// Twelve Data's 800-request/day free-tier cap for no real benefit, since that candle
-// mostly hasn't moved since the last check anyway. Each value here must stay a multiple
-// of the cron's own interval (5, see deploy.yml) or shouldFetchNow's alignment check
-// below will never land on it.
+// each timeframe — see fetchThrottled/isFetchDue below. BTCUSD's Binance.US calls don't
+// need this; its rate limit is far more generous and isn't shared with gold's own
+// quota. This is a real request-budget throttle (unlike the dashboard's own
+// client-side fetches, which hit a static-JSON CDN with no such quota — see
+// TIMEFRAMES' own comment in twelveData.js): fetching an H4/D1 candle fresh every 5
+// minutes would blow through Twelve Data's 800-request/day free-tier cap for no real
+// benefit, since that candle mostly hasn't moved since the last check anyway. Tracked
+// against actual elapsed wall-clock time (isFetchDue), not the cron's own nominal
+// cadence, so this doesn't need to divide evenly into anything.
 const TIMEFRAMES = [
   { key: 'H1', twelveDataInterval: '1h', binanceInterval: '1h', outputsize: 300, refetchIntervalMinutes: 15 },
   { key: 'H4', twelveDataInterval: '4h', binanceInterval: '4h', outputsize: 300, refetchIntervalMinutes: 60 },
@@ -239,13 +240,24 @@ export async function fetchWithFallback(label, primary, fallbackRelPath, retryOp
   }
 }
 
-// True once every `intervalMinutes`, aligned to the UTC day rather than to whenever this
-// process happens to start — so it lines up the same way regardless of which run first
-// introduced it, as long as the cron cadence itself divides evenly into intervalMinutes
-// (3-minute cron, 15/60/360-minute intervals — see TIMEFRAMES' own comment).
-export function shouldFetchNow(intervalMinutes, now = new Date()) {
-  const minuteOfDay = now.getUTCHours() * 60 + now.getUTCMinutes()
-  return minuteOfDay % intervalMinutes === 0
+// 2026-08-24: this used to decide "due" by checking whether the current UTC
+// minute-of-day was an exact multiple of intervalMinutes (e.g. minute % 15 === 0) —
+// which silently assumed the cron actually fires on those exact minute marks. It
+// doesn't: GitHub Actions' own scheduler routinely fires several minutes off the
+// nominal schedule (observed drifting by 10-20+ minutes in production, occasionally
+// much more under load), so that check could go long stretches — in one case over an
+// hour — without ever lining up, during which every tick reused the same increasingly
+// stale snapshot and never once refetched from Twelve Data. XAUUSD's H1/H4/D1 all
+// froze on stale weekend candles for hours as a result, which is what made
+// isPriceStagnant's "market looks closed" banner fire even once the real market had
+// reopened and was moving again. state (persisted to data/last-fetch.json, the same
+// git-tracked-state pattern as last-alert.json/last-report.json — this can't be an
+// in-memory timer since every CI run starts from a fresh checkout) tracks actual
+// elapsed wall-clock time since the last genuinely successful fetch instead, so it's
+// correct regardless of how irregularly the cron actually fires.
+export function isFetchDue(state, key, intervalMinutes, now = Date.now()) {
+  const last = state[key]
+  return last == null || now - last >= intervalMinutes * 60 * 1000
 }
 
 // Like fetchWithFallback, but skips even trying the real API on a run where this
@@ -257,20 +269,39 @@ export function shouldFetchNow(intervalMinutes, now = new Date()) {
 // would simply be missing from this run's deploy, since public/data/ is rebuilt fresh
 // every run rather than persisted between them.
 //
+// Reimplements fetchWithFallback's own try/fallback flow rather than calling it,
+// because state[key] must only advance on a genuine successful primary fetch — marking
+// it "fetched" after silently falling back internally would push the next real attempt
+// a full interval further out for no reason, exactly the kind of drift this whole
+// function exists to avoid.
+//
 // M1 (see MONITOR_TF below) is deliberately never throttled this way — it's the one
 // piece of this whole 2026-08-23 rate-limit rework that actually benefits from the
 // cron's own faster cadence (finer-grained fill/SL/TP detection), so it's still fetched
 // fresh on every single run.
-export async function fetchThrottled(label, primary, fallbackRelPath, intervalMinutes, retryOptions, now) {
-  if (shouldFetchNow(intervalMinutes, now)) {
-    return fetchWithFallback(label, primary, fallbackRelPath, retryOptions)
+export async function fetchThrottled(label, primary, fallbackRelPath, intervalMinutes, state, key, retryOptions, now = Date.now()) {
+  if (!isFetchDue(state, key, intervalMinutes, now)) {
+    try {
+      return await fetchLiveSnapshot(fallbackRelPath)
+    } catch (err) {
+      console.warn(`[fetch-data] ${label} not due yet, and reusing the last snapshot failed (${err.message}) — leaving this file unwritten`)
+      recordFailure(label, `not due yet, and reusing last snapshot failed (${err.message})`)
+      return null
+    }
   }
   try {
-    return await fetchLiveSnapshot(fallbackRelPath)
+    const result = await withRetry(primary, label, retryOptions)
+    state[key] = now // only advance the throttle clock on a genuine successful fetch
+    return result
   } catch (err) {
-    console.warn(`[fetch-data] ${label} not due yet, and reusing the last snapshot failed (${err.message}) — leaving this file unwritten`)
-    recordFailure(label, `not due yet, and reusing last snapshot failed (${err.message})`)
-    return null
+    console.warn(`[fetch-data] ${label} failed after retries (${err.message}) — falling back to last published snapshot`)
+    try {
+      return await fetchLiveSnapshot(fallbackRelPath)
+    } catch (fallbackErr) {
+      console.warn(`[fetch-data] ${label} fallback also failed (${fallbackErr.message}) — leaving this file unwritten`)
+      recordFailure(label, `primary failed after retries (${err.message}); fallback also failed (${fallbackErr.message})`)
+      return null
+    }
   }
 }
 
@@ -718,6 +749,21 @@ async function saveReportState(state) {
   await writeFile(REPORT_STATE_PATH, JSON.stringify(state))
 }
 
+// See isFetchDue's own comment — {key: msEpochOfLastSuccessfulFetch}, one entry per
+// throttled Twelve Data endpoint (e.g. "XAUUSD-H1").
+async function loadLastFetchState() {
+  try {
+    return JSON.parse(await readFile(LAST_FETCH_STATE_PATH, 'utf8'))
+  } catch {
+    return {} // first run ever, or the file's missing/corrupt
+  }
+}
+
+async function saveLastFetchState(state) {
+  await mkdir(path.dirname(LAST_FETCH_STATE_PATH), { recursive: true })
+  await writeFile(LAST_FETCH_STATE_PATH, JSON.stringify(state))
+}
+
 function directionLabel(record) {
   return record.direction === 'buy' ? 'BUY' : 'SELL'
 }
@@ -1101,6 +1147,7 @@ export async function main() {
   if (!apiKey) throw new Error('TWELVE_DATA_API_KEY is not set')
 
   const history = await loadSignalHistory()
+  const lastFetchState = await loadLastFetchState()
   const seriesByTfBySymbol = { XAUUSD: {}, BTCUSD: {} }
 
   for (const tf of TIMEFRAMES) {
@@ -1108,7 +1155,9 @@ export async function main() {
       `XAUUSD ${tf.key}`,
       () => fetchTwelveData('XAU/USD', tf, apiKey),
       `quote/XAUUSD-${tf.key}.json`,
-      tf.refetchIntervalMinutes
+      tf.refetchIntervalMinutes,
+      lastFetchState,
+      `XAUUSD-${tf.key}`
     )
     if (gold) {
       await writeJson(`quote/XAUUSD-${tf.key}.json`, gold)
@@ -1121,6 +1170,10 @@ export async function main() {
       seriesByTfBySymbol.BTCUSD[tf.key] = toCandles(btc.values)
     }
   }
+  // Written every run regardless of whether any entry actually advanced this time —
+  // same "always write, let the workflow's own git diff decide whether to commit"
+  // approach as signal-history.json below, rather than tracking a separate dirty flag.
+  await saveLastFetchState(lastFetchState)
 
   // See MONITOR_TF's own comment — fetched outside the TIMEFRAMES loop since it never
   // participates in zone detection, only in evaluateSignals' fill/SL/TP check below.
