@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      contents: write
+      contents: read # no commit in this run — see the step's own comment
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -22,20 +22,14 @@ jobs:
 
       - run: npm ci
 
-      - name: Correct the 3 TP1-checkpoint records
-        run: node scripts/one-off-tp1-correction.mjs
+      # 2026-08-26: the original run (scripts/one-off-tp1-correction.mjs) already
+      # corrected data/signal-history.json and the 3 close-reply text edits — both
+      # committed and confirmed. Its 2 daily-report edits silently failed (wrong Bot
+      # API method for a photo caption — see the captions script's own comment), so
+      # this now points at the follow-up instead. No commit step needed: the data
+      # itself isn't changing here, only the already-posted report captions.
+      - name: Fix the 2 daily-report captions
+        run: node scripts/one-off-tp1-correction-captions.mjs
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
-      - name: Commit corrected track record
-        run: |
-          git add data/signal-history.json
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git commit -m "Correct 3 records to win under the new TP1-checkpoint logic"
-            git push
-          fi
