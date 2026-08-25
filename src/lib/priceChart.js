@@ -1,4 +1,5 @@
 import { createChart, CandlestickSeries, BaselineSeries, ColorType, CrosshairMode } from 'lightweight-charts'
+import { formatPrice } from './signalHistoryCore.js'
 
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
@@ -69,9 +70,13 @@ class ZoneRectangle {
 
             const startX = chart.timeScale().timeToCoordinate(Math.floor(this._zone.startTime / 1000))
             // Timeframe first — with H1/H4/D1 now combined on one chart (see main.js),
-            // "Support" alone no longer says which one this band came from.
+            // "Support" alone no longer says which one this band came from. Price last
+            // (same formatPrice used everywhere else a price is shown — zone cards,
+            // signal cards, Telegram) — e.g. "H1 Support @ 4610.7" — so the band is
+            // readable on its own without having to line it up against the price axis.
             const tfPrefix = this._zone.tf ? `${this._zone.tf} ` : ''
-            const label = this._zone.isGolden ? `${tfPrefix}★ ${this._zone.category}` : `${tfPrefix}${this._zone.category}`
+            const goldenPrefix = this._zone.isGolden ? '★ ' : ''
+            const label = `${tfPrefix}${goldenPrefix}${this._zone.category} @ ${formatPrice(this._zone.price)}`
 
             target.useBitmapCoordinateSpace((scope) => {
               const { context: ctx, horizontalPixelRatio: hRatio, verticalPixelRatio: vRatio, mediaSize } = scope
