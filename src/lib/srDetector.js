@@ -565,6 +565,23 @@ const MIN_ZONE_TP_RR = 0.5
 // just noise on the signal card, not a level worth displaying or tracking as a target.
 const MAX_ZONE_TP_RR = 100
 
+// 2026-08-26 win-rate review: even the NEAREST real structural target can still end up
+// far beyond a realistic first target — the SL is (correctly) sized off nearby
+// structure/ATR, but opposing structure itself can be sparse or distant, especially in
+// a trending market where there just isn't much built up on the other side yet. A
+// walk-forward simulation found trades routinely running several R in the *right*
+// direction and still recording as losses, purely because TP1 itself sat 5-10R+ away
+// (median TP1 was 3.5R for XAUUSD, even higher for trades that ended up losing) — SL
+// wasn't the problem, TP1 having no ceiling relative to it was. Below
+// FAR_TP_THRESHOLD_RR the nearest real zone still makes a perfectly good TP1, same as
+// before; beyond it, a reachable NEAR_TP_CHECKPOINT_RR checkpoint is inserted ahead of
+// it instead — the real zone(s) aren't dropped, just demoted a rung. Simulated: win
+// rate 54%->74% (XAUUSD) and 69%->82% (BTCUSD), netR up on both, on essentially the
+// same trade count either way — this isn't more trades getting created, the same
+// trades are just getting credited for the move they actually made.
+const FAR_TP_THRESHOLD_RR = 3
+const NEAR_TP_CHECKPOINT_RR = 1
+
 // Prices display rounded to the nearest whole unit (see formatPrice in main.js). Two
 // targets closer together than that would still round to the *same shown number* even
 // after clearing the threshold-based dedup below (e.g. 4399.55 and 4400.44 are 0.89
@@ -606,9 +623,19 @@ function buildTakeProfits(entryPrice, sl, direction, candidateZones, mergeThresh
   // No cap on how many real structural targets surface — however many opposite-side
   // zones qualify (same-timeframe plus any borrowed higher-timeframe ones) all become
   // TPs. Only the synthetic R-multiple fallback below is a fixed set of 3.
-  const targets = fromZones.length
+  let targets = fromZones.length
     ? fromZones
     : [1.5, 2.5, 3.5].map((mult) => entryPrice + (isBuy ? 1 : -1) * risk * mult)
+
+  // See FAR_TP_THRESHOLD_RR's own comment above — a reachable checkpoint ahead of a
+  // too-distant nearest zone, not a replacement for it.
+  if (fromZones.length) {
+    const nearestRr = Math.abs(fromZones[0] - entryPrice) / risk
+    if (nearestRr > FAR_TP_THRESHOLD_RR) {
+      const checkpoint = entryPrice + (isBuy ? 1 : -1) * risk * NEAR_TP_CHECKPOINT_RR
+      targets = [checkpoint, ...fromZones]
+    }
+  }
 
   return targets.map((price) => ({ price, rr: Math.abs(price - entryPrice) / risk }))
 }
