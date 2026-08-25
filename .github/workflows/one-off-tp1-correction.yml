@@ -24,11 +24,12 @@ jobs:
 
       # 2026-08-26: the original run (scripts/one-off-tp1-correction.mjs) already
       # corrected data/signal-history.json and the 3 close-reply text edits — both
-      # committed and confirmed. Its 2 daily-report edits silently failed (wrong Bot
-      # API method for a photo caption — see the captions script's own comment), so
-      # this now points at the follow-up instead. No commit step needed: the data
-      # itself isn't changing here, only the already-posted report captions.
-      - name: Fix the 2 daily-report captions
+      # committed and confirmed. Its 2 daily-report edits silently failed (a photo
+      # message's caption+image need editMessageMedia, not editMessageText — see the
+      # follow-up script's own comment), so this now points at that follow-up instead.
+      # No commit step needed: the data itself isn't changing here, only the
+      # already-posted report image+caption.
+      - name: Fix the 2 daily-report images + captions
         run: node scripts/one-off-tp1-correction-captions.mjs
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
