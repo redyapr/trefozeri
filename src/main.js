@@ -1,5 +1,5 @@
 import './style.css'
-import { TIMEFRAMES, SYMBOLS, fetchAllTimeframes } from './lib/twelveData.js'
+import { TIMEFRAMES, SYMBOLS, fetchAllTimeframes, fetchLatestPrice } from './lib/twelveData.js'
 import { detectLevels, buildSignals, annotateGoldenZones, isPriceStagnant, computeTrend } from './lib/srDetector.js'
 import { fetchNewsCalendar, findUpcomingHighImpact } from './lib/newsCalendar.js'
 import { loadUiState, saveUiState } from './lib/uiState.js'
@@ -58,7 +58,16 @@ let visibleTimeframes = new Set(
     : ALL_TIMEFRAME_KEYS
 )
 let zonesByTimeframe = {}
+// H1's own close — feeds zone detection/signal generation (see refreshData below),
+// deliberately untouched by spotPrice's own freshness (this app's structure logic was
+// never built to react to sub-hourly noise — see TIMEFRAMES' own comment in
+// twelveData.js).
 let currentPrice = null
+// The freshest single tick available (M1, see fetchLatestPrice) — feeds only the
+// header's spot-price display and the chart's own price marker (see
+// updateChartSpotPrice), a display concern entirely separate from currentPrice above.
+// Falls back to currentPrice itself if the dedicated latest-price fetch fails.
+let spotPrice = null
 let refreshing = false
 // Bumped on every symbol switch so a fetch already in flight for the symbol just left
 // can tell it's been superseded — its own `finally` block checks this before touching
@@ -67,6 +76,10 @@ let refreshing = false
 let refreshGeneration = 0
 let newsEvents = []
 let activeChart = null
+// The candlestick series inside activeChart — kept alongside it so updateChartSpotPrice
+// can push an incremental update to just the last bar (see renderZoneChart's own
+// comment) without going through a full chart rebuild.
+let activeSeries = null
 
 // Charts don't clean themselves up when their container is dropped from the DOM
 // (contentEl.innerHTML rebuilds it on every render), so the old instance must be
@@ -75,6 +88,7 @@ function disposeChart() {
   if (!activeChart) return
   activeChart.remove()
   activeChart = null
+  activeSeries = null
 }
 
 // Same reasoning as disposeChart above, but for the track record modal's own equity
@@ -109,6 +123,7 @@ function renderSymbolTabs() {
       saveUiState({ symbolKey: activeSymbol.key })
       zonesByTimeframe = {}
       currentPrice = null
+      spotPrice = null
       priceEl.textContent = '—'
       lastUpdateEl.textContent = '' // the old symbol's fetch time no longer applies to this one
       refreshGeneration++
@@ -553,6 +568,25 @@ let chartedD1 = null
 // know it needs rebuilding just because the checkbox itself changed.
 let chartedVisibility = null
 
+// Pushes spotPrice (see refreshData) onto activeSeries' own last bar via update(), not
+// a full renderZoneChart rebuild — series.update() with a `time` matching the existing
+// last bar patches that bar's OHLC in place (widening high/low if the tick moved
+// outside the H1 candle's own range so far), which is what makes the chart's price
+// marker track M1's freshness between H1 refetches without resetting the user's
+// zoom/pan on every 5-minute poll the way folding this into the fingerprint/rebuild
+// check above would. A no-op if there's no chart yet or nothing to patch onto.
+function updateChartSpotPrice() {
+  const lastH1 = zonesByTimeframe.H1?.series?.at(-1)
+  if (!activeSeries || !lastH1 || spotPrice == null) return
+  activeSeries.update({
+    time: Math.floor(lastH1.time / 1000),
+    open: lastH1.open,
+    high: Math.max(lastH1.high, spotPrice),
+    low: Math.min(lastH1.low, spotPrice),
+    close: spotPrice,
+  })
+}
+
 function renderContent() {
   const h1 = zonesByTimeframe.H1
   const h4 = zonesByTimeframe.H4
@@ -606,7 +640,9 @@ function renderContent() {
     const chartContainer = document.createElement('div')
     chartContainer.className = 'zone-chart'
     contentEl.appendChild(chartContainer)
-    activeChart = renderZoneChart(chartContainer, h1.series, allZones)
+    const rendered = renderZoneChart(chartContainer, h1.series, allZones)
+    activeChart = rendered.chart
+    activeSeries = rendered.series
     chartedH1 = h1.fingerprint
     chartedH4 = h4?.fingerprint
     chartedD1 = d1?.fingerprint
@@ -616,6 +652,11 @@ function renderContent() {
     // drop the old zone/signal cards below it before rebuilding them fresh.
     contentEl.querySelectorAll('.zones-grid, .signals-grid').forEach((el) => el.remove())
   }
+  // Patches the freshest known tick (spotPrice, M1-based — see refreshData) onto the
+  // chart's own last bar every render, rebuild or not — see updateChartSpotPrice's own
+  // comment for why this is a separate incremental update rather than folded into the
+  // fingerprint/rebuild decision above.
+  updateChartSpotPrice()
 
   // Finest timeframe first (H1, then H4, then D1), nearest-to-price within each — H1
   // is what's actually tradeable (see refreshData below), so its levels lead; H4/D1
@@ -764,7 +805,18 @@ async function refreshData() {
   const symbol = activeSymbol
 
   try {
-    const raw = await fetchAllTimeframes(symbol.apiSymbol, TIMEFRAMES)
+    // Fetched together — the latest-price request is small and independent of the
+    // other three, no reason to wait on one before starting the other. A failure here
+    // just means spotPrice falls back to currentPrice (H1) below, same as before this
+    // existed; it's not allowed to fail the whole refresh the way the TIMEFRAMES loop's
+    // own per-entry failures are already tolerated.
+    const [raw, latest] = await Promise.all([
+      fetchAllTimeframes(symbol.apiSymbol, TIMEFRAMES),
+      fetchLatestPrice(symbol.apiSymbol).catch((err) => {
+        console.error(err)
+        return null
+      }),
+    ])
     // The user switched symbols while this fetch was in flight — these results
     // belong to the symbol we've since navigated away from, so drop them rather
     // than mixing them into the new symbol's (freshly reset) state.
@@ -778,10 +830,11 @@ async function refreshData() {
       if (series?.error) continue
       anySuccess = true
       const last = series[series.length - 1]
-      // H1 is the finest timeframe still fetched, so it's the freshest source for spot.
+      // H1 is the finest timeframe still fetched, so it's the baseline source for
+      // currentPrice — refined into spotPrice (the header/chart-marker display value)
+      // below, once every timeframe's own zones are in.
       if (tf.key === 'H1') {
         currentPrice = last.close
-        priceEl.textContent = formatPrice(currentPrice)
       }
       const zones = detectLevels(series, currentPrice ?? last.close)
       // fingerprint (2026-08-23): every timeframe refetches on every tick now (see
@@ -798,6 +851,15 @@ async function refreshData() {
     // actually changed, so leave whatever "Last updated" message was already on
     // screen rather than claiming a freshness that didn't happen.
     if (!anySuccess) return
+
+    // spotPrice: the freshest single tick available (M1, via latest — see
+    // fetchLatestPrice) when that fetch succeeded this tick, else currentPrice (H1)
+    // itself as a safe fallback. Feeds the header display and the chart's own price
+    // marker (see updateChartSpotPrice, called from renderContent) — never
+    // currentPrice's own job of feeding zone detection/signals just above, which stays
+    // on H1 regardless of whether this succeeded.
+    spotPrice = latest?.close ?? currentPrice
+    priceEl.textContent = formatPrice(spotPrice)
 
     // Golden Zone confluence needs every timeframe's levels at once, so it only runs
     // once all of them are in.

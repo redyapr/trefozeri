@@ -40,6 +40,7 @@ const {
   toTwelveDataDatetime,
   parseUtc,
   toCandles,
+  latestPricePoint,
   buildDailyReportMessage,
   buildWeeklyReportMessage,
   maybeSendDailyReport,
@@ -1744,6 +1745,30 @@ test('toCandles', async (t) => {
   await t.test('leaves volume undefined (not NaN/0) when the source has none at all (XAUUSD, via Twelve Data)', () => {
     const values = [{ datetime: '2026-08-15 09:00:00', open: 1, high: 2, low: 0, close: 1 }]
     assert.equal(toCandles(values)[0].volume, undefined)
+  })
+})
+
+// 2026-08-26: backs writeLatestPrice (see its own comment) — the dashboard's
+// spot-price display and chart marker read just this single point rather than the
+// whole M1 series it's derived from.
+test('latestPricePoint', async (t) => {
+  await t.test('extracts {time, close} from the last entry of a values array', () => {
+    const values = [
+      { datetime: '2026-08-15 09:00:00', open: '4300', high: '4302', low: '4299', close: '4301' },
+      { datetime: '2026-08-15 09:01:00', open: '4301', high: '4303', low: '4300.5', close: '4302.7' },
+    ]
+    assert.deepEqual(latestPricePoint(values), { time: Date.UTC(2026, 7, 15, 9, 1, 0), close: 4302.7 })
+  })
+
+  await t.test('ignores every field besides the last entry\'s datetime/close', () => {
+    const values = [{ datetime: '2026-08-15 09:00:00', open: '999', high: '999', low: '999', close: '4301', volume: '12.5' }]
+    assert.deepEqual(latestPricePoint(values), { time: Date.UTC(2026, 7, 15, 9, 0, 0), close: 4301 })
+  })
+
+  await t.test('null for an empty or missing array, rather than throwing', () => {
+    assert.equal(latestPricePoint([]), null)
+    assert.equal(latestPricePoint(undefined), null)
+    assert.equal(latestPricePoint(null), null)
   })
 })
 

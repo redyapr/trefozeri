@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { fetchAllTimeframes, SYMBOLS, TIMEFRAMES } from '../src/lib/twelveData.js'
+import { fetchAllTimeframes, fetchLatestPrice, SYMBOLS, TIMEFRAMES } from '../src/lib/twelveData.js'
 
 function mockFetch(handler) {
   const original = global.fetch
@@ -87,6 +87,42 @@ test('fetchAllTimeframes', async (t) => {
       const result = await fetchAllTimeframes(SYMBOLS[0].apiSymbol, TIMEFRAMES.slice(0, 2))
       assert.equal(result[TIMEFRAMES[0].key].error, undefined)
       assert.ok(result[TIMEFRAMES[1].key].error)
+    } finally {
+      restore()
+    }
+  })
+})
+
+// 2026-08-26: backs the header spot-price display and the chart's own price marker
+// (see fetchLatestPrice's own comment) — the single freshest tick, not the whole
+// timeframe series fetchAllTimeframes above deals with. Throws on failure (unlike
+// fetchAllTimeframes' own per-timeframe {error} shape) — main.js catches it itself and
+// falls back to currentPrice (H1), same as fetchSeries throwing before
+// fetchAllTimeframes wraps it.
+test('fetchLatestPrice', async (t) => {
+  await t.test('parses a successful response into {time, close}', async () => {
+    const restore = mockFetch(async () => ({ ok: true, json: async () => ({ time: 1755248400000, close: 4302.7 }) }))
+    try {
+      const result = await fetchLatestPrice(SYMBOLS[0].apiSymbol)
+      assert.deepEqual(result, { time: 1755248400000, close: 4302.7 })
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('throws (with the status) on a non-ok response', async () => {
+    const restore = mockFetch(async () => ({ ok: false, status: 404, json: async () => ({}) }))
+    try {
+      await assert.rejects(() => fetchLatestPrice(SYMBOLS[0].apiSymbol), /404/)
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('throws on a malformed payload (missing/wrong-typed time or close)', async () => {
+    const restore = mockFetch(async () => ({ ok: true, json: async () => ({ close: 4302.7 }) }))
+    try {
+      await assert.rejects(() => fetchLatestPrice(SYMBOLS[0].apiSymbol), /Unrecognized/)
     } finally {
       restore()
     }

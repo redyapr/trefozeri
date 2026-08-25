@@ -40,7 +40,11 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
 - **Chart** — [lightweight-charts](https://github.com/tradingview/lightweight-charts):
   H1 candles with every timeframe's zones drawn together as shaded, labeled bands.
 - **Data** — Gold from Twelve Data, BTC from Binance.US, news from a free
-  ForexFactory-style feed. See [Data & deployment](#data--deployment).
+  ForexFactory-style feed. See [Data & deployment](#data--deployment). The header's spot
+  price and the chart's own price marker track the single freshest tick available
+  (`/quote/{SYMBOL}-latest.json`, derived from M1 — fetched every cron run, unthrottled)
+  rather than H1's own close, which only refreshes every 15 minutes; zone detection and
+  signals still use H1 regardless — see `spotPrice`/`currentPrice` in `main.js`.
 - **PWA** — a service worker precaches the app shell; price/signal data always fetches
   fresh, never from a stale cache.
 - **Alerts** — opt-in browser notifications (bell icon) when price nears a zone or a

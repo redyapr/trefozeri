@@ -44,7 +44,7 @@
           <div class="api-fact"><strong>Auth</strong><span>None — no API key, no login</span></div>
           <div class="api-fact"><strong>Rate limit</strong><span>None enforced, but cache client-side — see below</span></div>
           <div class="api-fact"><strong>Format</strong><span>JSON, served with open CORS (static GitHub Pages hosting)</span></div>
-          <div class="api-fact"><strong>Update cadence</strong><span>~every 15 minutes, via a GitHub Actions cron</span></div>
+          <div class="api-fact"><strong>Update cadence</strong><span>a GitHub Actions cron runs every 5 minutes, but H1/H4/D1 candles are only that fresh individually every 15/60/360 minutes respectively — see below</span></div>
         </div>
 
         <section class="api-section">
@@ -111,8 +111,24 @@
             local time). Gold comes from Twelve Data; Bitcoin from Binance.US, reshaped into the same schema so both
             symbols are consumable identically. <code>BTCUSD</code> candles also carry a <code>volume</code> field
             (real traded base-asset volume, from Binance.US); <code>XAUUSD</code> omits it entirely — Twelve Data's
-            spot feed has no volume data to report.
+            spot feed has no volume data to report. <code>H1</code>/<code>H4</code>/<code>D1</code> are each only
+            refetched from upstream every 15/60/360 minutes respectively (to stay within Twelve Data's free-tier
+            request budget) — the file itself is rewritten every cron run either way, just often with byte-identical
+            content, so match your own polling to the timeframe's own cadence rather than the cron's.
           </p>
+        </section>
+
+        <section class="api-section">
+          <h2>GET /quote/{SYMBOL}-latest.json</h2>
+          <p>
+            The single freshest tick available — derived from 1-minute candles fetched every run (unlike H1/H4/D1
+            above, which are throttled to their own slower cadence to stay within Twelve Data's free-tier request
+            budget), but reduced to just one point rather than shipping the whole minute-by-minute series for a
+            number this small. This is what the dashboard's own spot-price display and chart price marker read;
+            zone detection and signals still use H1's own close, not this.
+          </p>
+          <pre class="api-code">{ "time": 1755248400000, "close": 4302.7 }</pre>
+          <p><code>time</code> is epoch milliseconds (UTC).</p>
         </section>
 
         <section class="api-section">
@@ -133,9 +149,12 @@
           <h2>Usage notes</h2>
           <ul class="landing-features">
             <li>
-              <strong>Cache it.</strong> These files only actually change roughly every 15 minutes — polling more
-              often than that just re-fetches the same bytes. Match your own refresh interval to that cadence
-              (the dashboard itself does exactly this).
+              <strong>Cache it.</strong> <code>H1</code>/<code>H4</code>/<code>D1</code> candles only actually
+              change every 15/60/360 minutes respectively — polling more often than that just re-fetches the same
+              bytes. <code>-latest.json</code> and <code>calendar.json</code> are worth polling closer to every
+              5 minutes instead, since they're refreshed on every cron run. The dashboard itself polls everything
+              every 5 minutes regardless and just accepts the occasional no-op response for H1/H4/D1 — a fine
+              trade for staying simple, but not necessary if you're building something request-conscious.
             </li>
             <li>
               <strong>No SLA.</strong> This is a hobby project's own static export, not a maintained public API —

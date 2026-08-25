@@ -128,9 +128,12 @@ function zoneColors(zone) {
 }
 
 // Renders one candlestick chart into `container` for a single timeframe, with each S/R
-// zone drawn as a shaded price band. Returns the chart instance so the caller can
-// `.remove()` it before the next re-render (charts don't clean themselves up when
-// their container is dropped from the DOM).
+// zone drawn as a shaded price band. Returns { chart, series } — chart so the caller
+// can `.remove()` it before the next re-render (charts don't clean themselves up when
+// their container is dropped from the DOM), series so the caller can push incremental
+// updates (see main.js's updateChartSpotPrice) without tearing the whole chart down —
+// series.update() on the same `time` as the last bar patches that bar in place,
+// leaving the user's zoom/pan untouched.
 export function renderZoneChart(container, candles, zones) {
   const chart = createChart(container, {
     autoSize: true,
@@ -168,7 +171,7 @@ export function renderZoneChart(container, candles, zones) {
   zones.forEach((zone) => series.attachPrimitive(new ZoneRectangle(zone, zoneColors(zone))))
   chart.timeScale().fitContent()
 
-  return chart
+  return { chart, series }
 }
 
 // Renders the track record's equity-curve trend (cumulative pips/$ over time, see

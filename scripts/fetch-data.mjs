@@ -312,6 +312,27 @@ async function writeJson(relPath, data) {
   console.log(`[fetch-data] wrote ${relPath}`)
 }
 
+// 2026-08-26: the dashboard's own spot-price display and chart price marker want the
+// single freshest tick available — M1 (fetched every run, unthrottled, see
+// MONITOR_TF's own comment), not H1 (throttled to Twelve Data every 15 minutes). But
+// shipping the whole ~1000-candle M1 series to the browser on every 5-minute poll just
+// to read its last point would be pure waste — writeLatestPrice below writes only that
+// last point to its own tiny file instead. Exported (only) so this pure transform is
+// directly testable — the file write itself isn't (see public/data's own note above:
+// nothing here tests real file output). `values` is the raw (unparsed) array shape
+// both fetchTwelveData and fetchBinance return.
+export function latestPricePoint(values) {
+  if (!values?.length) return null
+  const last = values[values.length - 1]
+  return { time: parseUtc(last.datetime), close: parseFloat(last.close) }
+}
+
+async function writeLatestPrice(relPath, values) {
+  const point = latestPricePoint(values)
+  if (!point) return
+  await writeJson(relPath, point)
+}
+
 // Twelve Data (and our Binance mapping, see fetchBinance) both return naive
 // "YYYY-MM-DD[ HH:mm:ss]" strings with no offset — kept as a local copy of
 // src/lib/twelveData.js's parseUtc rather than importing it, since that module reads
@@ -1184,12 +1205,14 @@ export async function main() {
   )
   if (goldM1) {
     await writeJson('quote/XAUUSD-M1.json', goldM1)
+    await writeLatestPrice('quote/XAUUSD-latest.json', goldM1.values)
     seriesByTfBySymbol.XAUUSD.M1 = toCandles(goldM1.values)
   }
 
   const btcM1 = await fetchWithFallback('BTCUSD M1', () => fetchBinance(MONITOR_TF), 'quote/BTCUSD-M1.json')
   if (btcM1) {
     await writeJson('quote/BTCUSD-M1.json', btcM1)
+    await writeLatestPrice('quote/BTCUSD-latest.json', btcM1.values)
     seriesByTfBySymbol.BTCUSD.M1 = toCandles(btcM1.values)
   }
 

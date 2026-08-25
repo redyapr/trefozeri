@@ -90,6 +90,27 @@ async function fetchSeries(apiSymbol, tf) {
   }))
 }
 
+// The single freshest tick available (M1, fetched every cron run unthrottled — see
+// MONITOR_TF/writeLatestPrice in scripts/fetch-data.mjs) — its own tiny file rather
+// than the full ~1000-candle M1 series, which the dashboard has no other use for and
+// shouldn't ship to the browser on every 5-minute poll just to read one number. Used
+// for the spot-price display and the chart's own price marker (see main.js) — NOT for
+// zone detection/signals, which stay on H1's own close: this app's structure logic was
+// deliberately never built to react to sub-hourly noise (see TIMEFRAMES' own comment).
+export async function fetchLatestPrice(apiSymbol) {
+  const symbolKey = SYMBOLS.find((s) => s.apiSymbol === apiSymbol)?.key
+  const url = `${DATA_ENDPOINT}/quote/${symbolKey}-latest.json${cacheBust()}`
+  const res = await fetch(url)
+  if (!res.ok) {
+    throw new Error(`Fetch failed (${res.status})`)
+  }
+  const json = await res.json()
+  if (typeof json.close !== 'number' || typeof json.time !== 'number') {
+    throw new Error('Unrecognized data format for latest price')
+  }
+  return json
+}
+
 export async function fetchAllTimeframes(apiSymbol, timeframes = TIMEFRAMES) {
   const results = {}
   for (const tf of timeframes) {
