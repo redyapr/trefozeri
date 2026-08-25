@@ -1,0 +1,41 @@
+name: One-off TP1 correction (2026-08-26)
+
+# ONE-OFF, SINGLE-USE — see scripts/one-off-tp1-correction.mjs's own comment. Manual
+# dispatch only, never scheduled. Both this file and the script it runs are deleted in
+# the same commit that reports this having run successfully.
+on:
+  workflow_dispatch:
+
+jobs:
+  correct:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Correct the 3 TP1-checkpoint records
+        run: node scripts/one-off-tp1-correction.mjs
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - name: Commit corrected track record
+        run: |
+          git add data/signal-history.json
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git commit -m "Correct 3 records to win under the new TP1-checkpoint logic"
+            git push
+          fi
