@@ -670,6 +670,46 @@ body[data-symbol='btcusd'] {
   box-shadow: var(--glow-cyan-box);
 }
 
+/* Which timeframes' zones/chart bands are currently shown (see main.js) — a pure
+   display filter, doesn't touch signal generation/TP-borrowing/the track record, so
+   it deliberately doesn't reuse the filled symbol-tab-btn look (that one really does
+   switch what's active); an outlined checkbox pill reads as "which layers are on"
+   rather than "which single thing is selected". */
+.timeframe-filter {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.tf-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 0.66rem;
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+
+.tf-toggle input {
+  accent-color: var(--accent);
+  width: 12px;
+  height: 12px;
+  margin: 0;
+}
+
+.tf-toggle:has(input:checked) {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 .news-banner {
   display: flex;
   align-items: center;

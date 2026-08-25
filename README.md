@@ -33,7 +33,10 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
 - **Timeframes** — H1, H4, D1, shown combined (no per-timeframe tab). Signals — the
   actionable BUY/SELL LIMIT cards — are H1 only; H4/D1 zones are shown for context and
   still lend H1 extra TP targets (see Take-profits above), but never become tradeable
-  ideas of their own.
+  ideas of their own. A checkbox per timeframe (H1/H4/D1, all on by default, persisted
+  locally) controls which ones' zone cards and chart bands are actually shown — a pure
+  display filter: signal generation, TP borrowing, trend, and the shared track record
+  are unaffected regardless of what's checked.
 - **Chart** — [lightweight-charts](https://github.com/tradingview/lightweight-charts):
   H1 candles with every timeframe's zones drawn together as shaded, labeled bands.
 - **Data** — Gold from Twelve Data, BTC from Binance.US, news from a free

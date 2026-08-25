@@ -39,10 +39,24 @@ const historyBody = document.getElementById('history-body')
 const historyCloseBtn = document.getElementById('history-close')
 const historyExportBtn = document.getElementById('history-export-btn')
 const installBtn = document.getElementById('install-btn')
+const timeframeFilterEl = document.getElementById('timeframe-filter')
 
 const uiState = loadUiState()
 
 let activeSymbol = SYMBOLS.find((s) => s.key === uiState.symbolKey) ?? SYMBOLS[0]
+// Which timeframes' zones show up in the zone cards and on the chart — a pure display
+// filter (see renderContent below): signal generation, TP borrowing, trend, and the
+// shared track record all still run off the full H1+H4+D1 set regardless, same as
+// before this existed. Defaults to all three only when nothing's saved YET (no
+// visibleTimeframes key at all, or a corrupt/non-array value) — a deliberately saved
+// empty selection (the user unchecked everything) is respected as-is, not silently
+// reset back to "all" on the next reload.
+const ALL_TIMEFRAME_KEYS = TIMEFRAMES.map((tf) => tf.key)
+let visibleTimeframes = new Set(
+  Array.isArray(uiState.visibleTimeframes)
+    ? uiState.visibleTimeframes.filter((tf) => ALL_TIMEFRAME_KEYS.includes(tf))
+    : ALL_TIMEFRAME_KEYS
+)
 let zonesByTimeframe = {}
 let currentPrice = null
 let refreshing = false
@@ -533,6 +547,11 @@ function renderZoneCard(zone, showBadges) {
 let chartedH1 = null
 let chartedH4 = null
 let chartedD1 = null
+// Which timeframes were baked into activeChart's zone bands (see visibleTimeframes) —
+// tracked alongside the data fingerprints above for the same reason: toggling a
+// checkbox doesn't change H1/H4/D1's own data, so without this the chart wouldn't
+// know it needs rebuilding just because the checkbox itself changed.
+let chartedVisibility = null
 
 function renderContent() {
   const h1 = zonesByTimeframe.H1
@@ -541,28 +560,44 @@ function renderContent() {
 
   if (!h1) {
     disposeChart()
-    chartedH1 = chartedH4 = chartedD1 = null
+    chartedH1 = chartedH4 = chartedD1 = chartedVisibility = null
     contentEl.innerHTML = `<p class="empty-state">Loading data...</p>`
     return
   }
 
   // Every zone from all three timeframes, tagged with which one it came from — the
   // chart and the zone cards below both show H1, H4 and D1 combined, with no
-  // per-timeframe tab to switch between them.
-  const allZones = [
+  // per-timeframe tab to switch between them. allZonesUnfiltered still has all three
+  // regardless of visibleTimeframes — only display reads from the filtered allZones
+  // below; signal generation/TP borrowing/trend (see refreshData) always use the full,
+  // unfiltered zonesByTimeframe directly, never this function's own filtered view.
+  const allZonesUnfiltered = [
     ...h1.zones.map((z) => ({ ...z, tf: 'H1' })),
     ...(h4?.zones ?? []).map((z) => ({ ...z, tf: 'H4' })),
     ...(d1?.zones ?? []).map((z) => ({ ...z, tf: 'D1' })),
   ]
+  const allZones = allZonesUnfiltered.filter((z) => visibleTimeframes.has(z.tf))
 
-  if (!allZones.length) {
+  if (!allZonesUnfiltered.length) {
     disposeChart()
-    chartedH1 = chartedH4 = chartedD1 = null
+    chartedH1 = chartedH4 = chartedD1 = chartedVisibility = null
     contentEl.innerHTML = `<p class="empty-state">No significant S/R zones detected yet.</p>`
     return
   }
 
-  const needsFreshChart = chartedH1 !== h1.fingerprint || chartedH4 !== h4?.fingerprint || chartedD1 !== d1?.fingerprint
+  if (!allZones.length) {
+    disposeChart()
+    chartedH1 = chartedH4 = chartedD1 = chartedVisibility = null
+    contentEl.innerHTML = `<p class="empty-state">No timeframe selected — check H1, H4 or D1 above to see levels.</p>`
+    return
+  }
+
+  const visibilityKey = [...visibleTimeframes].sort().join(',')
+  const needsFreshChart =
+    chartedH1 !== h1.fingerprint ||
+    chartedH4 !== h4?.fingerprint ||
+    chartedD1 !== d1?.fingerprint ||
+    chartedVisibility !== visibilityKey
   if (needsFreshChart) {
     disposeChart()
     contentEl.innerHTML = ''
@@ -575,6 +610,7 @@ function renderContent() {
     chartedH1 = h1.fingerprint
     chartedH4 = h4?.fingerprint
     chartedD1 = d1?.fingerprint
+    chartedVisibility = visibilityKey
   } else {
     // Nothing actually refetched this tick — leave the chart and its DOM alone, just
     // drop the old zone/signal cards below it before rebuilding them fresh.
@@ -843,7 +879,31 @@ window.addEventListener('appinstalled', () => {
   deferredInstallPrompt = null
 })
 
+// Reflects visibleTimeframes onto the checkboxes — called once on startup (the
+// markup's own hardcoded `checked` attributes only cover the all-visible default, not
+// a saved selection) and isn't needed again after that: each checkbox's own `checked`
+// already reflects the click that triggered the change listener below.
+function syncTimeframeFilterCheckboxes() {
+  timeframeFilterEl.querySelectorAll('input[data-tf]').forEach((input) => {
+    input.checked = visibleTimeframes.has(input.dataset.tf)
+  })
+}
+
+// Delegated on the container rather than one listener per checkbox — same 3 inputs
+// either way, but this doesn't need updating if more timeframes are ever added here.
+timeframeFilterEl.addEventListener('change', (e) => {
+  const tf = e.target?.dataset?.tf
+  if (!tf) return
+  if (e.target.checked) visibleTimeframes.add(tf)
+  else visibleTimeframes.delete(tf)
+  saveUiState({ visibleTimeframes: [...visibleTimeframes] })
+  // A pure display re-render off already-fetched data — no need to touch refreshData
+  // or anything network-related, see visibleTimeframes' own comment.
+  renderContent()
+})
+
 applySymbolTheme(activeSymbol)
+syncTimeframeFilterCheckboxes()
 renderSymbolTabs()
 updateNotifyBtn()
 renderDashboard()
