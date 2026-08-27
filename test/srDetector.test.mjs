@@ -549,7 +549,7 @@ test('take-profit building and display-collision dedup', async (t) => {
   }
 
   await t.test('two different-category zones at (almost) the same price collapse into one TP', () => {
-    // Kept within FAR_TP_THRESHOLD_RR (real risk here is ~3.45, see the 100R-ceiling
+    // Kept within FAR_TP_THRESHOLD_RR (real risk here is ~3.45, see the 50R-ceiling
     // test's own comment below) so this test stays about merge/dedup in isolation —
     // the checkpoint-insertion behavior has its own dedicated tests.
     const a = {
@@ -612,7 +612,7 @@ test('take-profit building and display-collision dedup', async (t) => {
     assert.equal(signal.tp.length, 5, 'every genuinely distinct zone becomes its own TP, not just the first 3')
   })
 
-  await t.test('excludes a target 100R or beyond, but keeps a genuinely closer one', () => {
+  await t.test('excludes a target 50R or beyond, but keeps a genuinely closer one', () => {
     // structuralSlDistance recalculates the actual SL from the zone's own ATR/wick
     // rather than using the raw entry/sl passed to buySignalWith directly — read the
     // real risk back off a baseline signal instead of assuming it matches those inputs.
@@ -621,11 +621,11 @@ test('take-profit building and display-collision dedup', async (t) => {
     const tooFar = {
       category: 'Resistance',
       type: 'resistance',
-      price: entry + risk * 120, // 120R — well past the ceiling
-      mid: entry + risk * 120,
+      price: entry + risk * 60, // 60R — well past the ceiling
+      mid: entry + risk * 60,
       threshold: 0.88,
       atr: 3,
-      structureAnchor: entry + risk * 120 + 3,
+      structureAnchor: entry + risk * 60 + 3,
       distanceFromPrice: 40,
       isGolden: false,
       confluence: [],
@@ -635,21 +635,21 @@ test('take-profit building and display-collision dedup', async (t) => {
     // its own dedicated tests.
     const closer = { ...tooFar, category: 'SBR', price: entry + risk * 2, mid: entry + risk * 2 }
     const signal = buySignalWith([tooFar, closer])
-    assert.equal(signal.tp.length, 1, 'the 120R target is dropped, only the 2R one surfaces')
+    assert.equal(signal.tp.length, 1, 'the 60R target is dropped, only the 2R one surfaces')
     assert.ok(Math.abs(signal.tp[0].rr - 2) < 1e-6)
   })
 
-  await t.test('falls back to fixed R-multiples when every qualifying zone is 100R or beyond', () => {
+  await t.test('falls back to fixed R-multiples when every qualifying zone is 50R or beyond', () => {
     const risk = Math.abs(buySignalWith([]).entry - buySignalWith([]).sl)
     const entry = 4359
     const tooFar = {
       category: 'Resistance',
       type: 'resistance',
-      price: entry + risk * 150,
-      mid: entry + risk * 150,
+      price: entry + risk * 75,
+      mid: entry + risk * 75,
       threshold: 0.88,
       atr: 3,
-      structureAnchor: entry + risk * 150 + 3,
+      structureAnchor: entry + risk * 75 + 3,
       distanceFromPrice: 40,
       isGolden: false,
       confluence: [],
@@ -659,8 +659,60 @@ test('take-profit building and display-collision dedup', async (t) => {
     signal.tp.forEach((t, i) => assert.ok(Math.abs(t.rr - [1.5, 2.5, 3.5][i]) < 1e-6))
   })
 
+  // 2026-08-27: each TP now carries which zone (and which timeframe) actually produced
+  // it, so the dashboard can show "which level" a TP is (see renderSignalCard/
+  // tpSourceLabel in main.js), plus a `source` tag distinguishing a real zone from the
+  // synthetic checkpoint/fallback rungs.
+  await t.test('a real zone TP carries its own category, tf and source: "zone"', () => {
+    const risk = Math.abs(buySignalWith([]).entry - buySignalWith([]).sl)
+    const entry = 4359
+    const zone = {
+      category: 'Resistance',
+      type: 'resistance',
+      tf: 'H4',
+      price: entry + risk * 2,
+      mid: entry + risk * 2,
+      threshold: 0.88,
+      atr: 3,
+      structureAnchor: entry + risk * 2 + 3,
+      distanceFromPrice: 40,
+      isGolden: false,
+      confluence: [],
+    }
+    const signal = buySignalWith([zone])
+    assert.equal(signal.tp.length, 1)
+    assert.equal(signal.tp[0].category, 'Resistance')
+    assert.equal(signal.tp[0].tf, 'H4')
+    assert.equal(signal.tp[0].source, 'zone')
+  })
+
+  await t.test('the fixed R-multiple fallback ladder is tagged source: "fallback", with no category/tf', () => {
+    const risk = Math.abs(buySignalWith([]).entry - buySignalWith([]).sl)
+    const entry = 4359
+    const tooFar = {
+      category: 'Resistance',
+      type: 'resistance',
+      tf: 'H1',
+      price: entry + risk * 75,
+      mid: entry + risk * 75,
+      threshold: 0.88,
+      atr: 3,
+      structureAnchor: entry + risk * 75 + 3,
+      distanceFromPrice: 40,
+      isGolden: false,
+      confluence: [],
+    }
+    const signal = buySignalWith([tooFar])
+    assert.equal(signal.tp.length, 3)
+    signal.tp.forEach((t) => {
+      assert.equal(t.source, 'fallback')
+      assert.equal(t.category, null)
+      assert.equal(t.tf, null)
+    })
+  })
+
   await t.test('excludes a target under 0.5R, but keeps a genuinely-rewarding one', () => {
-    // Symmetric case to the 100R ceiling above — a zone sitting almost on top of
+    // Symmetric case to the 50R ceiling above — a zone sitting almost on top of
     // entry is a "TP" worth basically nothing (see MIN_ZONE_TP_RR's own comment).
     const risk = Math.abs(buySignalWith([]).entry - buySignalWith([]).sl)
     const entry = 4359
@@ -676,7 +728,7 @@ test('take-profit building and display-collision dedup', async (t) => {
       isGolden: false,
       confluence: [],
     }
-    // 2R — deliberately still under FAR_TP_THRESHOLD_RR, same reasoning as the 100R
+    // 2R — deliberately still under FAR_TP_THRESHOLD_RR, same reasoning as the 50R
     // ceiling test above.
     const farEnough = { ...tooClose, category: 'SBR', price: entry + risk * 2, mid: entry + risk * 2 }
     const signal = buySignalWith([tooClose, farEnough])
@@ -728,6 +780,8 @@ test('take-profit building and display-collision dedup', async (t) => {
     assert.ok(Math.abs(signal.tp[0].rr - 1) < 1e-6, 'TP1 is the 1R checkpoint')
     assert.ok(Math.abs(signal.tp[1].rr - 6) < 1e-6, 'TP2 is still the real 6R zone')
     assert.equal(signal.tp[1].price, distant.price)
+    assert.equal(signal.tp[0].source, 'checkpoint', 'the synthetic checkpoint is tagged as such')
+    assert.equal(signal.tp[1].source, 'zone', 'the real zone keeps its own provenance')
   })
 
   await t.test('no checkpoint when the nearest real zone is already within FAR_TP_THRESHOLD_RR', () => {

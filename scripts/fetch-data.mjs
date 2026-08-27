@@ -1061,7 +1061,10 @@ export async function updateSignalHistoryForSymbol(history, symbolKey, seriesByT
     if (tfKey === 'M1') continue
     if (!series?.length) continue
     const last = series.at(-1)
-    zonesByTimeframe[tfKey] = { zones: detectLevels(series, currentPrice ?? last.close) }
+    // Tagged with its own timeframe right here — lets a TP built off a borrowed
+    // higher-timeframe zone (see buildSignalForZone in srDetector.js) report which
+    // timeframe it actually came from, same as main.js's refreshData.
+    zonesByTimeframe[tfKey] = { zones: detectLevels(series, currentPrice ?? last.close).map((z) => ({ ...z, tf: tfKey })) }
   }
 
   annotateGoldenZones(zonesByTimeframe)

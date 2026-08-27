@@ -27,7 +27,7 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
   only the aligned side: buy in an uptrend, sell in a downtrend. A range-bound read
   still offers both. See `computeTrend` in `srDetector.js`.
 - **Take-profits** — TPs come from opposite-side levels on the signal's own timeframe,
-  plus qualifying levels from *higher* timeframes only. Shown between 0.5R–100R;
+  plus qualifying levels from *higher* timeframes only. Shown between 0.5R–50R;
   near-duplicates merged. Falls back to fixed 1.5R/2.5R/3.5R if no structural level
   qualifies. If even the *nearest* structural target is beyond 3R (a tight, correctly
   sized SL with sparse opposing structure — common in a trending market), a reachable
@@ -36,6 +36,9 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
   running several R in the right direction and still recording as losses purely
   because the original TP1 sat 5-10R+ away — win rate went 54%→74% (XAUUSD) and
   69%→82% (BTCUSD) with this change, on essentially the same trade count either way.
+  Each TP row on the signal card also shows its pip/$ distance from entry and which
+  level it's based on (e.g. "H4 Resist.", or "Checkpoint"/"No structural level" for the
+  synthetic ones).
 - **Timeframes** — H1, H4, D1, shown combined (no per-timeframe tab). Signals — the
   actionable BUY/SELL LIMIT cards — are H1 only; H4/D1 zones are shown for context and
   still lend H1 extra TP targets (see Take-profits above), but never become tradeable

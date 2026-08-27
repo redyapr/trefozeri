@@ -911,23 +911,45 @@ body[data-symbol='btcusd'] {
   border-top: 1px solid var(--border-soft);
 }
 
+/* Column wrapper: the main TPn/RR/pips/price line, plus a dim sub-line naming which
+   structural level (or checkpoint/fallback) this target actually is — see
+   tpSourceLabel in main.js. */
 .signal-tp-row {
+  display: flex;
+  flex-direction: column;
+  padding: 5px 0;
+}
+
+.signal-tp-line {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 5px 0;
   font-family: var(--font);
   font-size: 0.92rem;
   font-variant-numeric: tabular-nums;
 }
 
-/* Groups the TPn label and its RR tightly together on the left, so RR reads as
-   right after "TPn" instead of floating independently between it and the price
-   (which stays the sole item on the right, per justify-content: space-between). */
+/* Groups TPn, its RR and its pips/$ move tightly together on the left — the price
+   stays alone on the right (per justify-content: space-between) so it's the one
+   number a user entering the trade has to read at a glance, with nothing else
+   competing for that side of the line. */
 .signal-tp-left {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+/* Deliberately no color here — inherits whatever .signal-tp-line resolves to, same
+   reasoning as .signal-tp-row .rr just below. */
+.signal-tp-pips {
+  font-size: 0.68rem;
+}
+
+/* Same small/dim treatment as .zone-meta's own sub-line — names the level without
+   competing with the main TPn/price line above it. */
+.signal-tp-source {
+  font-size: 0.68rem;
+  color: var(--text-dim);
 }
 
 .signal-confluence {

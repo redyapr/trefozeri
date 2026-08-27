@@ -559,11 +559,14 @@ export function annotateGoldenZones(zonesByTimeframe) {
 // much reward before trusting a level as a target over the fixed R-multiple fallback.
 const MIN_ZONE_TP_RR = 0.5
 
-// Symmetric ceiling: a "TP" hundreds of R away isn't a realistic target to still be
+// Symmetric ceiling: a "TP" dozens of R away isn't a realistic target to still be
 // showing — it mostly shows up because of higher-timeframe borrowing (see
 // buildSignals) surfacing a genuinely distant confluence level. Past this point it's
 // just noise on the signal card, not a level worth displaying or tracking as a target.
-const MAX_ZONE_TP_RR = 100
+// 2026-08-27: lowered from 100 — even 100R was still routinely showing up in practice
+// (see FAR_TP_THRESHOLD_RR's own review above), just as a farther rung behind the new
+// checkpoint rather than as TP1 itself.
+const MAX_ZONE_TP_RR = 50
 
 // 2026-08-26 win-rate review: even the NEAREST real structural target can still end up
 // far beyond a realistic first target — the SL is (correctly) sized off nearby
@@ -610,34 +613,50 @@ function buildTakeProfits(entryPrice, sl, direction, candidateZones, mergeThresh
   // its own (bigger ATR), which would otherwise over-merge targets that are
   // meaningfully separated at the scale actually being traded.
   const mergeDistance = Math.max(mergeThreshold, MIN_TP_DISPLAY_SEPARATION)
+  // Each surviving zone is kept as {price, category, tf} rather than a bare number, so
+  // the card can later show *which* level a TP actually is (e.g. "H4 Resist.") — see
+  // renderSignalCard in main.js. tf comes along for the ride from candidateZones; it's
+  // only populated once the caller tags zones with it (see refreshData/
+  // updateSignalHistoryForSymbol), so it's `undefined` — not a bug — anywhere that
+  // hasn't been wired up yet.
   const fromZones = []
   for (const z of sortedZones) {
     // Checked by length, not truthiness of the value itself — a price of exactly 0
     // (never realistic for XAUUSD/BTCUSD, but not worth relying on that) would
     // otherwise read as "no previous zone yet" and skip the merge check entirely.
     const last = fromZones.length ? fromZones[fromZones.length - 1] : null
-    if (last != null && Math.abs(z.mid - last) <= mergeDistance) continue
-    fromZones.push(z.mid)
+    if (last != null && Math.abs(z.mid - last.price) <= mergeDistance) continue
+    fromZones.push({ price: z.mid, category: z.category, tf: z.tf })
   }
 
   // No cap on how many real structural targets surface — however many opposite-side
   // zones qualify (same-timeframe plus any borrowed higher-timeframe ones) all become
-  // TPs. Only the synthetic R-multiple fallback below is a fixed set of 3.
+  // TPs. Only the synthetic R-multiple fallback below is a fixed set of 3. Each fallback
+  // rung is tagged source: 'fallback' so the card can label it "No structural level"
+  // instead of implying a real zone backs it.
   let targets = fromZones.length
     ? fromZones
-    : [1.5, 2.5, 3.5].map((mult) => entryPrice + (isBuy ? 1 : -1) * risk * mult)
+    : [1.5, 2.5, 3.5].map((mult) => ({ price: entryPrice + (isBuy ? 1 : -1) * risk * mult, source: 'fallback' }))
 
   // See FAR_TP_THRESHOLD_RR's own comment above — a reachable checkpoint ahead of a
-  // too-distant nearest zone, not a replacement for it.
+  // too-distant nearest zone, not a replacement for it. Tagged source: 'checkpoint' so
+  // the card can label it as such rather than attributing it to a level that isn't
+  // actually there.
   if (fromZones.length) {
-    const nearestRr = Math.abs(fromZones[0] - entryPrice) / risk
+    const nearestRr = Math.abs(fromZones[0].price - entryPrice) / risk
     if (nearestRr > FAR_TP_THRESHOLD_RR) {
-      const checkpoint = entryPrice + (isBuy ? 1 : -1) * risk * NEAR_TP_CHECKPOINT_RR
+      const checkpoint = { price: entryPrice + (isBuy ? 1 : -1) * risk * NEAR_TP_CHECKPOINT_RR, source: 'checkpoint' }
       targets = [checkpoint, ...fromZones]
     }
   }
 
-  return targets.map((price) => ({ price, rr: Math.abs(price - entryPrice) / risk }))
+  return targets.map((t) => ({
+    price: t.price,
+    rr: Math.abs(t.price - entryPrice) / risk,
+    category: t.category ?? null,
+    tf: t.tf ?? null,
+    source: t.source ?? 'zone',
+  }))
 }
 
 // SL distance = how far beyond the zone's already-tested wick (structureAnchor) plus a

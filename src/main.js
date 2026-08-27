@@ -504,6 +504,18 @@ function shortCategory(category) {
   return category === 'Resistance' ? 'Resist.' : category
 }
 
+// Which structural level (if any) a TP actually is — see buildTakeProfits in
+// srDetector.js for where category/tf/source come from. A real zone shows its
+// timeframe + category (e.g. "H4 Resist."); the synthetic 1R checkpoint and the
+// no-structure fallback ladder are both labeled as such rather than implying a level
+// that isn't really there.
+function tpSourceLabel(t) {
+  if (t.source === 'checkpoint') return 'Checkpoint'
+  if (t.source === 'fallback') return 'No structural level'
+  if (t.tf && t.category) return `${t.tf} ${shortCategory(t.category)}`
+  return ''
+}
+
 // The confluence badge is named/colored per the active symbol — "★ Golden" for
 // XAUUSD, "◆ Diamond" for BTCUSD (see style.css's body[data-symbol] accents) —
 // rather than always "Golden", since that name only really makes sense for gold itself.
@@ -712,13 +724,18 @@ const CHECK_ICON =
 
 function buildSignalText(signal) {
   const label = `${signal.direction === 'buy' ? 'BUY' : 'SELL'} ${signal.orderType}`
+  const isBuy = signal.direction === 'buy'
   return [
     // Signals are H1-only (see refreshData) — hardcoded rather than read off anything,
     // since the signal object itself doesn't carry its own timeframe.
     `${label} — ${activeSymbol.label} H1`,
     `Entry: ${formatPrice(signal.entry)}`,
     `SL: ${formatPrice(signal.sl)}`,
-    ...signal.tp.map((t, i) => `TP${i + 1}: ${formatPrice(t.price)} (${formatPrice(t.rr)}R)`),
+    ...signal.tp.map((t, i) => {
+      const move = formatMove(activeSymbol.pipSize, signal.entry, t.price, isBuy)
+      const sourceLabel = tpSourceLabel(t)
+      return `TP${i + 1}: ${formatPrice(t.price)} (${formatPrice(t.rr)}R, ${move}${sourceLabel ? ` — ${sourceLabel}` : ''})`
+    }),
   ].join('\n')
 }
 
@@ -736,17 +753,24 @@ function renderSignalCard(signal) {
   // hardcode "Medium" regardless, silently hiding a real Weak (or Strong) signal.
   const badge = signal.isGolden ? confluenceBadgeHtml() : strengthBadgeHtml(signal.strengthLabel ?? 'Medium')
 
+  const isBuy = signal.direction === 'buy'
   const tpRows = signal.tp
-    .map(
-      (t, i) => `
+    .map((t, i) => {
+      const move = formatMove(activeSymbol.pipSize, signal.entry, t.price, isBuy)
+      const sourceLabel = tpSourceLabel(t)
+      return `
       <div class="signal-tp-row">
-        <span class="signal-tp-left">
-          <span>TP${i + 1}</span>
-          <span class="rr">(${formatPrice(t.rr)}R)</span>
-        </span>
-        <span>${formatPrice(t.price)}</span>
+        <div class="signal-tp-line">
+          <span class="signal-tp-left">
+            <span>TP${i + 1}</span>
+            <span class="rr">(${formatPrice(t.rr)}R)</span>
+            <span class="signal-tp-pips">${move}</span>
+          </span>
+          <span class="signal-tp-price">${formatPrice(t.price)}</span>
+        </div>
+        ${sourceLabel ? `<div class="signal-tp-source">${sourceLabel}</div>` : ''}
       </div>`
-    )
+    })
     .join('')
 
   const confluenceRow = signal.confluence?.length
@@ -836,7 +860,12 @@ async function refreshData() {
       if (tf.key === 'H1') {
         currentPrice = last.close
       }
-      const zones = detectLevels(series, currentPrice ?? last.close)
+      // Tagged with its own timeframe right here, at the source — this is what lets a
+      // TP built off a borrowed higher-timeframe zone (see higherTfZones below,
+      // buildSignalForZone in srDetector.js) report which timeframe it actually came
+      // from (see renderSignalCard's tpSourceLabel). allZonesUnfiltered below re-tags
+      // the same way for its own (display-only) purposes, harmlessly redundant with this.
+      const zones = detectLevels(series, currentPrice ?? last.close).map((z) => ({ ...z, tf: tf.key }))
       // fingerprint (2026-08-23): every timeframe refetches on every tick now (see
       // TIMEFRAMES' own comment in twelveData.js), so `series` is always a brand-new
       // array even when its content is byte-identical to last tick's — a plain object
