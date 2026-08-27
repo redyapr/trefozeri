@@ -4,16 +4,19 @@ on:
   push:
     branches: [master]
   schedule:
-    # 2026-08-23: sped up from every 15 minutes to every 5 — GitHub Actions' own
-    # scheduler doesn't support anything shorter than 5-minute intervals, so that's the
-    # fastest this can run at all. The real reason to go faster is M1 (fill/SL/TP
-    # detection), not the S/R timeframes themselves: H1/H4/D1 don't refetch from Twelve
-    # Data on every single tick any more (see fetchThrottled/refetchIntervalMinutes in
-    # scripts/fetch-data.mjs) — they're throttled to their own slower cadence, mirroring
-    # the dashboard's own minRefetchMs (src/lib/twelveData.js), so gold's Twelve Data
-    # quota (800 requests/day, free tier) isn't blown through just to re-check a candle
-    # that mostly hasn't moved since the last tick anyway.
-    - cron: '*/5 * * * *'
+    # 2026-08-28: this used to be the *only* trigger, at */5 — but GitHub's own
+    # `schedule:` event is documented as best-effort ("may be delayed... in some cases
+    # the event may be dropped"), and in practice that's exactly what happened: gaps
+    # between runs grew from ~20 minutes to 10+ hours over a few days, even though
+    # every run that DID fire succeeded in under 2 minutes (so it wasn't the workflow
+    # itself being slow or failing — GitHub's scheduler just stopped firing the event
+    # reliably at that frequency). The real 5-minute cadence now comes from
+    # cloudflare/cron-trigger — an external Cron Trigger that calls this workflow's own
+    # `workflow_dispatch` below, which isn't covered by that same "may be dropped"
+    # caveat. This hourly schedule is kept only as a fallback safety net in case that
+    # Worker (or its PAT, or Cloudflare itself) is ever down — see
+    # cloudflare/cron-trigger/README.md.
+    - cron: '0 * * * *'
   workflow_dispatch:
 
 # Deliberately no workflow-level `permissions:` block — each job below declares

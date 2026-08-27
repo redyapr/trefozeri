@@ -162,8 +162,14 @@ candles for hours, several cron ticks after the market had already reopened. See
 `.github/workflows/deploy.yml` runs test → fetch → build → deploy:
 
 - on every push to `master`
-- every 5 minutes (cron — the fastest GitHub Actions' own scheduler supports)
-- on manual `workflow_dispatch`
+- hourly (cron — a fallback safety net only, see below)
+- on `workflow_dispatch` — the real 5-minute cadence, driven by
+  `cloudflare/cron-trigger`, a small external Worker that calls this instead of relying
+  on GitHub's own `schedule:` trigger. GitHub's `schedule:` event is documented as
+  best-effort and was observed silently throttling this repo's ticks (gaps growing from
+  ~20 minutes to 10+ hours over a few days) even though every run that fired succeeded
+  in under 2 minutes — `workflow_dispatch`, invoked externally, isn't covered by that
+  caveat. See `cloudflare/cron-trigger/README.md` for setup.
 
 A failing test stops the run before anything else happens. CI is otherwise stateless.
 `data/signal-history.json`, `data/last-alert.json`, `data/last-report.json` and
@@ -234,4 +240,9 @@ data/
   deploy.yml  Test → cron fetch → persist track record → build → deploy
 .github/
   dependabot.yml  Weekly PRs for outdated/vulnerable npm + Actions deps
+cloudflare/cron-trigger/
+  worker.js      Calls deploy.yml's workflow_dispatch every 5 min (see Data and
+                 deployment above) — deployed separately via Wrangler, not by this repo's CI
+  wrangler.toml  Worker + Cron Trigger config
+  README.md      Setup steps
 ```

@@ -1,0 +1,9 @@
+name = "trefozeri-cron-trigger"
+main = "worker.js"
+compatibility_date = "2024-09-23"
+
+# Every 5 minutes — the cadence the GitHub Actions `schedule:` trigger was supposed to
+# run at (see worker.js's own comment for why that trigger stopped being reliable on
+# its own, and why this Worker calls workflow_dispatch instead).
+[triggers]
+crons = ["*/5 * * * *"]
