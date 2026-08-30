@@ -366,8 +366,17 @@ let previouslyFocusedEl = null
 
 function openHistoryModal() {
   previouslyFocusedEl = document.activeElement
-  renderHistory()
+  // Unhidden BEFORE renderHistory(), not after: renderHistory() creates the equity
+  // chart (renderEquityChart in priceChart.js), which reads the container's real
+  // width to size itself and immediately calls fitContent() — while historyModal
+  // still had `hidden` (display:none), that container measured 0-width, so the
+  // chart fit its whole data range into that, then only got stretched (not re-fit)
+  // once the modal actually became visible a line later, leaving it looking squeezed
+  // into a sliver until something else happened to re-render it later while already
+  // visible (e.g. the next periodic refresh landing while the modal was still open —
+  // which is why this only ever seemed to depend on unrelated page-load timing).
   historyModal.hidden = false
+  renderHistory()
   historyCloseBtn.focus()
 }
 
