@@ -943,6 +943,20 @@ body[data-symbol='btcusd'] {
   font-size: 0.66rem;
 }
 
+/* Wraps .signal-label + a dim sub-line (which level Entry is, how many pips SL risks —
+   see renderSignalCard in main.js) so .signal-row's own space-between still puts the
+   price alone on the right, same layout .signal-tp-source does for TP rows below. */
+.signal-row-label {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.signal-row-sub {
+  font-size: 0.62rem;
+  color: var(--text-dim);
+}
+
 .signal-value {
   font-family: var(--font);
   font-size: 1.05rem;

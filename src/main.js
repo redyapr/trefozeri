@@ -856,8 +856,8 @@ function buildSignalText(signal) {
     // Signals are H1-only (see refreshData) — hardcoded rather than read off anything,
     // since the signal object itself doesn't carry its own timeframe.
     `${label} — ${activeSymbol.label} H1`,
-    `Entry: ${formatPrice(signal.entry)}`,
-    `SL: ${formatPrice(signal.sl)}`,
+    `Entry: ${formatPrice(signal.entry)} — H1 ${shortCategory(signal.category)}`,
+    `SL: ${formatPrice(signal.sl)} (${formatMove(activeSymbol.pipSize, signal.entry, signal.sl, isBuy)} risk)`,
     ...signal.tp.map((t, i) => {
       const move = formatMove(activeSymbol.pipSize, signal.entry, t.price, isBuy)
       const sourceLabel = tpSourceLabel(t)
@@ -872,6 +872,16 @@ function renderSignalCard(signal) {
 
   const label = `${signal.direction === 'buy' ? 'BUY' : 'SELL'} ${signal.orderType}`
   const entryText = formatPrice(signal.entry)
+  // Signals are H1-only (see refreshData/buildSignalText's own comment on why "H1" is
+  // hardcoded rather than read off anything) — the entry level's own category is what's
+  // actually informative here (e.g. "H1 SBR"), same shortCategory abbreviation and
+  // CATEGORY_GLOSSARY tooltip already used for zone cards and TP source labels.
+  const entryLevelLabel = `H1 ${shortCategory(signal.category)}`
+  // Always the unfavorable distance by definition (SL is never on the favorable side)
+  // — formatMove's own sign convention already reads negative here, "risk" makes clear
+  // that's the intended reading rather than looking like a typo'd loss.
+  const isBuy = signal.direction === 'buy'
+  const slRiskLabel = `${formatMove(activeSymbol.pipSize, signal.entry, signal.sl, isBuy)} risk`
   // isGolden (confluence) and strengthLabel (Strong/Medium/Weak off the level's own
   // track record — see computeStrengthLabel in srDetector.js) are independent; a
   // strengthLabel of 'Strong' no longer implies golden, so this checks isGolden
@@ -880,7 +890,6 @@ function renderSignalCard(signal) {
   // hardcode "Medium" regardless, silently hiding a real Weak (or Strong) signal.
   const badge = signal.isGolden ? confluenceBadgeHtml() : strengthBadgeHtml(signal.strengthLabel ?? 'Medium')
 
-  const isBuy = signal.direction === 'buy'
   const tpRows = signal.tp
     .map((t, i) => {
       const move = formatMove(activeSymbol.pipSize, signal.entry, t.price, isBuy)
@@ -915,11 +924,17 @@ function renderSignalCard(signal) {
       </div>
     </div>
     <div class="signal-row">
-      <span class="signal-label">Entry</span>
+      <div class="signal-row-label">
+        <span class="signal-label">Entry</span>
+        <span class="signal-row-sub" title="${CATEGORY_GLOSSARY[signal.category] ?? ''}">${entryLevelLabel}</span>
+      </div>
       <span class="signal-value">${entryText}</span>
     </div>
     <div class="signal-row sl">
-      <span class="signal-label">SL</span>
+      <div class="signal-row-label">
+        <span class="signal-label">SL</span>
+        <span class="signal-row-sub">${slRiskLabel}</span>
+      </div>
       <span class="signal-value">${formatPrice(signal.sl)}</span>
     </div>
     <div class="signal-tp">${tpRows}</div>
