@@ -140,6 +140,9 @@ export function renderZoneChart(container, candles, zones) {
     layout: {
       background: { type: ColorType.Solid, color: cssVar('--panel') },
       textColor: cssVar('--text-dim'),
+      // Suppresses the "#tv-attr-logo" TradingView attribution link lightweight-charts
+      // otherwise injects into the corner of every chart it renders.
+      attributionLogo: false,
     },
     grid: {
       vertLines: { color: cssVar('--border-soft') },
@@ -189,6 +192,8 @@ export function renderEquityChart(container, points) {
     layout: {
       background: { type: ColorType.Solid, color: cssVar('--panel') },
       textColor: cssVar('--text-dim'),
+      // Same attribution-logo suppression as renderZoneChart above.
+      attributionLogo: false,
     },
     grid: {
       vertLines: { color: cssVar('--border-soft') },

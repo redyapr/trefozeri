@@ -406,7 +406,11 @@ export function getEquityCurve(records, symbolKey, tf) {
 // Shared grouping helper for getBreakdown below — buckets closed records by whatever
 // `keyFn` returns, skipping a record entirely if it returns null/undefined (a group we
 // have no real label for, rather than lumping those into a misleading "Unknown" entry).
-function groupWinRate(list, keyFn) {
+// Exported so main.js can reuse it for a day-of-week breakdown in the viewer's own
+// local timezone (see that call site's own comment) — a genuinely display-only,
+// per-viewer concern this shared/Node-tested module deliberately doesn't compute
+// itself, unlike byCategory/byStrength/byTimeframe below (all timezone-independent).
+export function groupWinRate(list, keyFn) {
   const groups = new Map()
   for (const r of list) {
     const key = keyFn(r)
@@ -421,10 +425,12 @@ function groupWinRate(list, keyFn) {
     .sort((a, b) => b.total - a.total)
 }
 
-// Win-rate breakdown by zone category (Support/Resistance/SBR/RBS) and by zone strength
-// (Strong = Golden/Diamond Zone, Medium = everything else) — surfaces which *kind* of
-// setup is actually reliable, rather than only ever seeing one aggregate win rate (see
-// getStats). Only closed (win/loss) records count; pending/running have no result yet.
+// Win-rate breakdown by zone category (Support/Resistance/SBR/RBS), zone strength
+// (Strong = Golden/Diamond Zone, Medium = everything else), and timeframe — surfaces
+// which *kind* of setup is actually reliable, rather than only ever seeing one
+// aggregate win rate (see getStats). Only closed (win/loss) records count; pending/
+// running have no result yet. A day-of-week breakdown deliberately isn't computed here
+// — see groupWinRate's own comment above for why main.js builds that one itself.
 export function getBreakdown(records, symbolKey, tf) {
   const list = getHistory(records, symbolKey, tf).filter((r) => r.status === 'win' || r.status === 'loss')
   return {
@@ -432,6 +438,85 @@ export function getBreakdown(records, symbolKey, tf) {
     // strengthLabel is only present on records opened after that field was added (see
     // recordSignals) — older records are silently excluded here, not miscounted.
     byStrength: groupWinRate(list, (r) => r.strengthLabel ?? null),
+    // Signals (and so new records) are H1-only going forward (see recordSignals'
+    // caller in fetch-data.mjs) — a handful of older H4/D1 records may still show up
+    // here until they finish closing out on their own, same as elsewhere this app
+    // already expects that transition period.
+    byTimeframe: groupWinRate(list, (r) => r.tf),
+  }
+}
+
+// Streaks, drawdown, and average win/loss size off the same closed (win/loss) records
+// getBreakdown/getEquityCurve already use — a healthy-looking aggregate win rate can
+// still have survived a brutal losing streak or a deep equity dip along the way, and
+// neither shows up anywhere else in the track record modal. `maxDrawdown`/`avgWin`/
+// `avgLoss` are pips for XAUUSD, raw $ for BTCUSD — same underlying unit as
+// getEquityCurve (see favorableMove) — but always rounded to a WHOLE number regardless
+// of symbol, unlike favorableMove/formatAmount's own cents-for-$ convention used
+// elsewhere: these are already an aggregate/statistical read (an average, a
+// peak-to-trough distance), where sub-pip/sub-dollar precision is just visual noise,
+// not meaningful information worth the clutter in an already-compact stat box.
+//
+// `maxDrawdownPct`: this app has no real account-equity model (no starting balance,
+// lot size, or leverage — see getEquityCurve's own comment), so there's no true "% of
+// account" to report the conventional way backtest tools do. This is the closest
+// honest equivalent: % below the cumulative-pips/$ peak that was actually current at
+// the moment the deepest drawdown happened (not the eventual final peak — a drawdown
+// is always relative to the high-water mark at the time). null (not 0 or a nonsense
+// number) whenever that peak was itself <= 0 — e.g. a losing streak right at the very
+// start, before any real peak had formed yet — division against a non-positive peak
+// wouldn't mean anything meaningful.
+export function getRiskStats(records, symbolKey, tf) {
+  const pipSize = PIP_SIZES[symbolKey]
+  const list = getHistory(records, symbolKey, tf)
+    .filter((r) => r.status === 'win' || r.status === 'loss')
+    .sort((a, b) => a.closedAt - b.closedAt)
+
+  let streak = 0 // positive while on a winning streak, negative while on a losing one
+  let maxWinStreak = 0
+  let maxLossStreak = 0
+  let cumulative = 0
+  let peak = 0
+  let maxDrawdown = 0
+  let maxDrawdownPct = null
+  let winSum = 0
+  let winCount = 0
+  let lossSum = 0
+  let lossCount = 0
+
+  for (const r of list) {
+    const move = favorableMove(pipSize, r.entry, r.exitPrice, r.direction === 'buy')
+    cumulative += move
+    if (cumulative > peak) peak = cumulative
+    const drawdown = peak - cumulative
+    if (drawdown > maxDrawdown) {
+      maxDrawdown = drawdown
+      maxDrawdownPct = peak > 0 ? (drawdown / peak) * 100 : null
+    }
+
+    if (r.status === 'win') {
+      winSum += move
+      winCount += 1
+      streak = streak > 0 ? streak + 1 : 1
+      maxWinStreak = Math.max(maxWinStreak, streak)
+    } else {
+      // move is already negative here (a loss's exit is on the unfavorable side of
+      // entry) — summed as-is so avgLoss reads negative, matching formatAmount's own
+      // sign convention rather than needing the caller to re-negate it.
+      lossSum += move
+      lossCount += 1
+      streak = streak < 0 ? streak - 1 : -1
+      maxLossStreak = Math.max(maxLossStreak, -streak)
+    }
+  }
+
+  return {
+    maxWinStreak,
+    maxLossStreak,
+    maxDrawdown: Math.round(maxDrawdown),
+    maxDrawdownPct: maxDrawdownPct != null ? Math.round(maxDrawdownPct * 10) / 10 : null, // one decimal — a whole-number-only percent loses too much resolution (0% vs 1% is a big gap)
+    avgWin: winCount ? Math.round(winSum / winCount) : null,
+    avgLoss: lossCount ? Math.round(lossSum / lossCount) : null,
   }
 }
 

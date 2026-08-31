@@ -172,7 +172,10 @@ async function fetchCalendar() {
 // itself, not just its lead-up. Not imported from newsCalendar.js: that module reads
 // import.meta.env at its top level for its own fetch endpoint, a Vite/browser concern
 // this plain-Node script doesn't have — same reasoning parseUtc below is its own local
-// copy rather than importing twelveData.js's.
+// copy rather than importing twelveData.js's. newsCalendar.js has its own mirrored
+// copy of this exact function (kept in sync by hand, same NEWS_GATE_MINUTES=30) so
+// main.js's live dashboard can gate its *displayed* signal cards the same way this
+// gates the persisted/Telegram-posted ones — see that copy's own comment.
 const NEWS_GATE_MINUTES = 30
 
 export function isNearHighImpactNews(calendar, now, windowMinutes = NEWS_GATE_MINUTES) {

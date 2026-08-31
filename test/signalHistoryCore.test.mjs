@@ -9,6 +9,8 @@ import {
   getClosedBetween,
   getStats,
   getBreakdown,
+  groupWinRate,
+  getRiskStats,
   buildHistoryCsv,
   getEquityCurve,
   favorableMove,
@@ -853,6 +855,148 @@ test('getBreakdown', async (t) => {
     const history = [closedRecord({ symbolKey: 'XAUUSD' }), closedRecord({ symbolKey: 'BTCUSD' })]
     const { byCategory } = getBreakdown(history, 'XAUUSD')
     assert.equal(byCategory[0].total, 1)
+  })
+
+  await t.test('groups win/loss by timeframe', () => {
+    const history = [
+      closedRecord({ tf: 'H1', status: 'win' }),
+      closedRecord({ tf: 'H1', status: 'loss' }),
+      closedRecord({ tf: 'H4', status: 'win' }),
+    ]
+    const { byTimeframe } = getBreakdown(history, 'XAUUSD')
+    const h1 = byTimeframe.find((g) => g.key === 'H1')
+    const h4 = byTimeframe.find((g) => g.key === 'H4')
+    assert.deepEqual(h1, { key: 'H1', wins: 1, losses: 1, total: 2, winRate: 50 })
+    assert.deepEqual(h4, { key: 'H4', wins: 1, losses: 0, total: 1, winRate: 100 })
+  })
+
+})
+
+// groupWinRate itself — getBreakdown above already exercises it indirectly via
+// byCategory/byStrength/byTimeframe, but it's also exported directly now so main.js
+// can build a day-of-week breakdown in the *viewer's own local timezone* (a genuinely
+// per-viewer, display-only concern — see groupWinRate's own comment for why that one
+// isn't computed in this shared/Node-tested module).
+test('groupWinRate', async (t) => {
+  await t.test('groups by whatever keyFn returns, with a win rate per group', () => {
+    const list = [
+      { status: 'win' },
+      { status: 'win' },
+      { status: 'loss' },
+    ]
+    const groups = groupWinRate(list, () => 'only-group')
+    assert.deepEqual(groups, [{ key: 'only-group', wins: 2, losses: 1, total: 3, winRate: 67 }])
+  })
+
+  await t.test('sorts groups by total, most first', () => {
+    const list = [{ key: 'a', status: 'win' }, { key: 'b', status: 'win' }, { key: 'b', status: 'loss' }]
+    const groups = groupWinRate(list, (r) => r.key)
+    assert.deepEqual(groups.map((g) => g.key), ['b', 'a'])
+  })
+
+  await t.test('skips a record whose keyFn returns null/undefined, rather than lumping it into an "Unknown" group', () => {
+    const list = [{ status: 'win', tag: 'x' }, { status: 'win', tag: undefined }, { status: 'loss', tag: null }]
+    const groups = groupWinRate(list, (r) => r.tag ?? null)
+    assert.deepEqual(groups.map((g) => g.key), ['x'])
+  })
+
+  await t.test('an empty list returns an empty array, not a throw', () => {
+    assert.deepEqual(groupWinRate([], () => 'x'), [])
+  })
+})
+
+test('getRiskStats', async (t) => {
+  await t.test('tracks the longest win streak and longest loss streak', () => {
+    const history = [
+      closedRecord({ closedAt: 1, status: 'win' }),
+      closedRecord({ closedAt: 2, status: 'win' }),
+      closedRecord({ closedAt: 3, status: 'loss' }),
+      closedRecord({ closedAt: 4, status: 'win' }),
+      closedRecord({ closedAt: 5, status: 'loss' }),
+      closedRecord({ closedAt: 6, status: 'loss' }),
+      closedRecord({ closedAt: 7, status: 'loss' }),
+    ]
+    const { maxWinStreak, maxLossStreak } = getRiskStats(history, 'XAUUSD')
+    assert.equal(maxWinStreak, 2)
+    assert.equal(maxLossStreak, 3)
+  })
+
+  await t.test('max drawdown is the deepest dip below the running equity peak, not just the final value', () => {
+    // +100, +100 (peak 200), -50, -50 (down to 100 -> a 100-pip drawdown from the
+    // peak), +30 (partial recovery, still a smaller drawdown than the 100 already seen)
+    const history = [
+      closedRecord({ closedAt: 1, status: 'win', entry: 100, exitPrice: 110 }),
+      closedRecord({ closedAt: 2, status: 'win', entry: 100, exitPrice: 110 }),
+      closedRecord({ closedAt: 3, status: 'loss', entry: 100, exitPrice: 95 }),
+      closedRecord({ closedAt: 4, status: 'loss', entry: 100, exitPrice: 95 }),
+      closedRecord({ closedAt: 5, status: 'win', entry: 100, exitPrice: 103 }),
+    ]
+    const { maxDrawdown, maxDrawdownPct } = getRiskStats(history, 'XAUUSD')
+    assert.equal(maxDrawdown, 100)
+    assert.equal(maxDrawdownPct, 50) // 100 pips below the 200-pip peak that was current at that moment
+  })
+
+  await t.test('maxDrawdownPct is null (not 0, not Infinity/NaN) when the peak never went positive', () => {
+    // A losing streak right at the very start — cumulative stays <= 0 the whole time,
+    // so `peak` (which starts at 0 and only ever rises) never becomes a real, positive
+    // high-water mark to express a percentage drawdown against.
+    const history = [
+      closedRecord({ closedAt: 1, status: 'loss', entry: 100, exitPrice: 95 }),
+      closedRecord({ closedAt: 2, status: 'loss', entry: 100, exitPrice: 90 }),
+    ]
+    const { maxDrawdown, maxDrawdownPct } = getRiskStats(history, 'XAUUSD')
+    assert.equal(maxDrawdown, 150, 'the raw pip drawdown (-50 then -150 cumulative) is still tracked normally')
+    assert.equal(maxDrawdownPct, null)
+  })
+
+  await t.test('avgWin/avgLoss are the mean favorable move of each outcome, rounded to a whole pip count', () => {
+    const history = [
+      closedRecord({ closedAt: 1, status: 'win', entry: 100, exitPrice: 110 }), // +100
+      closedRecord({ closedAt: 2, status: 'win', entry: 100, exitPrice: 120 }), // +200
+      closedRecord({ closedAt: 3, status: 'loss', entry: 100, exitPrice: 95 }), // -50
+    ]
+    const { avgWin, avgLoss } = getRiskStats(history, 'XAUUSD')
+    assert.equal(avgWin, 150) // (100 + 200) / 2
+    assert.equal(avgLoss, -50)
+  })
+
+  await t.test('maxDrawdown/avgWin/avgLoss are whole numbers even for a $-denominated symbol (BTCUSD) — no cents', () => {
+    const history = [
+      closedRecord({ symbolKey: 'BTCUSD', closedAt: 1, status: 'win', entry: 100, exitPrice: 102.5 }), // +2.5 -> peak 2.5
+      closedRecord({ symbolKey: 'BTCUSD', closedAt: 2, status: 'loss', entry: 100, exitPrice: 98.9 }), // -1.1 -> cum 1.4, drawdown 1.1 from peak
+      closedRecord({ symbolKey: 'BTCUSD', closedAt: 3, status: 'win', entry: 100, exitPrice: 101.7 }), // +1.7
+    ]
+    const { maxDrawdown, avgWin, avgLoss } = getRiskStats(history, 'BTCUSD')
+    assert.equal(maxDrawdown, 1, 'rounds the 1.1 drawdown to the nearest whole $, not left as "1.1"')
+    assert.equal(avgWin, 2) // (2.5 + 1.7) / 2 = 2.1 -> rounds to 2, not left as "2.1"
+    assert.equal(avgLoss, -1) // -1.1 rounds to -1, not left as "-1.1"
+  })
+
+  await t.test('avgWin/avgLoss is null (not 0 or NaN) when there are no trades of that outcome yet', () => {
+    const history = [closedRecord({ status: 'win' })]
+    const { avgLoss } = getRiskStats(history, 'XAUUSD')
+    assert.equal(avgLoss, null)
+  })
+
+  await t.test('an empty history returns zeroed streaks/drawdown and null averages, not a throw', () => {
+    const stats = getRiskStats([], 'XAUUSD')
+    assert.deepEqual(stats, {
+      maxWinStreak: 0,
+      maxLossStreak: 0,
+      maxDrawdown: 0,
+      maxDrawdownPct: null,
+      avgWin: null,
+      avgLoss: null,
+    })
+  })
+
+  await t.test('filters by symbol and (optional) timeframe like getHistory/getStats', () => {
+    const history = [
+      closedRecord({ symbolKey: 'XAUUSD', status: 'win', entry: 100, exitPrice: 110 }),
+      closedRecord({ symbolKey: 'BTCUSD', status: 'win', entry: 100, exitPrice: 110 }),
+    ]
+    const { avgWin } = getRiskStats(history, 'XAUUSD')
+    assert.equal(avgWin, 100)
   })
 })
 

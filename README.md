@@ -53,7 +53,10 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
   price and the chart's own price marker track the single freshest tick available
   (`/quote/{SYMBOL}-latest.json`, derived from M1 — fetched every cron run, unthrottled)
   rather than H1's own close, which only refreshes every 15 minutes; zone detection and
-  signals still use H1 regardless — see `spotPrice`/`currentPrice` in `main.js`.
+  signals still use H1 regardless — see `spotPrice`/`currentPrice` in `main.js`. Refetches
+  every 5 minutes, paused while the tab is backgrounded (catches up immediately on
+  return if the data's gone stale); a refresh that actually fails shows a "couldn't
+  refresh" notice with the last-known-good time instead of failing silently.
 - **PWA** — a service worker precaches the app shell; price/signal data always fetches
   fresh, never from a stale cache.
 - **Alerts** — opt-in browser notifications (bell icon) when price nears a zone or a
@@ -78,7 +81,15 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
   TP was ever reached (a genuine loss), or hits the SL after a win (chase over, win
   stands). See `evaluateSignals` in `src/lib/signalHistoryCore.js`. New signals are also
   withheld around high-impact USD news releases, since those tend to spike straight
-  through a level with no real retest.
+  through a level with no real retest — the live dashboard's own signal cards respect
+  the same gate (with a banner explaining why), not just the persisted/Telegram-posted
+  ones. The track record modal also breaks down win rate by zone category, strength,
+  timeframe, and day of week opened (the viewer's own local day), plus streaks (longest
+  win/loss run), max drawdown as a % of the highest cumulative pips/$ reached so far
+  (the closest honest equivalent to a conventional backtest's "max drawdown %" without
+  this app simulating a real trading account), and average win/loss size — a healthy
+  aggregate win rate can still have survived a rough stretch neither shows on its own.
+  The row-by-row trade list itself is collapsed by default under the summary stats.
 - **Telegram notifications** — public channel, H1 only. Posts new signals, fills, and
   SL/TP results automatically. A still-pending signal's own message is edited in place
   whenever its entry/SL/TP recalculate, so it never shows stale numbers — once filled,

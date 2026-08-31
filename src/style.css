@@ -418,6 +418,16 @@ body[data-symbol='btcusd'] {
   margin-bottom: 18px;
 }
 
+/* Same .history-stat/.num/.lbl boxes as .history-stats above, just a 5-column grid to
+   fit maxWinStreak/maxLossStreak/maxDrawdown/avgWin/avgLoss (see getRiskStats in
+   signalHistoryCore.js) without an awkward lone box wrapping to its own row. */
+.history-risk-stats {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
 /* lightweight-charts needs a real, already-sized container to render into (autoSize
    fills whatever this is, it doesn't establish its own height) — see renderEquityChart
    in priceChart.js. */
@@ -632,6 +642,51 @@ body[data-symbol='btcusd'] {
   color: var(--text-dim);
   font-size: 0.82rem;
   text-align: center;
+}
+
+/* Row-by-row trade list — collapsed by default (see historyListExpanded in main.js).
+   Native <details>/<summary> gives free keyboard support and persisted toggle state
+   with no hand-rolled JS; this just restyles the browser's own disclosure marker into
+   something matching the rest of the modal's uppercase section-header look (see
+   .breakdown-section h3 above) instead of the default triangle/arrow glyph. */
+.history-list-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+/* Hides the native marker in every engine — Chrome/Safari/Edge (::-webkit-...),
+   modern Firefox/Chrome/Safari (::marker); list-style above covers the rest. Only
+   then does the custom ::before chevron below take over. */
+.history-list-summary::-webkit-details-marker {
+  display: none;
+}
+
+.history-list-summary::marker {
+  content: '';
+}
+
+.history-list-summary::before {
+  content: '▸';
+  display: inline-block;
+  color: var(--accent);
+  transition: transform 0.15s ease;
+}
+
+.history-list-details[open] .history-list-summary::before {
+  transform: rotate(90deg);
+}
+
+.history-list-summary:hover {
+  color: var(--accent);
 }
 
 .symbol-tabs {
@@ -1101,6 +1156,13 @@ body[data-symbol='btcusd'] {
   margin-top: 20px;
 }
 
+/* A refresh that actually failed (see showFetchOutcome in main.js) — same warning red
+   as .news-banner-icon, so a stale-data notice reads consistently with the other
+   warning surfaces already on the page. */
+.last-update.stale {
+  color: var(--resistance);
+}
+
 .app-footer {
   margin-top: 32px;
   padding-top: 16px;
@@ -1162,6 +1224,13 @@ body[data-symbol='btcusd'] {
 }
 
 @media (max-width: 480px) {
+  /* 5 columns of .history-risk-stats (see its own comment) gets too cramped at this
+     width — wraps to 2-3 rows instead, same .history-stat boxes just more of them per
+     row than columns. */
+  .history-risk-stats {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
   .topbar {
     flex-direction: column;
     align-items: flex-start;

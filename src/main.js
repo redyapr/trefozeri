@@ -1,7 +1,7 @@
 import './style.css'
 import { TIMEFRAMES, SYMBOLS, fetchAllTimeframes, fetchLatestPrice } from './lib/twelveData.js'
 import { detectLevels, buildSignals, annotateGoldenZones, isPriceStagnant, computeTrend } from './lib/srDetector.js'
-import { fetchNewsCalendar, findUpcomingHighImpact } from './lib/newsCalendar.js'
+import { fetchNewsCalendar, findUpcomingHighImpact, isNearHighImpactNews } from './lib/newsCalendar.js'
 import { loadUiState, saveUiState } from './lib/uiState.js'
 import { renderZoneChart } from './lib/priceChart.js'
 import {
@@ -12,8 +12,8 @@ import {
   disableNotifications,
   checkZonesAndSignals,
 } from './lib/notifications.js'
-import { loadHistory, getHistory, getStats, getBreakdown, buildHistoryCsv, getEquityCurve } from './lib/signalHistory.js'
-import { formatMove, formatPrice } from './lib/signalHistoryCore.js'
+import { loadHistory, getHistory, getStats, getBreakdown, buildHistoryCsv, getEquityCurve, getRiskStats } from './lib/signalHistory.js'
+import { formatMove, formatPrice, groupWinRate } from './lib/signalHistoryCore.js'
 import { renderEquityChart } from './lib/priceChart.js'
 import { isGoldMarketClosed, nextGoldReopenUtc } from './lib/marketHours.js'
 
@@ -74,6 +74,11 @@ let refreshing = false
 // `refreshing`/re-rendering, so it can't re-open the guard or trigger an extra render
 // out from under the new symbol's own, still-genuinely-in-progress fetch.
 let refreshGeneration = 0
+// When refreshData last actually landed fresh data — feeds showFetchOutcome's "showing
+// data from HH:MM" wording on a failed refresh, and the visibilitychange listener's
+// "has it been long enough to bother catching up early" check. null until the very
+// first successful fetch.
+let lastSuccessfulUpdate = null
 let newsEvents = []
 let activeChart = null
 // The candlestick series inside activeChart — kept alongside it so updateChartSpotPrice
@@ -126,6 +131,8 @@ function renderSymbolTabs() {
       spotPrice = null
       priceEl.textContent = '—'
       lastUpdateEl.textContent = '' // the old symbol's fetch time no longer applies to this one
+      lastUpdateEl.classList.remove('stale')
+      lastSuccessfulUpdate = null
       refreshGeneration++
       renderSymbolTabs()
       renderDashboard()
@@ -141,6 +148,20 @@ function renderSymbolTabs() {
 }
 
 function renderMarketStatusBanner() {
+  // Applies to both symbols — gold and BTC both trade primarily off USD macro risk
+  // (see isNearHighImpactNews's own comment in newsCalendar.js) — checked ahead of
+  // XAUUSD's own closed-market/stagnant checks below, which don't apply to BTCUSD at
+  // all. This is the same gate refreshData applies to h1Result.signals; the banner
+  // just explains *why* no new signal cards are showing right now.
+  if (isNearHighImpactNews(newsEvents)) {
+    marketStatusBannerEl.hidden = false
+    marketStatusBannerEl.innerHTML = `
+      <span class="market-status-banner-icon">⚠</span>
+      <span>Near a high-impact USD news release — new signals are paused for ${activeSymbol.label} (already-open trades keep tracking normally).</span>
+    `
+    return
+  }
+
   if (activeSymbol.key !== 'XAUUSD') {
     marketStatusBannerEl.hidden = true
     return
@@ -243,6 +264,22 @@ let historyLoaded = false
 const HISTORY_PAGE_SIZE = 30
 const historyVisibleCounts = new Map()
 
+// Whether the row-by-row trade list is expanded, per symbol (so switching symbols and
+// back doesn't reset it) — collapsed by default, same persistence pattern as
+// historyVisibleCounts above (a plain module-level Map survives across renderHistory()
+// calls, including the 5-minute auto-refresh while the modal is open).
+const historyListExpanded = new Map()
+
+// Local (viewer's own browser timezone) day-of-week, used only for the "By Day Opened"
+// breakdown below — getDay() is Sunday-first (0-6) to match this array's own order,
+// same convention getBreakdown's other groupings already sort by. Deliberately computed
+// here in main.js, not inside the shared/Node-tested signalHistoryCore.js: which
+// calendar day a trade "belongs to" is inherently a per-viewer, local-time question
+// with no single correct answer server-side, and baking a specific timezone into the
+// shared module would either be wrong for most viewers (if fixed to one zone) or
+// non-deterministic to test (if left to the machine running the test suite).
+const LOCAL_DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+
 function breakdownGroupHtml(title, groups) {
   return `
     <div class="breakdown-section">
@@ -277,6 +314,7 @@ function renderHistory() {
   // show up here until they finish closing out on their own.
   const stats = getStats(activeSymbol.key)
   const breakdown = getBreakdown(activeSymbol.key)
+  const riskStats = getRiskStats(activeSymbol.key)
   const equityPoints = getEquityCurve(activeSymbol.key)
   // 'pending' (not yet filled) signals are already visible as live cards on the main
   // dashboard — the track record is for what's actually happened, so it only lists
@@ -284,6 +322,14 @@ function renderHistory() {
   // remaining-count both need the true total, not just what's currently visible.
   const records = getHistory(activeSymbol.key).filter((r) => r.status !== 'pending')
   historyExportBtn.disabled = records.length === 0
+
+  // Built here, not inside getBreakdown (see LOCAL_DAY_NAMES' own comment) — the same
+  // closed win/loss records getBreakdown itself filters down to, grouped by the
+  // viewer's own local calendar day via the shared groupWinRate helper.
+  const byDayOfWeek = groupWinRate(
+    records.filter((r) => r.status === 'win' || r.status === 'loss'),
+    (r) => LOCAL_DAY_NAMES[new Date(r.openedAt).getDay()]
+  ).sort((a, b) => LOCAL_DAY_NAMES.indexOf(a.key) - LOCAL_DAY_NAMES.indexOf(b.key))
 
   const visibleCount = historyVisibleCounts.get(activeSymbol.key) ?? HISTORY_PAGE_SIZE
   const visibleRecords = records.slice(0, visibleCount)
@@ -303,41 +349,49 @@ function renderHistory() {
   const equityHtml =
     equityPoints.length >= 2 ? `<div id="history-equity-chart" class="history-equity-chart"></div>` : ''
 
-  // Which setup is actually reliable — by zone category (Support/Resistance/SBR/RBS)
-  // and by zone strength (Golden/Diamond Zone vs Medium) — rather than only the one
-  // aggregate win rate above. Skipped entirely once there's nothing closed yet (would
-  // just repeat the empty-state message below), and the strength half is skipped on
-  // its own if every closed record predates that field being recorded (see
-  // recordSignals in signalHistoryCore.js).
+  // A healthy-looking aggregate win rate can still have survived a brutal losing streak
+  // or a deep equity dip along the way — neither shows up in statsHtml's own numbers
+  // above, so this surfaces them alongside average win/loss size (see getRiskStats).
+  // Same gating as breakdownHtml below: nothing to show before the first closed trade.
+  // Max DD is maxDrawdownPct (see getRiskStats' own comment on why % of the peak, not
+  // raw pips/$, is the closest honest equivalent to a conventional backtest's "max
+  // drawdown %" this app can report without a real account-equity model) — "—" when
+  // that peak was never positive to begin with (a losing streak right at the start).
+  //
+  // Avg win/loss deliberately skip formatAmount (unlike everywhere else a pip/$ move is
+  // shown) — no "pips" unit suffix at all: each box's own <div class="lbl"> already
+  // says what the number is, and these 5 compact boxes have no room to spare repeating
+  // the unit under every single one. getRiskStats itself already rounds these to a
+  // whole number regardless of symbol, so this is just the sign + the number.
+  const riskAmount = (n) => `${n >= 0 ? '+' : ''}${n}`
+  const riskStatsHtml =
+    stats.wins + stats.losses > 0
+      ? `<div class="history-risk-stats">
+          <div class="history-stat win"><div class="num">${riskStats.maxWinStreak}</div><div class="lbl">Win streak</div></div>
+          <div class="history-stat loss"><div class="num">${riskStats.maxLossStreak}</div><div class="lbl">Loss streak</div></div>
+          <div class="history-stat loss"><div class="num">${riskStats.maxDrawdownPct != null ? `-${riskStats.maxDrawdownPct}%` : '—'}</div><div class="lbl">Max DD</div></div>
+          <div class="history-stat win"><div class="num">${riskStats.avgWin != null ? riskAmount(riskStats.avgWin) : '—'}</div><div class="lbl">Avg win</div></div>
+          <div class="history-stat loss"><div class="num">${riskStats.avgLoss != null ? riskAmount(riskStats.avgLoss) : '—'}</div><div class="lbl">Avg loss</div></div>
+        </div>`
+      : ''
+
+  // Which setup — and when — is actually reliable: by zone category (Support/
+  // Resistance/SBR/RBS), zone strength (Golden/Diamond Zone vs Medium), timeframe, and
+  // day of week opened — rather than only the one aggregate win rate above. Skipped
+  // entirely once there's nothing closed yet (would just repeat the empty-state message
+  // below); strength/timeframe are each skipped on their own if there's nothing
+  // meaningful to contrast (strength: every closed record predates that field being
+  // recorded, see recordSignals in signalHistoryCore.js; timeframe: everything closed
+  // is H1 anyway, the now-default going forward — see getBreakdown's own comment).
   const breakdownHtml =
     stats.wins + stats.losses > 0
       ? `<div class="history-breakdown">
           ${breakdownGroupHtml('By Zone Type', breakdown.byCategory)}
           ${breakdown.byStrength.length ? breakdownGroupHtml('By Zone Strength', breakdown.byStrength) : ''}
+          ${breakdown.byTimeframe.length > 1 ? breakdownGroupHtml('By Timeframe', breakdown.byTimeframe) : ''}
+          ${breakdownGroupHtml('By Day Opened', byDayOfWeek)}
         </div>`
       : ''
-
-  const rowsHtml = visibleRecords.length
-    ? `<div class="history-list">${visibleRecords
-        .map((r) => {
-          // running: filled, waiting on SL/TP. win/loss: closed — show what it hit,
-          // at what price, and the pip/price move. ('pending' rows are filtered out above.)
-          const secondLine =
-            r.status === 'running'
-              ? `<span>Filled ${formatDateTime(r.filledAt)} (${timeAgo(r.filledAt)}) · running</span>`
-              : `<span>${historyExitLine(r, activeSymbol)} (${timeAgo(r.closedAt)})</span>`
-          return `
-        <div class="history-row">
-          <div class="history-row-main">
-            <strong>${r.direction === 'buy' ? 'BUY' : 'SELL'} ${shortCategory(r.category)} · ${r.tf} at ${formatPrice(r.entry)}</strong>
-            <span>Opened ${formatDateTime(r.openedAt)} (${timeAgo(r.openedAt)})</span>
-            ${secondLine}
-          </div>
-          <span class="history-row-badge ${r.status}">${r.status}</span>
-        </div>`
-        })
-        .join('')}</div>`
-    : `<p class="history-empty">No filled signals yet for ${activeSymbol.label} — pending ones are on the dashboard, check back here once one fills.</p>`
 
   const remaining = records.length - visibleRecords.length
   const loadMoreHtml =
@@ -345,7 +399,40 @@ function renderHistory() {
       ? `<button type="button" id="history-load-more" class="history-load-more">Load more (${remaining} older)</button>`
       : ''
 
-  historyBody.innerHTML = statsHtml + equityHtml + breakdownHtml + rowsHtml + loadMoreHtml
+  // Row-by-row trade list, collapsed inside a native <details> by default (see
+  // historyListExpanded's own comment) — the stats/breakdown above already give the
+  // useful summary at a glance; the individual rows are the most repetitive, lowest-
+  // information-density part of the modal, especially once "Load more" is in play.
+  // <details>/<summary> rather than a custom JS toggle: free keyboard support, no state
+  // machine to hand-roll, and the `toggle` event below is all that's needed to persist
+  // the open/closed state across renderHistory()'s own innerHTML rebuilds.
+  const rowsSectionHtml = visibleRecords.length
+    ? `<details class="history-list-details"${historyListExpanded.get(activeSymbol.key) ? ' open' : ''}>
+        <summary class="history-list-summary">${records.length} filled signal${records.length === 1 ? '' : 's'}</summary>
+        <div class="history-list">${visibleRecords
+          .map((r) => {
+            // running: filled, waiting on SL/TP. win/loss: closed — show what it hit,
+            // at what price, and the pip/price move. ('pending' rows are filtered out above.)
+            const secondLine =
+              r.status === 'running'
+                ? `<span>Filled ${formatDateTime(r.filledAt)} (${timeAgo(r.filledAt)}) · running</span>`
+                : `<span>${historyExitLine(r, activeSymbol)} (${timeAgo(r.closedAt)})</span>`
+            return `
+          <div class="history-row">
+            <div class="history-row-main">
+              <strong>${r.direction === 'buy' ? 'BUY' : 'SELL'} ${shortCategory(r.category)} · ${r.tf} at ${formatPrice(r.entry)}</strong>
+              <span>Opened ${formatDateTime(r.openedAt)} (${timeAgo(r.openedAt)})</span>
+              ${secondLine}
+            </div>
+            <span class="history-row-badge ${r.status}">${r.status}</span>
+          </div>`
+          })
+          .join('')}</div>
+        ${loadMoreHtml}
+      </details>`
+    : `<p class="history-empty">No filled signals yet for ${activeSymbol.label} — pending ones are on the dashboard, check back here once one fills.</p>`
+
+  historyBody.innerHTML = statsHtml + riskStatsHtml + equityHtml + breakdownHtml + rowsSectionHtml
 
   // The chart needs a real, already-in-DOM container to size itself against — created
   // fresh above the moment historyBody.innerHTML was set, so it's queried here rather
@@ -356,6 +443,10 @@ function renderHistory() {
   document.getElementById('history-load-more')?.addEventListener('click', () => {
     historyVisibleCounts.set(activeSymbol.key, visibleCount + HISTORY_PAGE_SIZE)
     renderHistory()
+  })
+
+  document.querySelector('.history-list-details')?.addEventListener('toggle', (e) => {
+    historyListExpanded.set(activeSymbol.key, e.target.open)
   })
 }
 
@@ -495,6 +586,11 @@ function renderNewsBanner() {
 async function refreshNewsCalendar() {
   newsEvents = await fetchNewsCalendar()
   renderNewsBanner()
+  // renderMarketStatusBanner also reads newsEvents now (see isNearHighImpactNews) — a
+  // fresh calendar can flip that banner on/off on its own, independent of refreshData's
+  // own 5-minute tick, so it needs re-rendering here too rather than only from
+  // renderDashboard's usual call site.
+  renderMarketStatusBanner()
 }
 
 // The shared track record is a static file the cron job rewrites roughly every 15
@@ -513,6 +609,17 @@ function shortCategory(category) {
   return category === 'Resistance' ? 'Resist.' : category
 }
 
+// Plain-language explanation for a zone category, as a `title` tooltip — "SBR"/"RBS"
+// read as pure jargon to a first-time visitor, and nothing else on the page spells them
+// out (see detectLevels/runStateMachine in srDetector.js for the actual mechanics this
+// is a simplified gloss of).
+const CATEGORY_GLOSSARY = {
+  Support: 'A price level that has held as a floor — price has bounced up from here before.',
+  Resistance: 'A price level that has held as a ceiling — price has bounced down from here before.',
+  SBR: 'Support-Broken-Resistance: a former Support level that broke and is now acting as Resistance instead.',
+  RBS: 'Resistance-Broken-Support: a former Resistance level that broke and is now acting as Support instead.',
+}
+
 // Which structural level (if any) a TP actually is — see buildTakeProfits in
 // srDetector.js for where category/tf/source come from. A real zone shows its
 // timeframe + category (e.g. "H4 Resist."); the synthetic 1R checkpoint and the
@@ -523,6 +630,17 @@ function tpSourceLabel(t) {
   if (t.source === 'fallback') return 'No structural level'
   if (t.tf && t.category) return `${t.tf} ${shortCategory(t.category)}`
   return ''
+}
+
+// Explains *why* a TP is labeled the way tpSourceLabel above renders it — a real zone
+// target already explains itself well enough via its own category tooltip
+// (CATEGORY_GLOSSARY), so this only covers the two synthetic cases.
+function tpSourceTitle(t) {
+  if (t.source === 'checkpoint')
+    return 'A synthetic 1R target — the nearest real structural level was too far away to be a realistic first target, so this reachable checkpoint is offered ahead of it (see FAR_TP_THRESHOLD_RR in srDetector.js).'
+  if (t.source === 'fallback')
+    return 'No real Support/Resistance level qualified as a target on the opposite side, so this is a synthetic 1.5R/2.5R/3.5R distance instead.'
+  return t.category ? (CATEGORY_GLOSSARY[t.category] ?? '') : ''
 }
 
 // The confluence badge is named/colored per the active symbol — "★ Golden" for
@@ -561,7 +679,7 @@ function renderZoneCard(zone, showBadges) {
   // timeframe used to live in zone-meta and the badge in its own third column.
   card.innerHTML = `
     <div class="zone-label">
-      <span class="zone-type">${zone.tf} ${shortCategory(zone.category)}</span>
+      <span class="zone-type" title="${CATEGORY_GLOSSARY[zone.category] ?? ''}">${zone.tf} ${shortCategory(zone.category)}</span>
       ${badge}
     </div>
     <div class="zone-range">
@@ -777,7 +895,7 @@ function renderSignalCard(signal) {
           </span>
           <span class="signal-tp-price">${formatPrice(t.price)}</span>
         </div>
-        ${sourceLabel ? `<div class="signal-tp-source">${sourceLabel}</div>` : ''}
+        ${sourceLabel ? `<div class="signal-tp-source" title="${tpSourceTitle(t)}">${sourceLabel}</div>` : ''}
       </div>`
     })
     .join('')
@@ -826,14 +944,36 @@ function renderSignalCard(signal) {
   return card
 }
 
+// Surfaces whether the most recent refreshData() actually landed fresh data — before
+// this, a failed fetch (offline, rate-limited, the whole API down) was only ever logged
+// to console: lastUpdateEl simply stopped updating with zero explanation why, which
+// reads as "the page just isn't telling me anything" rather than "this specific attempt
+// failed, here's when the data actually is from". A transient blip clears itself the
+// next successful tick — this only ever reflects the *latest* attempt, not a persistent
+// "degraded" state.
+function showFetchOutcome(success) {
+  lastUpdateEl.classList.toggle('stale', !success)
+  if (success) {
+    lastUpdateEl.textContent = `Last updated: ${lastSuccessfulUpdate.toLocaleTimeString('en-US')}`
+    return
+  }
+  lastUpdateEl.textContent = lastSuccessfulUpdate
+    ? `⚠ Couldn't refresh — showing data from ${lastSuccessfulUpdate.toLocaleTimeString('en-US')}`
+    : `⚠ Couldn't load data — retrying…`
+}
+
 async function refreshData() {
   if (refreshing) return
 
   refreshing = true
   const myGeneration = refreshGeneration
-  // All three timeframes are always fetched together now (no tab to be "off"), so
-  // every visible card dims for the duration of the fetch.
-  contentEl.querySelectorAll('.zone-card, .signal-card').forEach((c) => (c.style.opacity = '0.6'))
+  // 2026-08-31: used to dim every visible zone/signal card (opacity 0.6) for the
+  // duration of every fetch, on every 5-minute tick — including the common case where
+  // nothing about the data actually changed, which just reads as an unexplained flash
+  // with no payoff. Fetches are fast and renderContent()/the fingerprint check already
+  // update anything that *did* change cleanly on their own; no separate "loading" dim
+  // is worth the distraction. See showFetchOutcome below for the one thing that IS
+  // still worth surfacing — a fetch that genuinely failed.
 
   const symbol = activeSymbol
 
@@ -886,9 +1026,13 @@ async function refreshData() {
     }
 
     // Every due timeframe failed (offline, or the whole API is down) — nothing
-    // actually changed, so leave whatever "Last updated" message was already on
-    // screen rather than claiming a freshness that didn't happen.
-    if (!anySuccess) return
+    // actually changed, so the data on screen stays exactly as it was; showFetchOutcome
+    // still surfaces that the refresh itself failed, rather than silently pretending it
+    // succeeded (see that function's own comment for why this matters).
+    if (!anySuccess) {
+      showFetchOutcome(false)
+      return
+    }
 
     // spotPrice: the freshest single tick available (M1, via latest — see
     // fetchLatestPrice) when that fetch succeeded this tick, else currentPrice (H1)
@@ -918,11 +1062,7 @@ async function refreshData() {
       // updateSignalHistoryForSymbol in fetch-data.mjs: a trend read off the same
       // fine-grained series a fade signal comes from would just describe its own recent
       // noise, not an actual higher-timeframe direction. Kept in sync with that same
-      // logic — see computeTrend in srDetector.js. Not news-gated the way the recorded
-      // track record is (see isNearHighImpactNews in fetch-data.mjs): this is a live
-      // display refresh, not a record write, and threading calendar data through here
-      // just to skip briefly showing a signal card during a news window wasn't worth
-      // the added coupling — the shared history stays the source of truth regardless.
+      // logic — see computeTrend in srDetector.js.
       const trend = computeTrend(zonesByTimeframe.H4?.series?.length ? zonesByTimeframe.H4.series : zonesByTimeframe.D1?.series ?? [])
       // buildSignals always returns both sides now (see its own comment — trend only
       // *annotates* trendAligned rather than omitting the off-trend side, so an
@@ -930,15 +1070,28 @@ async function refreshData() {
       // recordSignals). The dashboard has no such record to protect — it's a pure
       // display refresh — so it filters trendAligned itself, same visual result as
       // before.
-      h1Result.signals = isPriceStagnant(h1Result.series)
-        ? []
-        : buildSignals(h1Result.zones, currentPrice, higherTfZones, trend).filter((s) => s.trendAligned !== false)
+      //
+      // 2026-08-31: news-gated the same way the persisted/Telegram track record already
+      // is (see isNearHighImpactNews in fetch-data.mjs) — this used to skip that gate
+      // ("a live display refresh, not a record write, not worth the added coupling"),
+      // which meant a visitor could see a BUY/SELL LIMIT card during a news window that
+      // the shared track record would never actually open/count. newsEvents was already
+      // being fetched for the upcoming-news banner regardless, so the only real cost of
+      // fixing this was importing isNearHighImpactNews from newsCalendar.js — worth it
+      // for the display now matching reality. See renderMarketStatusBanner for the
+      // banner explaining *why* no new signal cards show during this window.
+      h1Result.signals =
+        isPriceStagnant(h1Result.series) || isNearHighImpactNews(newsEvents)
+          ? []
+          : buildSignals(h1Result.zones, currentPrice, higherTfZones, trend).filter((s) => s.trendAligned !== false)
     }
     checkZonesAndSignals(symbol.key, symbol.label, zonesByTimeframe, currentPrice)
 
-    lastUpdateEl.textContent = `Last updated: ${new Date().toLocaleTimeString('en-US')}`
+    lastSuccessfulUpdate = new Date()
+    showFetchOutcome(true)
   } catch (err) {
-    console.error(err) // keep last good data on screen, no user-facing warning
+    console.error(err) // keep last good data on screen — showFetchOutcome below is the user-facing side of this
+    showFetchOutcome(false)
   } finally {
     // A symbol switch that happened while this fetch was in flight already bumped
     // refreshGeneration — if so, this call has been superseded: the new symbol's own
@@ -1002,16 +1155,38 @@ timeframeFilterEl.addEventListener('change', (e) => {
   renderContent()
 })
 
+// Runs the three periodic fetches together — the interval below calls this on its own
+// cadence, and the visibilitychange listener calls it again on returning to a
+// backgrounded tab (see that listener's own comment for why).
+function refreshAll() {
+  refreshData()
+  refreshNewsCalendar()
+  refreshHistory()
+}
+
 applySymbolTheme(activeSymbol)
 syncTimeframeFilterCheckboxes()
 renderSymbolTabs()
 updateNotifyBtn()
 renderDashboard()
-refreshData()
-refreshNewsCalendar()
-refreshHistory()
+refreshAll()
 setInterval(() => {
-  refreshData()
-  refreshNewsCalendar()
-  refreshHistory()
+  // Paused while the tab is backgrounded (another tab focused, browser minimized,
+  // mobile app switched away from) — a dashboard nobody is looking at gains nothing
+  // from still fetching/re-rendering every 5 minutes, just battery/data cost and
+  // pointless DOM churn. Resumes on its own via the visibilitychange listener below,
+  // not by this interval itself — setInterval keeps running on schedule regardless, it
+  // just no-ops on each tick while hidden.
+  if (document.hidden) return
+  refreshAll()
 }, AUTO_REFRESH_INTERVAL_MS)
+
+// Catches up promptly on returning to a backgrounded tab, rather than waiting for
+// whatever's left of the current AUTO_REFRESH_INTERVAL_MS window (up to the full 5
+// minutes). Skipped if the data's still fresh enough that the next scheduled tick is
+// close anyway — otherwise a quick alt-tab would trigger a redundant fetch every time.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return
+  const staleForMs = lastSuccessfulUpdate ? Date.now() - lastSuccessfulUpdate.getTime() : Infinity
+  if (staleForMs > 60_000) refreshAll()
+})

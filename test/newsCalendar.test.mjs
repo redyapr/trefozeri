@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { fetchNewsCalendar, findUpcomingHighImpact } from '../src/lib/newsCalendar.js'
+import { fetchNewsCalendar, findUpcomingHighImpact, isNearHighImpactNews } from '../src/lib/newsCalendar.js'
 
 function mockFetch(handler) {
   const original = global.fetch
@@ -122,5 +122,58 @@ test('findUpcomingHighImpact', async (t) => {
   await t.test('defaults to a 12-hour horizon when none is given', () => {
     const events = [{ country: 'USD', impact: 'High', date: inHours(11) }]
     assert.equal(findUpcomingHighImpact(events).length, 1)
+  })
+})
+
+// Mirrors isNearHighImpactNews in scripts/fetch-data.mjs — this module's own copy of
+// that same pure function (see its own comment for why it's a copy, not an import).
+// Same test coverage as that script's own test/fetchData.test.mjs suite, kept in sync
+// by hand the same way the two implementations themselves are.
+test('isNearHighImpactNews', async (t) => {
+  const now = Date.UTC(2026, 7, 15, 12, 0, 0)
+
+  await t.test('flags a high-impact USD event coming up shortly', () => {
+    const events = [{ country: 'USD', impact: 'High', date: new Date(now + 10 * 60 * 1000).toISOString() }]
+    assert.equal(isNearHighImpactNews(events, now), true)
+  })
+
+  await t.test('flags one that just happened, not only upcoming ones', () => {
+    const events = [{ country: 'USD', impact: 'High', date: new Date(now - 10 * 60 * 1000).toISOString() }]
+    assert.equal(isNearHighImpactNews(events, now), true)
+  })
+
+  await t.test('does not flag one outside the window either direction', () => {
+    const events = [{ country: 'USD', impact: 'High', date: new Date(now + 45 * 60 * 1000).toISOString() }]
+    assert.equal(isNearHighImpactNews(events, now), false)
+  })
+
+  await t.test('ignores a low/medium-impact event even inside the window', () => {
+    const events = [{ country: 'USD', impact: 'Medium', date: new Date(now).toISOString() }]
+    assert.equal(isNearHighImpactNews(events, now), false)
+  })
+
+  await t.test('ignores a high-impact event for a different country', () => {
+    const events = [{ country: 'EUR', impact: 'High', date: new Date(now).toISOString() }]
+    assert.equal(isNearHighImpactNews(events, now), false)
+  })
+
+  await t.test("case-insensitive on country/impact, matching findUpcomingHighImpact's own convention", () => {
+    const events = [{ country: 'usd', impact: 'high', date: new Date(now).toISOString() }]
+    assert.equal(isNearHighImpactNews(events, now), true)
+  })
+
+  await t.test('an unparseable date is skipped, not thrown', () => {
+    const events = [{ country: 'USD', impact: 'High', date: 'not-a-date' }]
+    assert.equal(isNearHighImpactNews(events, now), false)
+  })
+
+  await t.test('null/non-array events (fetch failed, no fallback available) reads as no news risk', () => {
+    assert.equal(isNearHighImpactNews(null, now), false)
+    assert.equal(isNearHighImpactNews(undefined, now), false)
+  })
+
+  await t.test('defaults `now` to Date.now() when not given', () => {
+    const events = [{ country: 'USD', impact: 'High', date: new Date().toISOString() }]
+    assert.equal(isNearHighImpactNews(events), true)
   })
 })

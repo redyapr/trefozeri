@@ -10,6 +10,7 @@ import {
   getBreakdown as coreGetBreakdown,
   buildHistoryCsv as coreBuildHistoryCsv,
   getEquityCurve as coreGetEquityCurve,
+  getRiskStats as coreGetRiskStats,
 } from './signalHistoryCore.js'
 
 // import.meta.env is undefined outside a Vite build (e.g. this module loaded directly
@@ -59,4 +60,8 @@ export function buildHistoryCsv(symbolKey) {
 
 export function getEquityCurve(symbolKey, tf) {
   return coreGetEquityCurve(records, symbolKey, tf)
+}
+
+export function getRiskStats(symbolKey, tf) {
+  return coreGetRiskStats(records, symbolKey, tf)
 }

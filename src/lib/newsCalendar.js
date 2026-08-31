@@ -58,3 +58,28 @@ export function findUpcomingHighImpact(events, withinHours = 12) {
     })
     .sort((a, b) => a.timestamp - b.timestamp)
 }
+
+// 2026-08-31 dashboard-improvement pass: mirrors isNearHighImpactNews in
+// scripts/fetch-data.mjs exactly (same USD/high filter, same ±30-minute window) — a
+// deliberate copy of that pure function's logic, not an import of it, for the same
+// reason findUpcomingHighImpact above already lives in this browser-facing module
+// separately from that plain-Node script (see that script's own comment on
+// isNearHighImpactNews: importing this module into it would pull in
+// import.meta.env, which throws outside a Vite build).
+//
+// Used to gate the *live-display* signal cards on main.js's dashboard the same way
+// the persisted/Telegram-posted track record already gates new signals server-side —
+// before this existed, a visitor could see a BUY/SELL LIMIT card during a news window
+// that the shared track record would never actually open/count, a real
+// display-vs-reality mismatch.
+const NEWS_GATE_MINUTES = 30
+
+export function isNearHighImpactNews(events, now = Date.now(), windowMinutes = NEWS_GATE_MINUTES) {
+  if (!Array.isArray(events)) return false
+  const windowMs = windowMinutes * 60 * 1000
+  return events.some((e) => {
+    if (String(e.country).toUpperCase() !== 'USD' || String(e.impact).toLowerCase() !== 'high') return false
+    const t = new Date(e.date).getTime()
+    return Number.isFinite(t) && Math.abs(t - now) <= windowMs
+  })
+}
