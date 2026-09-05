@@ -132,6 +132,45 @@ body[data-symbol='btcusd'] {
   white-space: nowrap;
 }
 
+/* Site-wide page nav (Home / Mapping & Signal / Track Record / API Documentation) —
+   shared by all four top-level pages (2026-09-05 multi-page revamp). Each page is a
+   separate physical HTML file (see vite.config.js's rollupOptions.input), so this
+   markup is hand-duplicated per page like the rest of the topbar — the active link is
+   just hardcoded with aria-current="page" in that page's own HTML rather than computed
+   at runtime. */
+.site-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.site-nav-link {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text-dim);
+  text-decoration: none;
+  font-family: var(--font);
+  font-weight: 600;
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.site-nav-link:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+.site-nav-link[aria-current='page'] {
+  color: var(--accent);
+  border-color: var(--accent);
+  box-shadow: var(--accent-glow-box);
+}
+
 /* Visually hidden but still readable by screen readers and search engine crawlers —
    used to fold in the fuller "XAUUSD & BTCUSD" keyword phrase without lengthening the
    short brand mark that's actually shown on screen. Standard sr-only recipe: clipped
@@ -808,6 +847,39 @@ body[data-symbol='btcusd'] {
 .content {
   min-height: 200px;
   padding-top: 18px;
+}
+
+/* performance/index.html only — a plain page heading, same look as the old track
+   record modal's own <h2> (see .modal-header h2) now that it isn't inside a modal. */
+.page-title {
+  margin: 18px 0 4px;
+  font-family: var(--font);
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: var(--accent);
+  text-shadow: var(--accent-glow);
+}
+
+.page-intro {
+  margin: 0 0 18px;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+
+/* Symbol tabs + the CSV export button share a row above the page title — the export
+   button used to live in the old modal's own header (see .modal-header-actions),
+   reused here unchanged now that this is a full page instead. */
+.track-record-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-top: 18px;
+}
+
+.track-record-toolbar .symbol-tabs {
+  margin-bottom: 0;
 }
 
 .zone-chart {

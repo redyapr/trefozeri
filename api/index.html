@@ -30,6 +30,21 @@
             <span class="brand-title">TREFOZERI</span>
           </div>
         </div>
+        <nav class="site-nav" aria-label="Main">
+          <a href="../" class="site-nav-link">Home</a>
+          <a href="../mapping/" class="site-nav-link">Mapping &amp; Signal</a>
+          <a href="../performance/" class="site-nav-link">Performance</a>
+          <a href="./" class="site-nav-link" aria-current="page">API Documentation</a>
+        </nav>
+        <div class="topbar-actions">
+          <button id="install-btn" class="icon-btn" title="Install app" aria-label="Install this app" hidden>
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+          </button>
+        </div>
       </header>
 
       <main class="landing api-page">
@@ -168,7 +183,7 @@
           </ul>
         </section>
 
-        <a class="landing-cta" href="../">← Back to the dashboard</a>
+        <a class="landing-cta" href="../mapping/">← Back to the dashboard</a>
       </main>
 
       <footer class="app-footer">
@@ -178,5 +193,7 @@
         </p>
       </footer>
     </div>
+
+    <script type="module" src="/src/pages/home.js"></script>
   </body>
 </html>

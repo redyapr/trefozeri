@@ -15,12 +15,15 @@ export default defineConfig({
   build: {
     target: 'es2020',
     rollupOptions: {
-      // id/index.html and api/index.html are static pages (an SEO landing page, and
-      // the public-data-API docs — see their own comments) — separate Vite entries so
-      // they get the same base-path rewriting and asset bundling as the main app
-      // instead of being served unprocessed.
+      // 2026-09-05 multi-page revamp: index.html is now a landing page (Home), with the
+      // live dashboard split out to its own mapping/ and performance/ pages, alongside
+      // the existing id/ (Indonesian SEO landing) and api/ (public data API docs) —
+      // separate Vite entries so every one of them gets the same base-path rewriting
+      // and asset bundling as the app itself instead of being served unprocessed.
       input: {
         main: 'index.html',
+        mapping: 'mapping/index.html',
+        performance: 'performance/index.html',
         id: 'id/index.html',
         api: 'api/index.html',
       },
@@ -36,7 +39,10 @@ export default defineConfig({
         theme_color: '#000000',
         background_color: '#000000',
         display: 'standalone',
-        start_url: base,
+        // Opens straight to the live dashboard (Mapping & Signal), not the Home landing
+        // page — an installed PWA icon should launch into the actual app, not a marketing
+        // page with a link to click through every time.
+        start_url: `${base}mapping/`,
         icons: [
           { src: `${base}icon-192.png`, sizes: '192x192', type: 'image/png' },
           { src: `${base}icon-512.png`, sizes: '512x512', type: 'image/png' },

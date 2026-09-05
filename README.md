@@ -3,7 +3,15 @@
 Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
 (Bitcoin) — entry/SL/TP signal cards, plus a high-impact USD news banner.
 
-**Live:** https://redyapr.github.io/trefozeri/
+**Live:** https://redyapr.github.io/trefozeri/ — a 4-page site (2026-09-05 revamp),
+each a separate physical page (its own URL, full reload on nav, shared topbar/nav):
+
+| Page | URL | What's there |
+| --- | --- | --- |
+| Home | `/` | Landing/intro + CTA — no live data of its own |
+| Mapping & Signal | `/mapping/` | The live dashboard: chart, S/R zones, signal cards |
+| Performance | `/performance/` | The full signal track record (formerly a modal) |
+| API Documentation | `/api/` | Public data API docs |
 
 **Telegram:** https://t.me/trefozeri — signals, fills, and results pushed live.
 
@@ -53,7 +61,7 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
   price and the chart's own price marker track the single freshest tick available
   (`/quote/{SYMBOL}-latest.json`, derived from M1 — fetched every cron run, unthrottled)
   rather than H1's own close, which only refreshes every 15 minutes; zone detection and
-  signals still use H1 regardless — see `spotPrice`/`currentPrice` in `main.js`. Refetches
+  signals still use H1 regardless — see `spotPrice`/`currentPrice` in `src/pages/mapping.js`. Refetches
   every 5 minutes, paused while the tab is backgrounded (catches up immediately on
   return if the data's gone stale); a refresh that actually fails shows a "couldn't
   refresh" notice with the last-known-good time instead of failing silently.
@@ -63,7 +71,8 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
   new signal forms.
 - **Track record** — shared across every visitor. Each signal goes `pending` →
   `running` (filled) → `win`/`loss`, stored in `data/signal-history.json` and
-  committed by CI. View it via the chart-icon button. Capped at 300 records per symbol.
+  committed by CI. See the [Performance](https://redyapr.github.io/trefozeri/performance/)
+  page. Capped at 300 records per symbol.
   SL/TP are checked against M1 (1-minute) candles, not H1 or a single snapshotted
   price — an hourly candle can't tell whether TP or SL came first when both fall inside
   the same hour, so a fill/SL/TP touch is never missed or mis-ordered just because price
@@ -83,7 +92,7 @@ Multi-timeframe support & resistance dashboard for XAUUSD (Gold) and BTCUSD
   withheld around high-impact USD news releases, since those tend to spike straight
   through a level with no real retest — the live dashboard's own signal cards respect
   the same gate (with a banner explaining why), not just the persisted/Telegram-posted
-  ones. The track record modal also breaks down win rate by zone category, strength,
+  ones. The Performance page also breaks down win rate by zone category, strength,
   timeframe, and day of week opened (the viewer's own local day), plus streaks (longest
   win/loss run), max drawdown as a % of the highest cumulative pips/$ reached so far
   (the closest honest equivalent to a conventional backtest's "max drawdown %" without
@@ -207,25 +216,36 @@ One-time setup for a fork or new deploy target:
    (e.g. `https://you.github.io/your-repo`).
 
 `vite.config.js` bases the build at `/trefozeri/` only when `GH_PAGES=true` (local dev
-stays at `/`), and also builds `id/index.html` — a static Indonesian-language SEO
-landing page at `/id/`, cross-linked with the root page via `hreflang`.
+stays at `/`), and builds five separate HTML entries: the four pages below plus
+`id/index.html` — a static Indonesian-language SEO landing page at `/id/`,
+cross-linked with the root page via `hreflang`.
 
 ## <img src="https://readme-typing-svg.demolab.com?lines=Project+structure" alt="Typing Project structure" />
 
+Four physical pages (2026-09-05 revamp), each its own HTML entry + page script, sharing
+one topbar/nav and `style.css`:
+
 ```
-index.html  English dashboard entry point (loads src/main.js)
+index.html            Home — landing/intro + CTA (loads src/pages/home.js)
+mapping/index.html    Mapping & Signal — the live dashboard (src/pages/mapping.js)
+performance/index.html  Performance — the full track record (src/pages/performance.js)
+api/index.html         API docs (loads src/pages/home.js — no live data of its own)
 id/
   index.html  Indonesian-language static SEO landing page
 src/
-  main.js    UI wiring, render loop, refresh/cache orchestration
   style.css  All styling (theme via CSS custom properties)
+  pages/
+    home.js         Home + API docs: install-prompt wiring only, no data fetching
+    mapping.js       Mapping & Signal: render loop, refresh/cache orchestration
+    performance.js   Performance: track record rendering + its own refresh loop
   lib/
     twelveData.js         Timeframe/symbol config + static-JSON quote fetching
     srDetector.js         Pivot detection, zones, signals
     priceChart.js         lightweight-charts candle + zone rendering
     newsCalendar.js       Static-JSON calendar fetching + high-impact filtering
     notifications.js      Opt-in browser notifications for zone/signal alerts
-    uiState.js            Persisted tab/symbol selection
+    uiState.js            Persisted tab/symbol selection (shared across all pages)
+    installPrompt.js       Shared "add to home screen" button wiring
     signalHistoryCore.js  Record lifecycle + pip/price formatting, shared by browser + cron
     signalHistory.js      Browser-side: reads the shared signal-history.json
     marketHours.js        Gold's trading week + weekend detection

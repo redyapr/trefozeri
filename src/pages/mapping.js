@@ -1,9 +1,13 @@
-import './style.css'
-import { TIMEFRAMES, SYMBOLS, fetchAllTimeframes, fetchLatestPrice } from './lib/twelveData.js'
-import { detectLevels, buildSignals, annotateGoldenZones, isPriceStagnant, computeTrend } from './lib/srDetector.js'
-import { fetchNewsCalendar, findUpcomingHighImpact, isNearHighImpactNews } from './lib/newsCalendar.js'
-import { loadUiState, saveUiState } from './lib/uiState.js'
-import { renderZoneChart } from './lib/priceChart.js'
+// Mapping & Signal (mapping/index.html) — the live dashboard itself: symbol tabs,
+// timeframe filter, market/news banners, the zone chart, and signal cards. Split out
+// of the old single main.js in the 2026-09-05 multi-page revamp — the track record
+// (formerly a modal opened from here) is now its own page, see pages/performance.js.
+import '../style.css'
+import { TIMEFRAMES, SYMBOLS, fetchAllTimeframes, fetchLatestPrice } from '../lib/twelveData.js'
+import { detectLevels, buildSignals, annotateGoldenZones, isPriceStagnant, computeTrend } from '../lib/srDetector.js'
+import { fetchNewsCalendar, findUpcomingHighImpact, isNearHighImpactNews } from '../lib/newsCalendar.js'
+import { loadUiState, saveUiState } from '../lib/uiState.js'
+import { renderZoneChart } from '../lib/priceChart.js'
 import {
   isSupported as isNotifySupported,
   getPermission as getNotifyPermission,
@@ -11,11 +15,10 @@ import {
   enableNotifications,
   disableNotifications,
   checkZonesAndSignals,
-} from './lib/notifications.js'
-import { loadHistory, getHistory, getStats, getBreakdown, buildHistoryCsv, getEquityCurve, getRiskStats } from './lib/signalHistory.js'
-import { formatMove, formatPrice, groupWinRate } from './lib/signalHistoryCore.js'
-import { renderEquityChart } from './lib/priceChart.js'
-import { isGoldMarketClosed, nextGoldReopenUtc } from './lib/marketHours.js'
+} from '../lib/notifications.js'
+import { formatMove, formatPrice } from '../lib/signalHistoryCore.js'
+import { isGoldMarketClosed, nextGoldReopenUtc } from '../lib/marketHours.js'
+import { initInstallPrompt } from '../lib/installPrompt.js'
 
 const NEWS_HORIZON_HOURS = 12
 // The cron in .github/workflows/deploy.yml refreshes the static snapshot every 5
@@ -33,11 +36,6 @@ const contentEl = document.getElementById('content')
 const priceEl = document.getElementById('price-display')
 const lastUpdateEl = document.getElementById('last-update')
 const notifyBtn = document.getElementById('notify-btn')
-const historyBtn = document.getElementById('history-btn')
-const historyModal = document.getElementById('history-modal')
-const historyBody = document.getElementById('history-body')
-const historyCloseBtn = document.getElementById('history-close')
-const historyExportBtn = document.getElementById('history-export-btn')
 const installBtn = document.getElementById('install-btn')
 const timeframeFilterEl = document.getElementById('timeframe-filter')
 
@@ -94,17 +92,6 @@ function disposeChart() {
   activeChart.remove()
   activeChart = null
   activeSeries = null
-}
-
-// Same reasoning as disposeChart above, but for the track record modal's own equity
-// chart — historyBody.innerHTML is rebuilt from scratch on every renderHistory() call
-// (including the 5-minute auto-refresh while the modal's left open), which orphans
-// whatever chart instance was drawn into the previous container.
-let activeEquityChart = null
-function disposeEquityChart() {
-  if (!activeEquityChart) return
-  activeEquityChart.remove()
-  activeEquityChart = null
 }
 
 // Every accent-driven color on the page (brand mark, icon buttons, prices,
@@ -206,9 +193,6 @@ function renderDashboard() {
   renderMarketStatusBanner()
   renderNewsBanner()
   renderContent()
-  // Keep the track-record modal live if it's already open, instead of only updating
-  // it the next time it's opened.
-  if (!historyModal.hidden) renderHistory()
 }
 
 function updateNotifyBtn() {
@@ -248,299 +232,6 @@ notifyBtn.addEventListener('click', async () => {
   // browser's own site settings while the tab is still open).
   updateNotifyBtn()
 })
-
-// Distinguishes "genuinely no filled signals yet" from "haven't fetched the track
-// record from the server at all yet" — without this, opening the modal in the brief
-// window before the first refreshHistory() resolves shows the same empty-state copy
-// as a real zero-signals case, which reads as "this dashboard has no track record"
-// rather than "still loading".
-let historyLoaded = false
-
-// How many rows are currently shown per symbol — starts at HISTORY_PAGE_SIZE, grows by
-// the same amount each "Load more" click. Kept per-symbol (not just one shared number)
-// so switching symbols and back doesn't reset how far you'd scrolled into either one.
-// A plain module-level Map survives across renderHistory() calls (including the
-// 5-minute auto-refresh) without needing to thread it through anything.
-const HISTORY_PAGE_SIZE = 30
-const historyVisibleCounts = new Map()
-
-// Whether the row-by-row trade list is expanded, per symbol (so switching symbols and
-// back doesn't reset it) — collapsed by default, same persistence pattern as
-// historyVisibleCounts above (a plain module-level Map survives across renderHistory()
-// calls, including the 5-minute auto-refresh while the modal is open).
-const historyListExpanded = new Map()
-
-// Local (viewer's own browser timezone) day-of-week, used only for the "By Day Opened"
-// breakdown below — getDay() is Sunday-first (0-6) to match this array's own order,
-// same convention getBreakdown's other groupings already sort by. Deliberately computed
-// here in main.js, not inside the shared/Node-tested signalHistoryCore.js: which
-// calendar day a trade "belongs to" is inherently a per-viewer, local-time question
-// with no single correct answer server-side, and baking a specific timezone into the
-// shared module would either be wrong for most viewers (if fixed to one zone) or
-// non-deterministic to test (if left to the machine running the test suite).
-const LOCAL_DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-
-function breakdownGroupHtml(title, groups) {
-  return `
-    <div class="breakdown-section">
-      <h3>${title}</h3>
-      <div class="breakdown-list">
-        ${groups
-          .map(
-            (g) => `
-          <div class="breakdown-row">
-            <span class="breakdown-label">${g.key}</span>
-            <div class="breakdown-bar"><div class="breakdown-bar-fill" style="width:${g.winRate}%"></div></div>
-            <span class="breakdown-value">${g.winRate}% <small>(${g.wins}W/${g.losses}L)</small></span>
-          </div>`
-          )
-          .join('')}
-      </div>
-    </div>`
-}
-
-function renderHistory() {
-  disposeEquityChart()
-
-  if (!historyLoaded) {
-    historyBody.innerHTML = '<p class="history-empty">Loading track record…</p>'
-    historyExportBtn.disabled = true
-    return
-  }
-
-  // No per-timeframe filter — signals (and so the track record) are H1-only now (see
-  // scripts/fetch-data.mjs), so "every timeframe" and "H1 only" are already the same
-  // thing going forward. A handful of H4/D1 records from before that policy may still
-  // show up here until they finish closing out on their own.
-  const stats = getStats(activeSymbol.key)
-  const breakdown = getBreakdown(activeSymbol.key)
-  const riskStats = getRiskStats(activeSymbol.key)
-  const equityPoints = getEquityCurve(activeSymbol.key)
-  // 'pending' (not yet filled) signals are already visible as live cards on the main
-  // dashboard — the track record is for what's actually happened, so it only lists
-  // trades that have at least filled. Not sliced yet — CSV export and the "Load more"
-  // remaining-count both need the true total, not just what's currently visible.
-  const records = getHistory(activeSymbol.key).filter((r) => r.status !== 'pending')
-  historyExportBtn.disabled = records.length === 0
-
-  // Built here, not inside getBreakdown (see LOCAL_DAY_NAMES' own comment) — the same
-  // closed win/loss records getBreakdown itself filters down to, grouped by the
-  // viewer's own local calendar day via the shared groupWinRate helper.
-  const byDayOfWeek = groupWinRate(
-    records.filter((r) => r.status === 'win' || r.status === 'loss'),
-    (r) => LOCAL_DAY_NAMES[new Date(r.openedAt).getDay()]
-  ).sort((a, b) => LOCAL_DAY_NAMES.indexOf(a.key) - LOCAL_DAY_NAMES.indexOf(b.key))
-
-  const visibleCount = historyVisibleCounts.get(activeSymbol.key) ?? HISTORY_PAGE_SIZE
-  const visibleRecords = records.slice(0, visibleCount)
-
-  const statsHtml = `
-    <div class="history-stats">
-      <div class="history-stat running"><div class="num">${stats.running}</div><div class="lbl">Running</div></div>
-      <div class="history-stat win"><div class="num">${stats.wins}</div><div class="lbl">Wins</div></div>
-      <div class="history-stat loss"><div class="num">${stats.losses}</div><div class="lbl">Losses</div></div>
-      <div class="history-stat"><div class="num">${stats.winRate != null ? stats.winRate + '%' : '—'}</div><div class="lbl">Win rate</div></div>
-    </div>
-  `
-
-  // The one visual-trend view — cumulative pips/$ over time — alongside the static
-  // numbers above. Needs at least 2 closed trades to draw a meaningful line; skipped
-  // (not shown as an empty chart) otherwise.
-  const equityHtml =
-    equityPoints.length >= 2 ? `<div id="history-equity-chart" class="history-equity-chart"></div>` : ''
-
-  // A healthy-looking aggregate win rate can still have survived a brutal losing streak
-  // or a deep equity dip along the way — neither shows up in statsHtml's own numbers
-  // above, so this surfaces them alongside average win/loss size (see getRiskStats).
-  // Same gating as breakdownHtml below: nothing to show before the first closed trade.
-  // Max DD is maxDrawdownPct (see getRiskStats' own comment on why % of the peak, not
-  // raw pips/$, is the closest honest equivalent to a conventional backtest's "max
-  // drawdown %" this app can report without a real account-equity model) — "—" when
-  // that peak was never positive to begin with (a losing streak right at the start).
-  //
-  // Avg win/loss deliberately skip formatAmount (unlike everywhere else a pip/$ move is
-  // shown) — no "pips" unit suffix at all: each box's own <div class="lbl"> already
-  // says what the number is, and these 5 compact boxes have no room to spare repeating
-  // the unit under every single one. getRiskStats itself already rounds these to a
-  // whole number regardless of symbol, so this is just the sign + the number.
-  const riskAmount = (n) => `${n >= 0 ? '+' : ''}${n}`
-  const riskStatsHtml =
-    stats.wins + stats.losses > 0
-      ? `<div class="history-risk-stats">
-          <div class="history-stat win"><div class="num">${riskStats.maxWinStreak}</div><div class="lbl">Win streak</div></div>
-          <div class="history-stat loss"><div class="num">${riskStats.maxLossStreak}</div><div class="lbl">Loss streak</div></div>
-          <div class="history-stat loss"><div class="num">${riskStats.maxDrawdownPct != null ? `-${riskStats.maxDrawdownPct}%` : '—'}</div><div class="lbl">Max DD</div></div>
-          <div class="history-stat win"><div class="num">${riskStats.avgWin != null ? riskAmount(riskStats.avgWin) : '—'}</div><div class="lbl">Avg win</div></div>
-          <div class="history-stat loss"><div class="num">${riskStats.avgLoss != null ? riskAmount(riskStats.avgLoss) : '—'}</div><div class="lbl">Avg loss</div></div>
-        </div>`
-      : ''
-
-  // Which setup — and when — is actually reliable: by zone category (Support/
-  // Resistance/SBR/RBS), zone strength (Golden/Diamond Zone vs Medium), timeframe, and
-  // day of week opened — rather than only the one aggregate win rate above. Skipped
-  // entirely once there's nothing closed yet (would just repeat the empty-state message
-  // below); strength/timeframe are each skipped on their own if there's nothing
-  // meaningful to contrast (strength: every closed record predates that field being
-  // recorded, see recordSignals in signalHistoryCore.js; timeframe: everything closed
-  // is H1 anyway, the now-default going forward — see getBreakdown's own comment).
-  const breakdownHtml =
-    stats.wins + stats.losses > 0
-      ? `<div class="history-breakdown">
-          ${breakdownGroupHtml('By Zone Type', breakdown.byCategory)}
-          ${breakdown.byStrength.length ? breakdownGroupHtml('By Zone Strength', breakdown.byStrength) : ''}
-          ${breakdown.byTimeframe.length > 1 ? breakdownGroupHtml('By Timeframe', breakdown.byTimeframe) : ''}
-          ${breakdownGroupHtml('By Day Opened', byDayOfWeek)}
-        </div>`
-      : ''
-
-  const remaining = records.length - visibleRecords.length
-  const loadMoreHtml =
-    remaining > 0
-      ? `<button type="button" id="history-load-more" class="history-load-more">Load more (${remaining} older)</button>`
-      : ''
-
-  // Row-by-row trade list, collapsed inside a native <details> by default (see
-  // historyListExpanded's own comment) — the stats/breakdown above already give the
-  // useful summary at a glance; the individual rows are the most repetitive, lowest-
-  // information-density part of the modal, especially once "Load more" is in play.
-  // <details>/<summary> rather than a custom JS toggle: free keyboard support, no state
-  // machine to hand-roll, and the `toggle` event below is all that's needed to persist
-  // the open/closed state across renderHistory()'s own innerHTML rebuilds.
-  const rowsSectionHtml = visibleRecords.length
-    ? `<details class="history-list-details"${historyListExpanded.get(activeSymbol.key) ? ' open' : ''}>
-        <summary class="history-list-summary">${records.length} filled signal${records.length === 1 ? '' : 's'}</summary>
-        <div class="history-list">${visibleRecords
-          .map((r) => {
-            // running: filled, waiting on SL/TP. win/loss: closed — show what it hit,
-            // at what price, and the pip/price move. ('pending' rows are filtered out above.)
-            const secondLine =
-              r.status === 'running'
-                ? `<span>Filled ${formatDateTime(r.filledAt)} (${timeAgo(r.filledAt)}) · running</span>`
-                : `<span>${historyExitLine(r, activeSymbol)} (${timeAgo(r.closedAt)})</span>`
-            return `
-          <div class="history-row">
-            <div class="history-row-main">
-              <strong>${r.direction === 'buy' ? 'BUY' : 'SELL'} ${shortCategory(r.category)} · ${r.tf} at ${formatPrice(r.entry)}</strong>
-              <span>Opened ${formatDateTime(r.openedAt)} (${timeAgo(r.openedAt)})</span>
-              ${secondLine}
-            </div>
-            <span class="history-row-badge ${r.status}">${r.status}</span>
-          </div>`
-          })
-          .join('')}</div>
-        ${loadMoreHtml}
-      </details>`
-    : `<p class="history-empty">No filled signals yet for ${activeSymbol.label} — pending ones are on the dashboard, check back here once one fills.</p>`
-
-  historyBody.innerHTML = statsHtml + riskStatsHtml + equityHtml + breakdownHtml + rowsSectionHtml
-
-  // The chart needs a real, already-in-DOM container to size itself against — created
-  // fresh above the moment historyBody.innerHTML was set, so it's queried here rather
-  // than passed as an element reference.
-  const equityContainer = document.getElementById('history-equity-chart')
-  if (equityContainer) activeEquityChart = renderEquityChart(equityContainer, equityPoints)
-
-  document.getElementById('history-load-more')?.addEventListener('click', () => {
-    historyVisibleCounts.set(activeSymbol.key, visibleCount + HISTORY_PAGE_SIZE)
-    renderHistory()
-  })
-
-  document.querySelector('.history-list-details')?.addEventListener('toggle', (e) => {
-    historyListExpanded.set(activeSymbol.key, e.target.open)
-  })
-}
-
-// Remembers whatever had focus before the modal opened, so closing it (via Escape,
-// the backdrop, or the close button) returns focus there instead of dropping it back
-// to <body> — standard modal-dialog accessibility expectation.
-let previouslyFocusedEl = null
-
-function openHistoryModal() {
-  previouslyFocusedEl = document.activeElement
-  // Unhidden BEFORE renderHistory(), not after: renderHistory() creates the equity
-  // chart (renderEquityChart in priceChart.js), which reads the container's real
-  // width to size itself and immediately calls fitContent() — while historyModal
-  // still had `hidden` (display:none), that container measured 0-width, so the
-  // chart fit its whole data range into that, then only got stretched (not re-fit)
-  // once the modal actually became visible a line later, leaving it looking squeezed
-  // into a sliver until something else happened to re-render it later while already
-  // visible (e.g. the next periodic refresh landing while the modal was still open —
-  // which is why this only ever seemed to depend on unrelated page-load timing).
-  historyModal.hidden = false
-  renderHistory()
-  historyCloseBtn.focus()
-}
-
-function closeHistoryModal() {
-  historyModal.hidden = true
-  previouslyFocusedEl?.focus?.()
-  previouslyFocusedEl = null
-}
-
-historyBtn.addEventListener('click', openHistoryModal)
-
-historyCloseBtn.addEventListener('click', closeHistoryModal)
-
-// Client-side CSV export — a Blob + a throwaway <a download> is the standard way to
-// trigger a file save with no server endpoint involved, matching how this whole site
-// already has no backend of its own (see fetch-data.mjs's static-JSON-file approach).
-historyExportBtn.addEventListener('click', () => {
-  const csv = buildHistoryCsv(activeSymbol.key)
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `trefozeri-${activeSymbol.key.toLowerCase()}-track-record.csv`
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  URL.revokeObjectURL(url)
-})
-
-historyModal.addEventListener('click', (e) => {
-  if (e.target === historyModal) closeHistoryModal()
-})
-
-// Escape closes it; Tab/Shift+Tab is trapped inside it while open, so background
-// content (topbar, symbol/timeframe tabs) never becomes keyboard-reachable behind an
-// open modal. historyBody's contents (the tf-filter buttons) are re-rendered on every
-// renderHistory() call, so focusable elements are queried fresh on every keypress
-// rather than cached once at open time.
-historyModal.addEventListener('keydown', (e) => {
-  if (historyModal.hidden) return
-  if (e.key === 'Escape') {
-    closeHistoryModal()
-    return
-  }
-  if (e.key !== 'Tab') return
-  const focusable = historyModal.querySelectorAll(
-    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-  )
-  if (!focusable.length) return
-  const first = focusable[0]
-  const last = focusable[focusable.length - 1]
-  if (e.shiftKey && document.activeElement === first) {
-    e.preventDefault()
-    last.focus()
-  } else if (!e.shiftKey && document.activeElement === last) {
-    e.preventDefault()
-    first.focus()
-  }
-})
-
-function formatDateTime(ts) {
-  const d = new Date(ts)
-  return `${d.toLocaleDateString('en-US')} ${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`
-}
-
-// One line describing how a closed signal ended: which target (or the SL) it hit,
-// at what price, how far that was from entry, and when.
-function historyExitLine(r, symbol) {
-  const isBuy = r.direction === 'buy'
-  const label = r.status === 'win' ? `TP${(r.hitTpIndex ?? 0) + 1} hit` : 'SL hit'
-  const move = formatMove(symbol.pipSize, r.entry, r.exitPrice, isBuy)
-  return `${label} @ ${formatPrice(r.exitPrice)} (${move}) · ${formatDateTime(r.closedAt)}`
-}
 
 function timeAgo(ts) {
   const diffMs = Date.now() - ts
@@ -591,15 +282,6 @@ async function refreshNewsCalendar() {
   // own 5-minute tick, so it needs re-rendering here too rather than only from
   // renderDashboard's usual call site.
   renderMarketStatusBanner()
-}
-
-// The shared track record is a static file the cron job rewrites roughly every 15
-// minutes (see scripts/fetch-data.mjs) — refetch it on the same cadence as price data
-// rather than only once at startup, so a track record modal left open updates on its own.
-async function refreshHistory() {
-  await loadHistory()
-  historyLoaded = true
-  renderDashboard()
 }
 
 // Abbreviated for display only — 'Resistance' is long enough to crowd the price
@@ -694,10 +376,10 @@ function renderZoneCard(zone, showBadges) {
 // activeChart, so a refresh tick whose candles all came back byte-identical to last
 // time — every timeframe refetches on every tick now, see TIMEFRAMES' own comment in
 // twelveData.js — can skip tearing the chart down. renderDashboard() runs after every
-// refreshData()/refreshHistory() (every 5 minutes each), and rebuilding the chart
-// unconditionally would reset any zoom/pan the user was mid-inspection with even though
-// nothing actually changed. Chart candles are always H1's own series (the
-// finest-grained one); H4/D1 only ever contribute their zone bands on top of it.
+// refreshData() call (every 5 minutes), and rebuilding the chart unconditionally would
+// reset any zoom/pan the user was mid-inspection with even though nothing actually
+// changed. Chart candles are always H1's own series (the finest-grained one); H4/D1
+// only ever contribute their zone bands on top of it.
 let chartedH1 = null
 let chartedH4 = null
 let chartedD1 = null
@@ -1120,32 +802,7 @@ async function refreshData() {
   }
 }
 
-// Custom install prompt: the browser's own default install UI is inconsistent (a tiny
-// address-bar icon on some browsers, nothing visible at all on others) and fires on
-// its own schedule — capturing the event instead lets the app show one obvious button
-// and trigger the native prompt whenever the user actually clicks it.
-let deferredInstallPrompt = null
-
-window.addEventListener('beforeinstallprompt', (e) => {
-  e.preventDefault()
-  deferredInstallPrompt = e
-  installBtn.hidden = false
-})
-
-installBtn.addEventListener('click', async () => {
-  if (!deferredInstallPrompt) return
-  installBtn.hidden = true
-  deferredInstallPrompt.prompt()
-  await deferredInstallPrompt.userChoice
-  deferredInstallPrompt = null
-})
-
-// Already installed (or the browser installed it without ever asking) — nothing left
-// to prompt, so the button should never appear even if beforeinstallprompt fires late.
-window.addEventListener('appinstalled', () => {
-  installBtn.hidden = true
-  deferredInstallPrompt = null
-})
+initInstallPrompt(installBtn)
 
 // Reflects visibleTimeframes onto the checkboxes — called once on startup (the
 // markup's own hardcoded `checked` attributes only cover the all-visible default, not
@@ -1170,13 +827,12 @@ timeframeFilterEl.addEventListener('change', (e) => {
   renderContent()
 })
 
-// Runs the three periodic fetches together — the interval below calls this on its own
+// Runs the two periodic fetches together — the interval below calls this on its own
 // cadence, and the visibilitychange listener calls it again on returning to a
 // backgrounded tab (see that listener's own comment for why).
 function refreshAll() {
   refreshData()
   refreshNewsCalendar()
-  refreshHistory()
 }
 
 applySymbolTheme(activeSymbol)

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#000000" />
+    <link rel="icon" href="/favicon.png" type="image/png" />
+    <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+    <title>TREFOZERI | Performance — Signal Track Record</title>
+    <meta
+      name="description"
+      content="TREFOZERI's full, transparent signal track record for XAUUSD (Gold) and BTCUSD (Bitcoin): win rate, streaks, max drawdown, and a breakdown by zone type, strength, timeframe, and day of week."
+    />
+    <meta name="author" content="TREFOZERI" />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://redyapr.github.io/trefozeri/performance/" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="TREFOZERI" />
+    <meta property="og:url" content="https://redyapr.github.io/trefozeri/performance/" />
+    <meta property="og:title" content="TREFOZERI | Performance — Signal Track Record" />
+    <meta
+      property="og:description"
+      content="TREFOZERI's full, transparent signal track record for XAUUSD (Gold) and BTCUSD (Bitcoin): win rate, streaks, max drawdown, and a breakdown by zone type, strength, timeframe, and day of week."
+    />
+    <meta property="og:image" content="https://redyapr.github.io/trefozeri/og-image.jpg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:locale" content="en_US" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-logo-badge">
+            <img src="/trefozeri-logo.png" alt="TREFOZERI" class="brand-logo" />
+          </span>
+          <div class="brand-text">
+            <span class="brand-title">TREFOZERI</span>
+          </div>
+        </div>
+        <nav class="site-nav" aria-label="Main">
+          <a href="../" class="site-nav-link">Home</a>
+          <a href="../mapping/" class="site-nav-link">Mapping &amp; Signal</a>
+          <a href="./" class="site-nav-link" aria-current="page">Performance</a>
+          <a href="../api/" class="site-nav-link">API Documentation</a>
+        </nav>
+        <div class="topbar-actions">
+          <a
+            href="https://t.me/trefozeri"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="icon-btn"
+            title="Join the Telegram channel"
+            aria-label="Join the TREFOZERI Telegram channel"
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="22" y1="2" x2="11" y2="13" />
+              <polygon points="22 2 15 22 11 13 2 9 22 2" />
+            </svg>
+          </a>
+          <button id="install-btn" class="icon-btn" title="Install app" aria-label="Install this app" hidden>
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <main class="content">
+        <div class="track-record-toolbar">
+          <nav id="symbol-tabs" class="symbol-tabs" aria-label="Symbol"></nav>
+          <button type="button" id="history-export-btn" class="modal-export-btn" title="Export as CSV" aria-label="Export track record as CSV" disabled>⬇ CSV</button>
+        </div>
+        <h1 class="page-title">Signal Track Record</h1>
+        <p class="page-intro">
+          Every signal TREFOZERI has ever recorded, from filled through to its outcome — shared across every
+          visitor, nothing filtered out. Pending (not-yet-filled) signals live on the
+          <a href="../mapping/">Mapping &amp; Signal</a> page; this page is for what's already happened.
+        </p>
+        <div id="history-body"></div>
+      </main>
+
+      <footer class="app-footer">
+        <p>
+          TREFOZERI's Support &amp; Resistance dashboard tracks <strong>XAUUSD (Gold)</strong> and <strong>BTCUSD (Bitcoin)</strong>. Every signal's full life — pending, filled, win, or loss — is public here, with no cherry-picking.
+        </p>
+        <p>
+          Want new signals pushed straight to you? Join the
+          <a href="https://t.me/trefozeri" target="_blank" rel="noopener noreferrer">Telegram channel</a>. Prefer to
+          build your own? All the data behind this dashboard is public —
+          see the <a href="../api/">API docs</a>.
+        </p>
+      </footer>
+    </div>
+
+    <script type="module" src="/src/pages/performance.js"></script>
+  </body>
+</html>
