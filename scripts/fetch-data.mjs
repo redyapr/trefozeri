@@ -75,13 +75,21 @@ export function resetFailures() {
 }
 
 // SITE_URL is optional (defaults to this repo's own deployment) so a fork/rename/domain
-// change is one env var, not a code edit that's easy to forget. Also used as-is as the
-// dashboard link in every signal message's title (see buildNewSignalMessage).
+// change is one env var, not a code edit that's easy to forget.
 const SITE_URL = process.env.SITE_URL || 'https://redyapr.github.io/trefozeri'
 // If today's upstream fetch fails (rate limit, outage), fall back to whatever is
 // already live rather than shipping a hole in the data — a stale snapshot beats a
 // missing one, and the next successful cron run heals it anyway.
 const LIVE_BASE = `${SITE_URL}/data`
+// The live dashboard link in every signal message's title (see buildNewSignalMessage)
+// — 2026-09-05's multi-page revamp split the root URL off into a separate Home landing
+// page, with the actual live dashboard moved to /mapping/, so this can no longer just
+// be SITE_URL itself.
+const MAPPING_URL = `${SITE_URL}/mapping/`
+// The full track record link in the daily/weekly report titles (see
+// buildDailyReportMessage/buildWeeklyReportMessage) — same multi-page split as
+// MAPPING_URL above, just pointing at the Performance page instead.
+const PERFORMANCE_URL = `${SITE_URL}/performance/`
 
 // Kept as a local, minimal copy rather than importing src/lib/twelveData.js — that
 // module reads import.meta.env (a Vite/browser concern), which plain Node doesn't have.
@@ -511,6 +519,34 @@ export async function sendTelegramPhoto(buffer, filename, caption, chatId = proc
   }
 }
 
+// Replaces an already-sent photo message's caption ONLY, leaving its image untouched —
+// used for a manual one-off correction where just the text needs to change (e.g.
+// adding a hyperlink the caption-building code didn't emit yet at send time). Same
+// best-effort contract as every other Telegram call here: any failure (message too
+// old, etc.) is logged and swallowed, never thrown. See editTelegramPhoto just below
+// for the equivalent when the image itself also needs replacing.
+export async function editTelegramCaption(caption, messageId, chatId = process.env.TELEGRAM_CHAT_ID) {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token || !chatId || !messageId || !telegramSendsAllowed()) return false
+
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/editMessageCaption`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, message_id: messageId, caption, parse_mode: 'HTML' }),
+    })
+    const json = await res.json()
+    if (!json.ok) {
+      console.warn(`[telegram] editMessageCaption failed: ${json.description}`)
+      return false
+    }
+    return true
+  } catch (err) {
+    console.warn(`[telegram] editMessageCaption error: ${err.message}`)
+    return false
+  }
+}
+
 // Replaces an already-sent photo message's image *and* caption in place — used for a
 // manual one-off correction (e.g. a daily/weekly report chart that shipped with
 // numbers later found wrong, from a since-fixed bug), never as part of the normal
@@ -643,7 +679,7 @@ export function buildNewSignalMessage(symbolKey, group) {
   // a monospace *font*, not a code-block look. Both silently drop any tag nested
   // inside them (verified against the real Bot API), so the title link stays on its
   // own separate line outside this block rather than losing its clickability.
-  return `<a href="${SITE_URL}">${title}</a>\n<code>${alignRows(rows)}</code>`
+  return `<a href="${MAPPING_URL}">${title}</a>\n<code>${alignRows(rows)}</code>`
 }
 
 // No symbol/direction/price here either, same reasoning as buildCloseMessage — it's a
@@ -1055,7 +1091,7 @@ export function buildDailyReportMessage(history, dayStartMs) {
     .map((symbolKey) => buildSymbolDailySection(symbolKey, history, dayStartMs, dayEndMs))
     .filter(Boolean)
   if (!sections.length) return null
-  return [`<b>Daily Performance (${formatWibDate(dayStartMs)})</b>`, '', sections.join('\n\n')].join('\n')
+  return [`<a href="${PERFORMANCE_URL}"><b>Daily Performance (${formatWibDate(dayStartMs)})</b></a>`, '', sections.join('\n\n')].join('\n')
 }
 
 // Returns null when nothing closed for this symbol all week — omitted from the message
@@ -1110,7 +1146,7 @@ export function buildWeeklyReportMessage(history, weekStartMs) {
   const rangeLabel = `${formatWibDayNum(weekStartMs)} – ${formatWibDateNoWeekday(weekEndMs)}`
   const sections = ['XAUUSD', 'BTCUSD'].map((symbolKey) => buildSymbolWeeklySection(symbolKey, history, weekStartMs)).filter(Boolean)
   if (!sections.length) return null
-  return [`<b>Weekly Performance (${rangeLabel})</b>`, '', sections.join('\n\n')].join('\n')
+  return [`<a href="${PERFORMANCE_URL}"><b>Weekly Performance (${rangeLabel})</b></a>`, '', sections.join('\n\n')].join('\n')
 }
 
 // Fires on the first cron tick that lands in the 00:00-00:59 WIB hour each day (the

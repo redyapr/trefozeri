@@ -32,6 +32,7 @@ const {
   fetchThrottled,
   sendTelegramMessage,
   editTelegramMessage,
+  editTelegramCaption,
   deleteTelegramMessage,
   sendTelegramPhoto,
   editTelegramPhoto,
@@ -232,10 +233,13 @@ test('buildNewSignalMessage', async (t) => {
     assert.match(sellMsg, /^<a href="[^"]+">🔴 SELL LIMIT/)
   })
 
-  await t.test('the title is a hyperlink to SITE_URL (or its default)', () => {
+  await t.test('the title is a hyperlink to the live Mapping & Signal dashboard, not just the bare SITE_URL', () => {
+    // 2026-09-05's multi-page revamp split the root URL off into a separate Home
+    // landing page — the actual live dashboard moved to /mapping/, so the signal
+    // message's own link has to point there specifically, not at SITE_URL itself.
     const signal = { tf: 'H1', direction: 'buy', category: 'Support', entry: 4301, sl: 4296.5, tp: [], strengthLabel: 'Medium' }
     const msg = buildNewSignalMessage('XAUUSD', [signal])
-    const url = process.env.SITE_URL || 'https://redyapr.github.io/trefozeri'
+    const url = `${process.env.SITE_URL || 'https://redyapr.github.io/trefozeri'}/mapping/`
     assert.match(msg, new RegExp(`^<a href="${url.replace(/\//g, '\\/')}">`))
   })
 
@@ -925,6 +929,56 @@ test('sendTelegramPhoto', async (t) => {
     global.fetch = async () => ({ ok: true, json: async () => ({ ok: false, description: 'file too large' }) })
     try {
       assert.equal(await sendTelegramPhoto(Buffer.from('x'), 'x.png'), null)
+    } finally {
+      global.fetch = original
+    }
+  })
+})
+
+test('editTelegramCaption', async (t) => {
+  await t.test('no-ops (returns false, makes no request) when ALLOW_TELEGRAM_SEND/CI is not set', async () => {
+    await withTelegramSendsDisallowed(async () => {
+      const { sent, restore } = mockTelegram()
+      try {
+        assert.equal(await editTelegramCaption('new caption', 2164), false)
+        assert.equal(sent.length, 0)
+      } finally {
+        restore()
+      }
+    })
+  })
+
+  await t.test('no-ops (returns false, makes no request) when the token/chat id/messageId are missing', async () => {
+    const savedToken = process.env.TELEGRAM_BOT_TOKEN
+    delete process.env.TELEGRAM_BOT_TOKEN
+    const { sent, restore } = mockTelegram()
+    try {
+      assert.equal(await editTelegramCaption('new caption', 2164), false)
+      assert.equal(sent.length, 0)
+    } finally {
+      process.env.TELEGRAM_BOT_TOKEN = savedToken
+      restore()
+    }
+  })
+
+  await t.test('sends message_id + caption with HTML parse_mode, and returns true on success', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const result = await editTelegramCaption('<b>updated</b>', 2164)
+      assert.equal(result, true)
+      assert.equal(sent[0].message_id, 2164)
+      assert.equal(sent[0].caption, '<b>updated</b>')
+      assert.equal(sent[0].parse_mode, 'HTML')
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('returns false (swallowed) when Telegram rejects the edit', async () => {
+    const original = global.fetch
+    global.fetch = async () => ({ ok: true, json: async () => ({ ok: false, description: 'message to edit not found' }) })
+    try {
+      assert.equal(await editTelegramCaption('c', 999), false)
     } finally {
       global.fetch = original
     }
@@ -2227,11 +2281,11 @@ test('buildDailyReportMessage', async (t) => {
     assert.doesNotMatch(msg, /BTCUSD/)
   })
 
-  await t.test('the title has no emoji — just the bold "Daily Performance (date)" text', () => {
+  await t.test('the title has no emoji — just the bold "Daily Performance (date)" text, hyperlinked to the Performance page', () => {
     const dayStart = wibTime(2026, 8, 11, 0, 0)
     const history = [closedRecord({ status: 'win', entry: 4300, exitPrice: 4320, closedAt: dayStart + 1000 })]
     const msg = buildDailyReportMessage(history, dayStart)
-    assert.match(msg, /^<b>Daily Performance \(Tuesday, 11 Aug 2026\)<\/b>/)
+    assert.match(msg, /^<a href="[^"]+\/performance\/"><b>Daily Performance \(Tuesday, 11 Aug 2026\)<\/b><\/a>/)
     assert.doesNotMatch(msg, /📊/)
   })
 
@@ -2389,6 +2443,13 @@ test('buildWeeklyReportMessage', async (t) => {
     const history = [closedRecord({ status: 'win', entry: 4300, exitPrice: 4320, closedAt: weekStart + 1000 })]
     const msg = buildWeeklyReportMessage(history, weekStart)
     assert.match(msg, /10 – 16 Aug 2026/)
+  })
+
+  await t.test('the title is hyperlinked to the Performance page', () => {
+    const weekStart = wibTime(2026, 8, 10, 0, 0)
+    const history = [closedRecord({ status: 'win', entry: 4300, exitPrice: 4320, closedAt: weekStart + 1000 })]
+    const msg = buildWeeklyReportMessage(history, weekStart)
+    assert.match(msg, /^<a href="[^"]+\/performance\/"><b>Weekly Performance/)
   })
 })
 
