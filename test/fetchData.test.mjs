@@ -25,13 +25,16 @@ const {
   notifyFilledSignals,
   notifyClosedSignals,
   notifyInvalidatedSignals,
+  pollDiscussionGroupMappings,
   withRetry,
   fetchWithFallback,
   isFetchDue,
   fetchThrottled,
   sendTelegramMessage,
   editTelegramMessage,
+  deleteTelegramMessage,
   sendTelegramPhoto,
+  editTelegramPhoto,
   telegramSendsAllowed,
   sendAdminAlert,
   sendAdminAlertDeduped,
@@ -111,6 +114,22 @@ async function withClearLastFetchState(fn) {
   } finally {
     if (backup == null) await rm(LAST_FETCH_STATE_PATH, { force: true })
     else await writeFile(LAST_FETCH_STATE_PATH, backup)
+  }
+}
+
+// main() always calls loadDiscussionState/saveDiscussionState (same "always write"
+// reasoning as LAST_FETCH_STATE_PATH above) — back it up/restore it too, or a real run
+// of the main() test below leaves data/telegram-discussion-state.json sitting in the
+// repo as an untracked file.
+const DISCUSSION_STATE_PATH = path.join(process.cwd(), 'data', 'telegram-discussion-state.json')
+async function withClearDiscussionState(fn) {
+  const backup = await readFile(DISCUSSION_STATE_PATH, 'utf8').catch(() => null)
+  await rm(DISCUSSION_STATE_PATH, { force: true })
+  try {
+    await fn()
+  } finally {
+    if (backup == null) await rm(DISCUSSION_STATE_PATH, { force: true })
+    else await writeFile(DISCUSSION_STATE_PATH, backup)
   }
 }
 
@@ -795,6 +814,55 @@ test('editTelegramMessage', async (t) => {
   })
 })
 
+test('deleteTelegramMessage', async (t) => {
+  await t.test('no-ops (returns false, makes no request) when ALLOW_TELEGRAM_SEND/CI is not set', async () => {
+    await withTelegramSendsDisallowed(async () => {
+      const { sent, restore } = mockTelegram()
+      try {
+        assert.equal(await deleteTelegramMessage(1), false)
+        assert.equal(sent.length, 0)
+      } finally {
+        restore()
+      }
+    })
+  })
+
+  await t.test('no-ops (returns false, makes no request) when the token/chat id/messageId are missing', async () => {
+    const savedToken = process.env.TELEGRAM_BOT_TOKEN
+    delete process.env.TELEGRAM_BOT_TOKEN
+    const { sent, restore } = mockTelegram()
+    try {
+      assert.equal(await deleteTelegramMessage(1), false)
+      assert.equal(sent.length, 0)
+    } finally {
+      process.env.TELEGRAM_BOT_TOKEN = savedToken
+      restore()
+    }
+  })
+
+  await t.test('sends the chat id + message_id and returns true on success', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const result = await deleteTelegramMessage(2153)
+      assert.equal(result, true)
+      assert.equal(sent[0].chat_id, '-100public')
+      assert.equal(sent[0].message_id, 2153)
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('returns false (swallowed) when Telegram rejects the delete, e.g. older than 48h', async () => {
+    const original = global.fetch
+    global.fetch = async () => ({ ok: true, json: async () => ({ ok: false, description: "message can't be deleted" }) })
+    try {
+      assert.equal(await deleteTelegramMessage(999), false)
+    } finally {
+      global.fetch = original
+    }
+  })
+})
+
 test('sendTelegramPhoto', async (t) => {
   await t.test('no-ops (returns null, makes no request) when ALLOW_TELEGRAM_SEND/CI is not set', async () => {
     await withTelegramSendsDisallowed(async () => {
@@ -859,6 +927,259 @@ test('sendTelegramPhoto', async (t) => {
       assert.equal(await sendTelegramPhoto(Buffer.from('x'), 'x.png'), null)
     } finally {
       global.fetch = original
+    }
+  })
+})
+
+test('editTelegramPhoto', async (t) => {
+  await t.test('no-ops (returns false, makes no request) when ALLOW_TELEGRAM_SEND/CI is not set', async () => {
+    await withTelegramSendsDisallowed(async () => {
+      const { sent, restore } = mockTelegram()
+      try {
+        const result = await editTelegramPhoto(Buffer.from('fake png'), 'chart.png', 'caption', 123)
+        assert.equal(result, false)
+        assert.equal(sent.length, 0)
+      } finally {
+        restore()
+      }
+    })
+  })
+
+  await t.test('no-ops (returns false, makes no request) when the token/chat id/messageId are missing', async () => {
+    const savedChat = process.env.TELEGRAM_CHAT_ID
+    delete process.env.TELEGRAM_CHAT_ID
+    const { sent, restore } = mockTelegram()
+    try {
+      const result = await editTelegramPhoto(Buffer.from('fake png'), 'chart.png', 'caption', 123)
+      assert.equal(result, false)
+      assert.equal(sent.length, 0)
+    } finally {
+      process.env.TELEGRAM_CHAT_ID = savedChat
+      restore()
+    }
+  })
+
+  await t.test('posts chat_id, message_id, an attach://-referencing media JSON, and the new file, returning true on success', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      const buf = Buffer.from('fake png bytes')
+      const result = await editTelegramPhoto(buf, 'daily-performance.png', 'a <b>caption</b>', 2164)
+      assert.equal(result, true)
+      const form = sent[0]
+      assert.equal(form.get('chat_id'), '-100public')
+      assert.equal(form.get('message_id'), '2164')
+      assert.deepEqual(JSON.parse(form.get('media')), {
+        type: 'photo',
+        media: 'attach://photofile',
+        caption: 'a <b>caption</b>',
+        parse_mode: 'HTML',
+      })
+      const file = form.get('photofile')
+      assert.equal(file.name, 'daily-performance.png')
+      assert.equal(await file.text(), 'fake png bytes')
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('omits caption/parse_mode from the media JSON entirely when no caption is given', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      await editTelegramPhoto(Buffer.from('x'), 'x.png', undefined, 2164)
+      assert.deepEqual(JSON.parse(sent[0].get('media')), { type: 'photo', media: 'attach://photofile' })
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('returns false (swallowed) when Telegram rejects the edit', async () => {
+    const original = global.fetch
+    global.fetch = async () => ({ ok: true, json: async () => ({ ok: false, description: 'message to edit not found' }) })
+    try {
+      assert.equal(await editTelegramPhoto(Buffer.from('x'), 'x.png', 'c', 999), false)
+    } finally {
+      global.fetch = original
+    }
+  })
+})
+
+test('pollDiscussionGroupMappings', async (t) => {
+  await t.test('no-ops (returns false, makes no request) when TELEGRAM_DISCUSSION_CHAT_ID is not set', async () => {
+    const original = global.fetch
+    let called = false
+    global.fetch = async () => {
+      called = true
+      return { ok: true, json: async () => ({ ok: true, result: [] }) }
+    }
+    try {
+      const history = [{ telegramMessageId: 2153 }]
+      const result = await pollDiscussionGroupMappings(history, {})
+      assert.equal(result, false)
+      assert.equal(called, false, 'no getUpdates request when comments are not configured at all')
+    } finally {
+      global.fetch = original
+    }
+  })
+
+  await t.test('maps an automatic-forward copy in the discussion group onto the record it mirrors, and advances the offset past it', async () => {
+    process.env.TELEGRAM_DISCUSSION_CHAT_ID = '-200discuss'
+    const original = global.fetch
+    global.fetch = async (url, opts) => {
+      const body = JSON.parse(opts.body)
+      assert.equal(body.offset, 5, 'resumes from the persisted offset, not from scratch')
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          result: [
+            {
+              update_id: 10,
+              message: {
+                message_id: 501,
+                chat: { id: '-200discuss' },
+                is_automatic_forward: true,
+                forward_origin: { type: 'channel', message_id: 2153 },
+              },
+            },
+          ],
+        }),
+      }
+    }
+    try {
+      const history = [{ telegramMessageId: 2153 }]
+      const state = { updateOffset: 5 }
+      const result = await pollDiscussionGroupMappings(history, state)
+      assert.equal(result, true)
+      assert.equal(history[0].discussionMessageId, 501)
+      assert.equal(state.updateOffset, 11, 'past update_id 10')
+    } finally {
+      global.fetch = original
+      delete process.env.TELEGRAM_DISCUSSION_CHAT_ID
+    }
+  })
+
+  await t.test('ignores a regular (non-automatic-forward) message in the discussion group — an actual human comment', async () => {
+    process.env.TELEGRAM_DISCUSSION_CHAT_ID = '-200discuss'
+    const original = global.fetch
+    global.fetch = async () => ({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        result: [{ update_id: 10, message: { message_id: 501, chat: { id: '-200discuss' }, text: 'nice signal!' } }],
+      }),
+    })
+    try {
+      const history = [{ telegramMessageId: 2153 }]
+      const state = { updateOffset: 0 }
+      const result = await pollDiscussionGroupMappings(history, state)
+      assert.equal(result, false)
+      assert.equal(history[0].discussionMessageId, undefined)
+      assert.equal(state.updateOffset, 11, 'still advances past it — an update once seen is never re-fetched')
+    } finally {
+      global.fetch = original
+      delete process.env.TELEGRAM_DISCUSSION_CHAT_ID
+    }
+  })
+
+  await t.test('ignores an automatic-forward copy with no matching record (unrelated/older channel post)', async () => {
+    process.env.TELEGRAM_DISCUSSION_CHAT_ID = '-200discuss'
+    const original = global.fetch
+    global.fetch = async () => ({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        result: [
+          {
+            update_id: 10,
+            message: { message_id: 501, chat: { id: '-200discuss' }, is_automatic_forward: true, forward_origin: { type: 'channel', message_id: 9999 } },
+          },
+        ],
+      }),
+    })
+    try {
+      const history = [{ telegramMessageId: 2153 }]
+      const result = await pollDiscussionGroupMappings(history, { updateOffset: 0 })
+      assert.equal(result, false)
+    } finally {
+      global.fetch = original
+      delete process.env.TELEGRAM_DISCUSSION_CHAT_ID
+    }
+  })
+
+  await t.test('never overwrites a record\'s already-known discussionMessageId', async () => {
+    process.env.TELEGRAM_DISCUSSION_CHAT_ID = '-200discuss'
+    const original = global.fetch
+    global.fetch = async () => ({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        result: [
+          {
+            update_id: 10,
+            message: { message_id: 999, chat: { id: '-200discuss' }, is_automatic_forward: true, forward_origin: { type: 'channel', message_id: 2153 } },
+          },
+        ],
+      }),
+    })
+    try {
+      const history = [{ telegramMessageId: 2153, discussionMessageId: 501 }]
+      const result = await pollDiscussionGroupMappings(history, { updateOffset: 0 })
+      assert.equal(result, false)
+      assert.equal(history[0].discussionMessageId, 501)
+    } finally {
+      global.fetch = original
+      delete process.env.TELEGRAM_DISCUSSION_CHAT_ID
+    }
+  })
+
+  await t.test('pages through more than one batch of updates (100 is the page size)', async () => {
+    process.env.TELEGRAM_DISCUSSION_CHAT_ID = '-200discuss'
+    const original = global.fetch
+    let calls = 0
+    global.fetch = async (url, opts) => {
+      calls++
+      const body = JSON.parse(opts.body)
+      if (calls === 1) {
+        assert.equal(body.offset, 0)
+        const full = Array.from({ length: 100 }, (_, i) => ({ update_id: i, message: { message_id: 1, chat: { id: '-200discuss' } } }))
+        return { ok: true, json: async () => ({ ok: true, result: full }) }
+      }
+      assert.equal(body.offset, 100, 'second page resumes right after the first page\'s last update_id')
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          result: [
+            {
+              update_id: 100,
+              message: { message_id: 501, chat: { id: '-200discuss' }, is_automatic_forward: true, forward_origin: { type: 'channel', message_id: 2153 } },
+            },
+          ],
+        }),
+      }
+    }
+    try {
+      const history = [{ telegramMessageId: 2153 }]
+      const result = await pollDiscussionGroupMappings(history, { updateOffset: 0 })
+      assert.equal(calls, 2, 'a full 100-item page means there could be more — fetches a second page')
+      assert.equal(result, true)
+      assert.equal(history[0].discussionMessageId, 501)
+    } finally {
+      global.fetch = original
+      delete process.env.TELEGRAM_DISCUSSION_CHAT_ID
+    }
+  })
+
+  await t.test('returns whatever was already mapped (swallowed, no throw) when getUpdates itself fails', async () => {
+    process.env.TELEGRAM_DISCUSSION_CHAT_ID = '-200discuss'
+    const original = global.fetch
+    global.fetch = async () => ({ ok: true, json: async () => ({ ok: false, description: 'Unauthorized' }) })
+    try {
+      const result = await pollDiscussionGroupMappings([], { updateOffset: 0 })
+      assert.equal(result, false)
+    } finally {
+      global.fetch = original
+      delete process.env.TELEGRAM_DISCUSSION_CHAT_ID
     }
   })
 })
@@ -1346,6 +1667,43 @@ test('updateSignalHistoryForSymbol: end-to-end Telegram wiring', async (t) => {
       assert.equal(sent.length, 2)
       assert.equal(win.tp[0].telegramMessageId, 1, 'the win reply\'s own id, for a possible future edit')
       assert.equal(loss.tp, undefined, 'a loss has no tp[] to stash anything onto — nothing thrown either')
+    } finally {
+      restore()
+    }
+  })
+
+  await t.test('replies as a discussion-group comment instead of an in-channel reply once discussionMessageId is known', async () => {
+    process.env.TELEGRAM_DISCUSSION_CHAT_ID = '-200discuss'
+    const { sent, restore } = mockTelegram()
+    try {
+      await notifyInvalidatedSignals([{ telegramMessageId: 7, discussionMessageId: 501 }])
+      assert.equal(sent[0].chat_id, '-200discuss')
+      assert.equal(sent[0].reply_to_message_id, 501)
+    } finally {
+      delete process.env.TELEGRAM_DISCUSSION_CHAT_ID
+      restore()
+    }
+  })
+
+  await t.test('falls back to an in-channel reply when discussionMessageId is not yet known', async () => {
+    process.env.TELEGRAM_DISCUSSION_CHAT_ID = '-200discuss'
+    const { sent, restore } = mockTelegram()
+    try {
+      await notifyInvalidatedSignals([{ telegramMessageId: 7 }]) // no discussionMessageId yet
+      assert.equal(sent[0].chat_id, '-100public')
+      assert.equal(sent[0].reply_to_message_id, 7)
+    } finally {
+      delete process.env.TELEGRAM_DISCUSSION_CHAT_ID
+      restore()
+    }
+  })
+
+  await t.test('falls back to an in-channel reply when TELEGRAM_DISCUSSION_CHAT_ID is not configured, even if discussionMessageId happens to be set', async () => {
+    const { sent, restore } = mockTelegram()
+    try {
+      await notifyInvalidatedSignals([{ telegramMessageId: 7, discussionMessageId: 501 }])
+      assert.equal(sent[0].chat_id, '-100public')
+      assert.equal(sent[0].reply_to_message_id, 7)
     } finally {
       restore()
     }
@@ -2241,17 +2599,19 @@ test('main()', async (t) => {
       await withClearAlertState(async () => {
         await withClearReportState(async () => {
           await withClearLastFetchState(async () => {
-            const restoreFetch = mockAllSources()
-            const savedKey = process.env.TWELVE_DATA_API_KEY
-            process.env.TWELVE_DATA_API_KEY = 'test-key'
-            try {
-              await assert.doesNotReject(() => main())
-              const written = JSON.parse(await readFile(REAL_HISTORY_PATH, 'utf8'))
-              assert.ok(Array.isArray(written), 'signal-history.json must still be a JSON array afterward')
-            } finally {
-              restoreFetch()
-              process.env.TWELVE_DATA_API_KEY = savedKey
-            }
+            await withClearDiscussionState(async () => {
+              const restoreFetch = mockAllSources()
+              const savedKey = process.env.TWELVE_DATA_API_KEY
+              process.env.TWELVE_DATA_API_KEY = 'test-key'
+              try {
+                await assert.doesNotReject(() => main())
+                const written = JSON.parse(await readFile(REAL_HISTORY_PATH, 'utf8'))
+                assert.ok(Array.isArray(written), 'signal-history.json must still be a JSON array afterward')
+              } finally {
+                restoreFetch()
+                process.env.TWELVE_DATA_API_KEY = savedKey
+              }
+            })
           })
         })
       })

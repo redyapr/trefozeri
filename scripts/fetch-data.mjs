@@ -36,6 +36,7 @@ const HISTORY_PATH = path.join(process.cwd(), 'data', 'signal-history.json')
 const ALERT_STATE_PATH = path.join(process.cwd(), 'data', 'last-alert.json')
 const REPORT_STATE_PATH = path.join(process.cwd(), 'data', 'last-report.json')
 const LAST_FETCH_STATE_PATH = path.join(process.cwd(), 'data', 'last-fetch.json')
+const DISCUSSION_STATE_PATH = path.join(process.cwd(), 'data', 'telegram-discussion-state.json')
 // A persistent cause (an expired API key, say) would otherwise re-alert every single
 // cron tick forever — suppress a repeat of the exact same alert text until
 // this long has passed since it was last actually sent. Overridable (hours, not ms)
@@ -447,6 +448,34 @@ export async function editTelegramMessage(text, messageId, chatId = process.env.
   }
 }
 
+// Permanently removes an already-sent message — used for a manual one-off correction
+// (e.g. a duplicate signal/result post from a since-fixed bug), never as part of the
+// normal signal/report flow itself, which only ever posts or edits. Same best-effort
+// contract as every other Telegram call here: any failure (message too old — Telegram
+// only allows deleting a bot's own message within 48h — already deleted, etc.) is
+// logged and swallowed, never thrown.
+export async function deleteTelegramMessage(messageId, chatId = process.env.TELEGRAM_CHAT_ID) {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token || !chatId || !messageId || !telegramSendsAllowed()) return false
+
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/deleteMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, message_id: messageId }),
+    })
+    const json = await res.json()
+    if (!json.ok) {
+      console.warn(`[telegram] deleteMessage failed: ${json.description}`)
+      return false
+    }
+    return true
+  } catch (err) {
+    console.warn(`[telegram] deleteMessage error: ${err.message}`)
+    return false
+  }
+}
+
 // Sends a PNG buffer as a Telegram *photo* — shows inline in-chat (tap to view
 // full-screen) rather than as a generic file attachment. Telegram does re-compress to
 // JPEG and downscale for its own preview sizes, but the 2x-scale "HD" render (see
@@ -479,6 +508,41 @@ export async function sendTelegramPhoto(buffer, filename, caption, chatId = proc
   } catch (err) {
     console.warn(`[telegram] sendPhoto error: ${err.message}`)
     return null
+  }
+}
+
+// Replaces an already-sent photo message's image *and* caption in place — used for a
+// manual one-off correction (e.g. a daily/weekly report chart that shipped with
+// numbers later found wrong, from a since-fixed bug), never as part of the normal
+// report flow itself (which only ever posts a fresh sendTelegramPhoto — see
+// sendDailyReport/sendWeeklyReport). editMessageMedia needs the new file referenced
+// from inside `media`'s own JSON via `attach://<field>`, unlike sendPhoto's flatter
+// form fields — a Telegram Bot API quirk, not a choice made here. Same best-effort
+// contract as every other Telegram call here: any failure (message too old, wrong
+// media type, etc.) is logged and swallowed, never thrown.
+export async function editTelegramPhoto(buffer, filename, caption, messageId, chatId = process.env.TELEGRAM_CHAT_ID) {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token || !chatId || !messageId || !telegramSendsAllowed()) return false
+
+  try {
+    const form = new FormData()
+    form.append('chat_id', chatId)
+    form.append('message_id', String(messageId))
+    form.append(
+      'media',
+      JSON.stringify({ type: 'photo', media: 'attach://photofile', ...(caption ? { caption, parse_mode: 'HTML' } : {}) })
+    )
+    form.append('photofile', new Blob([buffer], { type: 'image/png' }), filename)
+    const res = await fetch(`https://api.telegram.org/bot${token}/editMessageMedia`, { method: 'POST', body: form })
+    const json = await res.json()
+    if (!json.ok) {
+      console.warn(`[telegram] editMessageMedia failed: ${json.description}`)
+      return false
+    }
+    return true
+  } catch (err) {
+    console.warn(`[telegram] editMessageMedia error: ${err.message}`)
+    return false
   }
 }
 
@@ -607,6 +671,96 @@ export function buildInvalidatedMessage() {
   return '<code>❌ INVALIDATED</code>'
 }
 
+// ---------------------------------------------------------------------------
+// Discussion-group comment threading
+// ---------------------------------------------------------------------------
+// The public channel has a linked discussion group — Telegram's own "Leave a Comment"
+// UI under a channel post is really just a normal message sent into THAT group,
+// replying to the automatic copy Telegram itself forwards there the moment the channel
+// post goes out. There's no Bot API method to just ask "what's the discussion-group
+// message for channel post X" — the only way to learn it is to see that automatic-
+// forward copy arrive as an update, via getUpdates (this is a stateless cron script
+// with no webhook/persistent server to receive it push-style instead).
+
+// Finds newly-arrived automatic-forward copies in the linked discussion group and maps
+// them onto the signal record they mirror (`record.discussionMessageId`), so
+// notifyFilledSignals/notifyClosedSignals/notifyInvalidatedSignals below can reply as
+// a genuine comment under the channel post instead of a reply within the channel
+// itself. No-ops entirely (returns false, makes no request) if
+// TELEGRAM_DISCUSSION_CHAT_ID isn't configured — comments are an opt-in enhancement,
+// not a requirement. Mutates `history` in place; returns whether anything changed.
+// Best-effort like every other Telegram call here: any failure just leaves whatever
+// records were already mapped as they were, never throws — a record that doesn't get
+// mapped this run simply keeps replying in-channel (see replyTarget) until a later
+// run's poll catches up.
+export async function pollDiscussionGroupMappings(history, state) {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  const discussionChatId = process.env.TELEGRAM_DISCUSSION_CHAT_ID
+  if (!token || !discussionChatId) return false
+
+  const byTelegramMessageId = new Map(history.filter((r) => r.telegramMessageId).map((r) => [r.telegramMessageId, r]))
+  let changed = false
+
+  // Bounded to 10 pages (1,000 updates) per run — plenty for a normal 5-minute cadence;
+  // a backlog this deep would mean the poll hasn't run in a very long time, at which
+  // point catching up fully isn't worth one run stretching out unboundedly.
+  for (let page = 0; page < 10; page++) {
+    let updates
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${token}/getUpdates`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ offset: state.updateOffset ?? 0, limit: 100, timeout: 0, allowed_updates: ['message'] }),
+      })
+      const json = await res.json()
+      if (!json.ok) {
+        console.warn(`[telegram] getUpdates failed: ${json.description}`)
+        return changed
+      }
+      updates = json.result
+    } catch (err) {
+      console.warn(`[telegram] getUpdates error: ${err.message}`)
+      return changed
+    }
+    if (!updates.length) break
+
+    for (const update of updates) {
+      // Advances past EVERY update seen (not just ones that matched below) — an
+      // update that isn't a match is still "seen", and re-fetching it forever would
+      // eventually make every single page entirely stale re-reads.
+      state.updateOffset = update.update_id + 1
+      const msg = update.message
+      if (!msg || String(msg.chat?.id) !== String(discussionChatId)) continue
+      // The automatic copy Telegram itself posts into the linked discussion group
+      // when the channel publishes — origin.type 'channel' + its own message_id
+      // identifies the ORIGINAL channel post this copy mirrors.
+      if (!msg.is_automatic_forward || msg.forward_origin?.type !== 'channel') continue
+      const record = byTelegramMessageId.get(msg.forward_origin.message_id)
+      if (!record || record.discussionMessageId) continue
+      record.discussionMessageId = msg.message_id
+      changed = true
+    }
+
+    if (updates.length < 100) break // caught up
+  }
+
+  return changed
+}
+
+// Where a reply to `record`'s own post should actually go: as a comment in the linked
+// discussion group (see pollDiscussionGroupMappings above) once that mapping is known,
+// or a reply within the channel itself otherwise — a record too fresh for Telegram's
+// own auto-forward *and* this run's poll to have caught up with yet, or one from
+// before TELEGRAM_DISCUSSION_CHAT_ID was ever configured, falls back to the old
+// in-channel-reply behavior rather than silently dropping the notification.
+function replyTarget(record) {
+  const discussionChatId = process.env.TELEGRAM_DISCUSSION_CHAT_ID
+  if (discussionChatId && record.discussionMessageId) {
+    return { chatId: discussionChatId, replyToMessageId: record.discussionMessageId }
+  }
+  return { chatId: process.env.TELEGRAM_CHAT_ID, replyToMessageId: record.telegramMessageId }
+}
+
 // Sends one Telegram message per newly-added signal, EXCEPT when the same level also
 // just appeared on another timeframe that ALSO reaches Telegram (cross-timeframe
 // confluence, see annotateGoldenZones in srDetector.js) — those are folded into a
@@ -662,10 +816,13 @@ export async function notifyUpdatedSignals(symbolKey, updated, signalByKey) {
 // record with no telegramMessageId (never posted — e.g. it never survived long enough,
 // or formed on a symbol/day new signals were withheld for) has nothing to reply to,
 // skipped silently rather than posting an orphaned, contextless standalone message.
+// Replies as a discussion-group comment once that mapping is known (see replyTarget),
+// falling back to an in-channel reply otherwise.
 async function notifyByReply(records, buildMessage) {
   for (const record of records) {
     if (!record.telegramMessageId) continue
-    await sendTelegramMessage(buildMessage(record), record.telegramMessageId)
+    const { chatId, replyToMessageId } = replyTarget(record)
+    await sendTelegramMessage(buildMessage(record), replyToMessageId, chatId)
   }
 }
 
@@ -678,11 +835,13 @@ export async function notifyFilledSignals(filled) {
 // crediting the same win at the new level, right up until the very last rung), so this
 // doesn't use the shared notifyByReply above: each such reply's own message id is
 // stashed onto that specific tp[] entry, in case it's ever needed to edit that reply
-// later (e.g. a manual correction after re-checking against finer-grained data).
+// later (e.g. a manual correction after re-checking against finer-grained data). Same
+// discussion-group-comment-or-in-channel-reply choice as notifyByReply, via replyTarget.
 export async function notifyClosedSignals(symbolKey, closed) {
   for (const record of closed) {
     if (!record.telegramMessageId) continue
-    const messageId = await sendTelegramMessage(buildCloseMessage(symbolKey, record), record.telegramMessageId)
+    const { chatId, replyToMessageId } = replyTarget(record)
+    const messageId = await sendTelegramMessage(buildCloseMessage(symbolKey, record), replyToMessageId, chatId)
     if (messageId && record.status === 'win') record.tp[record.hitTpIndex].telegramMessageId = messageId
   }
 }
@@ -786,6 +945,23 @@ async function loadLastFetchState() {
 async function saveLastFetchState(state) {
   await mkdir(path.dirname(LAST_FETCH_STATE_PATH), { recursive: true })
   await writeFile(LAST_FETCH_STATE_PATH, JSON.stringify(state))
+}
+
+// { updateOffset } — the next getUpdates offset to poll from (see
+// pollDiscussionGroupMappings below). Persisted across runs the same way
+// LAST_FETCH_STATE_PATH is: this is a stateless cron script, so without this the very
+// next run would re-fetch every update Telegram has ever queued for the bot.
+async function loadDiscussionState() {
+  try {
+    return JSON.parse(await readFile(DISCUSSION_STATE_PATH, 'utf8'))
+  } catch {
+    return {} // first run ever (or before TELEGRAM_DISCUSSION_CHAT_ID was configured), or the file's missing/corrupt
+  }
+}
+
+async function saveDiscussionState(state) {
+  await mkdir(path.dirname(DISCUSSION_STATE_PATH), { recursive: true })
+  await writeFile(DISCUSSION_STATE_PATH, JSON.stringify(state))
 }
 
 function directionLabel(record) {
@@ -1228,6 +1404,16 @@ export async function main() {
   // about ordering, only the gating does.
   const calendar = await fetchWithFallback('calendar', fetchCalendar, 'calendar.json')
   if (calendar) await writeJson('calendar.json', calendar)
+
+  // Before this run's own notifications go out (see notifyFilledSignals/
+  // notifyClosedSignals/notifyInvalidatedSignals inside updateSignalHistoryForSymbol
+  // below), so a signal posted on an earlier run already has its discussion-group
+  // mapping available the moment this run needs to reply to it. Written every run
+  // regardless of whether anything actually mapped — the offset itself always needs
+  // persisting, same "always write" reasoning as lastFetchState above.
+  const discussionState = await loadDiscussionState()
+  await pollDiscussionGroupMappings(history, discussionState)
+  await saveDiscussionState(discussionState)
 
   for (const [symbolKey, seriesByTf] of Object.entries(seriesByTfBySymbol)) {
     await updateSignalHistoryForSymbol(history, symbolKey, seriesByTf, calendar)

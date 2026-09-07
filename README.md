@@ -88,7 +88,12 @@ each a separate physical page (its own URL, full reload on nav, shared topbar/na
   farther TP (no point re-scanning forever), without undoing the win already credited.
   A record is permanently done once it reaches its very last TP, hits the SL before any
   TP was ever reached (a genuine loss), or hits the SL after a win (chase over, win
-  stands). See `evaluateSignals` in `src/lib/signalHistoryCore.js`. New signals are also
+  stands). See `evaluateSignals` in `src/lib/signalHistoryCore.js`. A key only ever gets
+  one record per bar, even after that record resolves — without this, a record that
+  fills *and* closes within a single evaluation pass (a slow cron tick, or just a fast
+  move) freed its own key up while the same-bar zone was still standing, and the next
+  poll opened an exact duplicate of the trade that had just closed, over and over until
+  the next real bar (a 2026-09-07 bug fix). New signals are also
   withheld around high-impact USD news releases, since those tend to spike straight
   through a level with no real retest — the live dashboard's own signal cards respect
   the same gate (with a banner explaining why), not just the persisted/Telegram-posted
@@ -109,7 +114,17 @@ each a separate physical page (its own URL, full reload on nav, shared topbar/na
   same ladder (see Track record above) — each such reply's own message id is kept on
   that TP entry, in case a later correction ever needs to edit it directly. XAUUSD
   skips new signals while gold's market is closed; BTCUSD posts new signals every day
-  (trades 24/7, no market-hours gate).
+  (trades 24/7, no market-hours gate). If the channel has a linked discussion group
+  (`TELEGRAM_DISCUSSION_CHAT_ID`), every fill/win/loss/invalidated reply lands as an
+  actual comment under the original signal post (via Telegram's own "Leave a Comment"
+  thread) instead of a reply within the channel itself — there's no Bot API method to
+  address a channel post's comment thread directly, so `pollDiscussionGroupMappings`
+  polls `getUpdates` each run to learn which discussion-group message is the automatic
+  copy of which signal post, persisting the mapping (`data/telegram-discussion-state.json`)
+  and each record's own `discussionMessageId`. A record too fresh for that mapping to
+  have caught up yet — or one from before this was configured — falls back to an
+  in-channel reply, never drops the notification. Optional entirely; without
+  `TELEGRAM_DISCUSSION_CHAT_ID` every reply just goes to the channel as before.
   Optional — no-ops without `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`. Real sends are also
   opt-in: only CI (`CI=true`, set automatically) or an explicit local
   `ALLOW_TELEGRAM_SEND=true` actually posts — see [Local development](#local-development).
@@ -192,9 +207,10 @@ candles for hours, several cron ticks after the market had already reopened. See
   caveat. See `cloudflare/cron-trigger/README.md` for setup.
 
 A failing test stops the run before anything else happens. CI is otherwise stateless.
-`data/signal-history.json`, `data/last-alert.json`, `data/last-report.json` and
-`data/last-fetch.json` are the exceptions — updated every run, committed back to
-`master` only when they change (most ticks commit nothing). A rejected push (something
+`data/signal-history.json`, `data/last-alert.json`, `data/last-report.json`,
+`data/last-fetch.json`, and `data/telegram-discussion-state.json` are the exceptions —
+updated every run, committed back to `master` only when they change (most ticks commit
+nothing). A rejected push (something
 else landed on `master` mid-run) rebases and retries up to 3 times. The `deploy` job
 itself retries up to 3 times on a transient `actions/deploy-pages` failure.
 
@@ -210,7 +226,10 @@ One-time setup for a fork or new deploy target:
 
 1. **Settings → Secrets and variables → Actions** — add `TWELVE_DATA_API_KEY`, and
    optionally `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` (public channel) /
-   `TELEGRAM_PERSONAL_CHAT_ID` (ops alerts).
+   `TELEGRAM_PERSONAL_CHAT_ID` (ops alerts) / `TELEGRAM_DISCUSSION_CHAT_ID` (reply
+   as comments in the channel's linked discussion group instead of in-channel — the
+   bot also needs to actually see messages there: disable privacy mode via BotFather's
+   `/setprivacy`, or make the bot a group admin).
 2. **Settings → Pages → Build and deployment → Source: GitHub Actions**.
 3. On a fork/rename/domain change only — add the `SITE_URL` repository **variable**
    (e.g. `https://you.github.io/your-repo`).
@@ -267,6 +286,9 @@ data/
   last-report.json     Git-tracked daily/weekly report de-dup state — committed by CI
   last-fetch.json      Git-tracked last-successful-fetch timestamps — committed by CI,
                        used to throttle XAUUSD's H1/H4/D1 (see isFetchDue above)
+  telegram-discussion-state.json  Git-tracked getUpdates offset for the discussion-
+                       group comment mapping — committed by CI (see Telegram
+                       notifications above)
 .github/workflows/
   deploy.yml  Test → cron fetch → persist track record → build → deploy
 .github/

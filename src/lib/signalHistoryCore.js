@@ -131,11 +131,26 @@ export function recordSignals(records, symbolKey, tf, signals, currentPrice, cur
   }
 
   const openKeys = new Set(records.filter(isOpen).map((r) => r.key))
+  // A real production bug (2026-09-07): a record can fill AND resolve to a terminal
+  // state (loss, or a win reaching its very last TP) within the very same bar it
+  // opened in — evaluateSignals scans every M1 candle since openedAt in one pass, so a
+  // slow/delayed cron tick (or just a fast-moving fill-to-SL/TP) can see the whole move
+  // play out before this same run even finishes. The instant that happens, the key
+  // above is no longer "open" — but the underlying zone hasn't gone anywhere (a single
+  // M1 wick doesn't invalidate an H1-built level), so buildSignals keeps offering the
+  // exact same signal every following tick for the rest of that bar. Without this,
+  // each of those ticks looked like a brand-new opportunity and opened (and got
+  // Telegram-posted as) an exact byte-for-byte duplicate of the one that just closed —
+  // same entry/SL/TP/openedAt, over and over, until the next real bar finally rolled
+  // over. A key only gets one shot per bar: already having ANY record (open or
+  // resolved) with this exact `openedAt` blocks a second one, regardless of how the
+  // first one turned out.
+  const attemptedThisBarKeys = new Set(records.filter((r) => r.openedAt === currentTime).map((r) => r.key))
   const added = []
 
   for (const signal of signals) {
     const key = keyFor(symbolKey, tf, signal)
-    if (openKeys.has(key)) continue
+    if (openKeys.has(key) || attemptedThisBarKeys.has(key)) continue
     // trendAligned (see buildSignals in srDetector.js) only gates *opening a brand-new*
     // record — an already-open one is kept alive regardless (the `openKeys.has` guard
     // above already returned before reaching here for those). This is intentionally

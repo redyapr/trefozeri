@@ -138,6 +138,38 @@ test('recordSignals', async (t) => {
     assert.equal(history.length, 2)
   })
 
+  await t.test(
+    'a real production bug this fixes: a record resolved to loss within the SAME bar does not free its key for that bar',
+    () => {
+      // evaluateSignals can resolve a record all the way from pending to a terminal
+      // 'loss' within a single call — it scans every candle since openedAt in one pass
+      // (see its own comment), so a slow/delayed cron tick, or just a fast move, can
+      // see the whole fill-to-SL play out before this same run even finishes. The
+      // underlying zone hasn't gone anywhere (a single M1 wick doesn't invalidate an
+      // H1-built level), so buildSignals keeps offering the exact same signal on every
+      // following tick for the rest of that bar. Production logs showed the exact same
+      // entry/SL/TP opened (and Telegram-posted) 4 times in a row this way, all
+      // sharing one bar's openedAt.
+      const history = []
+      recordSignals(history, 'XAUUSD', 'H1', [buySignal()], undefined, 1000)
+      history[0].status = 'loss' // resolved within this same bar — openedAt stays 1000
+
+      const { added } = recordSignals(history, 'XAUUSD', 'H1', [buySignal()], undefined, 1000) // same bar
+      assert.equal(added.length, 0, 'no duplicate for the same bar, even though the earlier record is no longer open')
+      assert.equal(history.length, 1)
+    }
+  )
+
+  await t.test('a record resolved to loss DOES free its key up once a later bar rolls around', () => {
+    const history = []
+    recordSignals(history, 'XAUUSD', 'H1', [buySignal()], undefined, 1000)
+    history[0].status = 'loss'
+
+    const { added } = recordSignals(history, 'XAUUSD', 'H1', [buySignal()], undefined, 2000) // a genuinely later bar
+    assert.equal(added.length, 1, 'a later bar is a legitimate fresh retest of the same level')
+    assert.equal(history.length, 2)
+  })
+
   await t.test('does not report an update when nothing about the signal actually changed', () => {
     const history = []
     recordSignals(history, 'XAUUSD', 'H1', [buySignal()])
